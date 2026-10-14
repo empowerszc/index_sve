@@ -1,0 +1,9 @@
+# build artifacts
+build/
+*.so
+*.o
+__pycache__/
+*.pyc
+
+# 597MB true-aten 参考快照（对拍证据，不纳入版本控制；如需保留用 LFS 或重新生成）
+ref_aten_index.pt

@@ -1,0 +1,109 @@
+# SVE512 内核详解
+
+本文档走读 `gather.cpp` 中各内核的实现、选择门槛与性能特性。所有 SVE 指令按
+`-msve-vector-bits=512` 编译（VL=512-bit，`svcntb()==64`），运行时用
+`sve_512_ok()` 门控。
+
+## 1. 8B 元素 gather（f64/i64）
+
+```cpp
+pure_gather_sve_8b_f64 / pure_gather_sve_8b_s64
+```
+
+- 核心指令 `svld1_gather_u64index_f64(pg, base, off)`：`off` 为 **u64 元素偏移**
+  （硬件按 esize=8 自动缩放）。`svcntd()==8`（每向量 8 个 8B 元素）。
+- 主循环 `pf>0` 时双发：先 `svprfd_gather_u64index(pg, src, off[i+pf], SV_PLDL1KEEP)`
+  预取前 16 个向量位置，再 gather 当前向量 —— 隐藏随机访问延迟。
+- 尾数用 `svwhilelt_b64(i, n)` 半掩码向量。
+- NT 变体：`svldnt1_gather_u64index_f64` + `svstnt1_f64`（HPC_INDEX_NT=1）。
+
+**性能**：920F 上 8B gather 是高效的（实测 4-38 线程稳定 ~5.0 GB/s，而标量
+~3.6 GB/s，见 performance.md）。这是 S4 大随机 gather 与 1D f64 的收益来源。
+
+## 2. 4B 元素 gather（f32/i32）
+
+```cpp
+pure_gather_sve_4b_f32 / pure_gather_sve_4b_s32
+```
+
+- `svld1_gather_u32index_f32(pg, base, off)`：`off` 为 **u32 元素偏移**（esize=4）。
+  `svcntw()==16`（每向量 16 个 4B 元素）。
+- 预取 `svprfw_gather_u32index`；NT 时 store 换 `svstnt1_f32/s32`（**无 4B NT
+  gather 指令**，gather 本身始终常规 load）。
+- 门控：仅 `idx32`（线性化后 int32 下标）且 dtype∈{f32,i32}。
+
+**⚠ 已知硬件限制（重要）**：920F 的 `svld1_gather_u32index_*` **内存级并行度
+（MLP）极低**。独立探针（OpenMP，38 线程，node 5）：
+
+| 内核 | 38 线程带宽 |
+|---|---|
+| SVE 4B gather（`svld1_gather_u32index_f32`） | ~0.75 GB/s |
+| 标量 gather 循环 | ~3.4 GB/s |
+| SVE 8B gather（对照） | ~5.0 GB/s |
+
+因此 **1D f32/i32 大 K（≥10M）随机 pure gather 显著慢于 aten 标量**
+（38 线程实测 hpc ~1.2 GB/s vs aten 6.7 GB/s，0.18x）。这不是实现缺陷，而是
+920F SVE gather 指令的硬件特性：向量宽度无法弥补随机 4B 访问的 MLP 瓶颈。
+f64 8B 路径不受影响。若未来要在 4B 大 K 场景加速，可考虑预取到 L2/软件流水
+深展开，或改走标量+显式多路预取（见 porting.md）。
+
+## 3. 行拷贝 RowCopy（A>1 连续块）
+
+```cpp
+rowcopy_sve<T, IdxT, NT> → copy_contig_sve<T, NT>
+```
+
+- 条件：`A>1 && after_contiguous && sve_512_ok() && A>=16 && dtype∈{f32,f64}`。
+  `after_contiguous` 保证 `col_off[c]==c`（dims_after 连续），元素
+  `out[p*A + c] = src[row_off[r] + idx[k] + c]` 变成**一段连续 A 拷贝**。
+- `copy_contig_sve`：8B 用 `svld1_f64/svst1_f64`，4B 用 `svld1_f32/svst1_f32`；
+  **4×VL 多寄存器展开**维持内存级并行，之后 VL 步进 + `whilelt` 尾数；NT 时
+  store 换 `svstnt1_*`。
+- 行拷贝只读一次 idx（`src + row_off[r] + idx[k]`），A 元素连续向量化 ——
+  这是 S1 spconv / P1 图消息路径 ~4x（1 线程）/ ~1.9x（38 线程）的收益来源。
+
+**门槛**：A>=16 才启用（太短的开销不值得）。A∈[2,15] 落标量 `scalar_gather`。
+
+## 4. 标量回退 `dispatch_scalar`
+
+```cpp
+scalar_gather(src, idx, dst, row_off, col_off, B, K, A)
+```
+
+- `at::parallel_for(0, B*K, GRAIN=4096)`；每位置 `dst[p*A+c] = src[row_off[r]+idx[k]+col_off[c]]`。
+- 覆盖所有 SVE 分支不满足的输入：2B/1B dtype（half/bf16/i16/i8/u8/bool）、
+  complex、f32 且 numel>=2^31（idx 自动为 int64）、A∈[2,15]、非连续 after-col、
+  非 512-bit VL 运行时、`idx32` 与 dtype 不匹配等。
+- **正确性关键**：此路径对所有 dtype/形状都正确（逐元素地址计算），是"任何
+  门控外的输入类"的安全落点。
+
+## 5. 快速路径 `gather_direct`（K<1024）
+
+- 跳过线性化分配，直接遍历原始下标张量（`spec.indices[j]` 逐个元素读
+  int64/int32），内联 `v>=size || v<-size` 检查 + 负数归一，累加
+  `v * indexed_strides[j]`。
+- N-D 下标按 `broadcast_shape` 混合进制解码（bfactor），**非** `k*stride(0)`
+  （A7 修复 —— 若回归成简单 stride 会破坏 N-D 下标语义）。
+- 等价 ATen `Indexer` 的逐元素遍历，故无需线性化临时缓冲。
+
+## 6. 预取与 NT 决策（Task 8 结论）
+
+- **PREFETCH_DIST=16**：微基准扫描 {0,16,32,64} 后定默认（16 最优）。
+- **HPC_INDEX_NT=1 默认关**：NT 开关在 608 线程共享箱上的增量在噪声带内
+  （§3 RESULTS.md），无可解析收益；保留为 opt-in。
+
+## 7. 线程并行
+
+- 所有大路径 `at::parallel_for(0, B*K, GRAIN=4096)`；`-fopenmp` 必须（否则
+  `parallel_for` 串行化，历史根因见 architecture.md §7）。
+- 线程数由 `torch.set_num_threads()` 控制；920F 为 608 核 / 32 NUMA，单节点
+  38 核。共享箱上 608 线程数字噪声大，**以定点核复测为准**（performance.md §8）。
+
+## 8. 修改内核时的门槛清单（防回归）
+
+改 `gather_index` 分支条件时，逐一核对：
+1. 新分支条件是否覆盖其内核的全部不变量（idx 位宽、dtype、A、连续度、VL）。
+2. 不满足的输入是否落到正确的 `dispatch_scalar`。
+3. int32 下标与 f32 numel>=2^31 的交互是否仍然安全（use_i32 决定 idx dtype）。
+4. N-D 下标在 `gather_direct` 的 bfactor 解码不可丢。
+5. 跑全量测试 + 两进程 true-aten 对拍（semantics.md §6）。

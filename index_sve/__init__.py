@@ -1,0 +1,11 @@
+from . import _hpc_index  # noqa: F401  (dlopen 时注册 torch.ops.hpc_index)
+from .register_aten import install as _install_aten  # noqa: F401
+import torch
+import os
+
+if os.environ.get("HPC_INDEX_NO_OVERRIDE", "0") != "1":
+    _install_aten()  # 直接覆盖 aten::index.Tensor（CPU）；HPC_INDEX_NO_OVERRIDE=1 跳过（基准对拍用）
+
+def index(self, indices):
+    indices = list(indices)
+    return torch.ops.hpc_index.index(self, indices)
