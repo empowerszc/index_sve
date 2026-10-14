@@ -107,7 +107,8 @@ HPC_INDEX_NO_OVERRIDE=1 python your_script.py   # import 不再改 aten::index.T
 - 覆盖是一次性的全局副作用：任何 import index_sve 的进程都会改掉全局
   `x[...]` 行为。如不希望全局生效，用 `HPC_INDEX_NO_OVERRIDE=1`。
 - int32 线性化会临时分配 K×8B int64 缓冲（K=10M 时 80MB）；8B 线性化并行。
-- 语义细节、内核细节、移植指南见 `docs/`。
+- 语义细节、内核细节、移植指南见 `docs/`（目录见 `docs/index.md`；
+  "如何劫持 aten::index" 见 `docs/override-mechanism.md`）。
 
 ## 测试
 
