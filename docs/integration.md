@@ -87,3 +87,24 @@ and the same dispatch key
 - 用 `HPC_INDEX_NT=1` 试验大输出场景（默认关，需实测收益）；
 - 提供环境的 `setvars.sh` + LD_LIBRARY_PATH 到部署脚本；
 - 用 `torch._C._dispatch_dump_table()` 验证 CPU key 已到覆盖（调试用）。
+
+## 7. 慢场景 fallback 决策（已评估，结论：不改）
+
+针对"本算子性能差于 aten::index 时回退到原生 aten::index"的诉求，做了一轮完整
+调查，结论是**不实现 fallback**。记录理由供日后复读：
+
+- **慢场景**（RESULTS §8/performance §3）：1D f32/i32 大 K（K=10M）纯 gather 在
+  ≥8 线程（0.18-0.7x）、P3 mask 高线程（0.35x）、P2 608t（0.38x）。低线程的
+  RowCopy/PureGather 8B 是本算子的可靠收益（2-4t 20-34x），不受影响。
+- **Python-wrapper fallback 不可取**：实测 `torch.library.get_kernel` +
+  `with_keyset` + `call_boxed` 能正确回退且 autograd 安全（无递归），但任何
+  Python 层包装会给**每次** `x[...]` 调用增加 ~45µs（小 op 13.7µs→63µs，
+  S1 4ms 场景仅 +1%）。对以 RowCopy 小/中张量为收益主体的算子，这是全局性
+  回归，不符合"常规标准流程"。
+- **C++ 内核内 scalar 回退也追不平**：4B 纯 gather 落 `dispatch_scalar` 后实测
+  0.32-0.55 GB/s（ATen 2.9 GB/s，1D f32 K=10M 32t）——clang `-O3` 会把标量循环
+  自动向量化为同样低 MLP 的 SVE gather 指令（独立探针：auto-vec 0.85 GB/s，
+  `#pragma clang loop vectorize(disable)` 后 0.99 GB/s，仍 < ATen 2.9）。
+  920F 的 `svld1_gather_u32index` 内存级并行度低是硬件上限（kernels.md §2）。
+- **维持现状**：override 仅注册 C++ op（每次调用 ~13µs 额外开销，S1 4ms 场景
+  <0.5%），慢场景如实记录为硬件/算法边界，不做特殊回退。
