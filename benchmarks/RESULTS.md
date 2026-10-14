@@ -222,3 +222,40 @@ the reliable figure.
 - **P3 mask at 38 threads is 0.35x** — the mask path (nonzero → scalar gather) does
   not parallelize well; at 1 thread it is 1.11x. Known limitation; the model uses
   masks rarely and the 1-thread regime is the measured win.
+
+### 8.3 Thread-count sweep (2/4/8/16/32/36 threads, node 5, median of 3 rounds)
+
+Method identical to §8 (20 iters × 3 full rounds, node 5 quiet, `HPC_THREADS`
+list via env; `bench_gate.py` now reads `HPC_THREADS`). Speedup vs true aten.
+
+| scenario | 2t | 4t | 8t | 16t | 32t | 36t |
+|---|---|---|---|---|---|---|
+| S1 features[inp_idx] C=64 E=1M | **33.7x** | 19.4x | 5.6x | 4.3x | 2.3x | 2.2x |
+| P1 h[src] i64 C=64 E=1M | **30.5x** | 17.5x | 8.7x | 4.4x | 2.3x | 2.1x |
+| P2 pos[src] i32 A=3 E=2M | **19.7x** | 6.3x | 5.8x | 1.9x | 3.4x | 1.1x |
+| P3 x[mask] nnz≈60k C=16 | 1.2x | **1.5x** | 1.4x | 1.2x | 1.1x | 1.1x |
+| S4 x[perm] f64 N=200k | **20.7x** | 13.0x | 8.0x | 4.1x | 8.6x | 11.6x |
+| 1D f64 K=2M | **6.8x** | 3.0x | 1.8x | 1.9x | 2.6x | 1.9x |
+| 1D f64 K=10M | **10.5x** | 5.2x | 2.7x | 1.4x | 0.9x | 0.8x |
+| 1D f32 K=2M | **10.6x** | 2.8x | 1.5x | 4.1x | 1.8x | 2.6x |
+| 1D f32 K=10M | 1.7x | 1.2x | 0.7x | 0.3x | 0.2x | 0.2x |
+
+Interpretation:
+
+- **Low-thread-count wins are the strongest.** RowCopy (S1/P1/P2) at 2-4 threads
+  saturates a single NUMA node's memory bandwidth (~60 GB/s) — 2 threads suffice,
+  giving 20-34x because aten's scalar gather is latency-bound and needs ~30+
+  threads to reach the same bandwidth. This is a *scaling* advantage, not just a
+  per-element one: the op reaches peak throughput with a fraction of the cores.
+- **8B PureGather also shines at low threads** (S4 2t 20.7x, 1D f64 2t 6.8-10.5x):
+  the SVE gather + prefetch hides latency that a 2-thread scalar loop cannot.
+- **f32 K=10M confirms the 4B hardware limit across the sweep**: 2t 1.7x is the
+  only gain; by 8t it drops below 1x and by 16-36t collapses to 0.2x (the SVE 4B
+  gather MLP ceiling, §8.2). The 2-4t window is the only place 4B pure gather is
+  competitive.
+- **P3 mask is flat ~1.1-1.5x everywhere** — no thread-count dependence beyond 1x;
+  consistent with §8.2's "mask path does not parallelize well".
+- Note: 32t/36t rows (esp. P2 3.4x, S4 8.6-11.6x, 1D f32 K=2M 4.1x) carry more
+  run-to-run spread (medians of rounds that swung 0.8-3.4x); the tight 2-16t cells
+  are the reliable signal. 36t is the node-38-core near-full case and can be
+  affected by hyperthread/SMT neighbours.

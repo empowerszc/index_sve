@@ -40,6 +40,35 @@ RowCopy 附加数据（node 4 全矩阵定点）：`x[:,idx]` B=256 K=100k **3.4
 `x[idx,:]` C=32 E=1M **3.50x**（1 线程）。608 全核定点（node 4）S4 可达 5.6x
 （原始 §1），说明 8B 大随机 gather 在 608 线程有真实收益，但共享箱上波动大。
 
+### 3.1 线程数扫描（2/4/8/16/32/36 线程，node 5，3 轮中位数）
+
+`bench_gate.py` 支持 `HPC_THREADS` 环境变量（逗号分隔列表，默认 "1,38"）。
+
+| 场景 | 2t | 4t | 8t | 16t | 32t | 36t |
+|---|---|---|---|---|---|---|
+| S1 features[inp_idx] C=64 E=1M | **33.7x** | 19.4x | 5.6x | 4.3x | 2.3x | 2.2x |
+| P1 h[src] i64 C=64 E=1M | **30.5x** | 17.5x | 8.7x | 4.4x | 2.3x | 2.1x |
+| P2 pos[src] i32 A=3 E=2M | **19.7x** | 6.3x | 5.8x | 1.9x | 3.4x | 1.1x |
+| P3 x[mask] nnz≈60k C=16 | 1.2x | **1.5x** | 1.4x | 1.2x | 1.1x | 1.1x |
+| S4 x[perm] f64 N=200k | **20.7x** | 13.0x | 8.0x | 4.1x | 8.6x | 11.6x |
+| 1D f64 K=2M | **6.8x** | 3.0x | 1.8x | 1.9x | 2.6x | 1.9x |
+| 1D f64 K=10M | **10.5x** | 5.2x | 2.7x | 1.4x | 0.9x | 0.8x |
+| 1D f32 K=2M | **10.6x** | 2.8x | 1.5x | 4.1x | 1.8x | 2.6x |
+| 1D f32 K=10M | 1.7x | 1.2x | 0.7x | 0.3x | 0.2x | 0.2x |
+
+**关键结论：低线程数收益最强。**
+- RowCopy（S1/P1/P2）在 **2-4 线程就饱和单 NUMA 节点的内存带宽**（~60 GB/s，
+  S1 2t 达 33.7x）：2 个线程足够跑满带宽，而 aten 标量 gather 受延迟限制，
+  需要 ~30+ 线程才接近同一带宽。这是**扩展性优势**：算子用少量核心即达峰值。
+- 8B PureGather（S4/1D f64）同样在低线程闪耀（S4 2t 20.7x）——SVE gather +
+  预取把延迟隐藏，2 线程标量无法做到。
+- f32 K=10M 在扫描中再次确认 4B 硬件天花板：2t 1.7x 是唯一收益窗口，8t 起
+  <1x，16-36t 塌到 0.2x（kernels.md §2）。
+- P3 mask 全程平 ~1.1-1.5x，无线程依赖，与 §3 中 0.35x（38t）一致——mask 路径
+  并行性差是独立于内核的。
+- 32/36t 单元（P2 3.4x、S4 8.6-11.6x）run-to-run 散布更大（中位数对应 0.8-3.4x
+  的轮间摆动），2-16t 单元最可靠；36t 是 38 核节点近满载，受 SMT 邻居影响。
+
 ## 4. 收益来源分解
 
 - **RowCopy（主要收益）**：S1/P1/x[idx,:] 1 线程 ~3.5-4.0x；P2 A=3 是"短行"行
@@ -69,8 +98,9 @@ HPC_INDEX_NO_OVERRIDE=1 python benchmarks/bench_index.py
 # 先扫空闲节点：确认某节点全核 <5% busy
 HPC_INDEX_NO_OVERRIDE=1 HPC_AFFINITY=<quiet_node_cpuset> HPC_THREADS=38 \
   python benchmarks/bench_pinned.py
+# 模型场景聚焦（默认线程 1,38；HPC_THREADS 可自定义如 2,4,8,16,32,36）
 HPC_INDEX_NO_OVERRIDE=1 HPC_AFFINITY=<quiet_node_cpuset> \
-  python benchmarks/bench_gate.py   # 模型场景聚焦
+  python benchmarks/bench_gate.py
 
 # 3) 单核探针（验证 4B SVE gather 硬件限制，可选）
 # agent_space/sdd-index-sve/ 下有 gather_probe 源码可复跑
