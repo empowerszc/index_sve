@@ -272,33 +272,78 @@ template <typename T, typename IdxT>
 bool bucket_gather_pure(const IndexSpec& spec, const IdxT* idx, T* dst, const T* src) {
   const int64_t B = spec.B, K = spec.K;
   const int64_t n = B * K;
-  constexpr int64_t MAX_DOMAIN = 256;
+  constexpr int64_t MAX_DOMAIN = 2048;  // 8B 表 16KB / 4B 表 8KB，均 L1/L2 常驻
   const int64_t* row_off = spec.row_off.data();
+  const int64_t grain = adaptive_grain(n);
+  const int64_t nchunk = (n + grain - 1) / grain;
+  std::vector<int64_t> vmn(nchunk), vmx(nchunk);
+  at::parallel_for(0, n, grain, [&](int64_t lo, int64_t hi) {
+    const int64_t ci = lo / grain;
+    int64_t lmn = std::numeric_limits<int64_t>::max();
+    int64_t lmx = std::numeric_limits<int64_t>::min();
+    for (int64_t p = lo; p < hi; ++p) {
+      const int64_t v = static_cast<int64_t>(row_off[p / K] + idx[p - (p / K) * K]);
+      lmn = std::min(lmn, v);
+      lmx = std::max(lmx, v);
+    }
+    vmn[ci] = lmn;
+    vmx[ci] = lmx;
+  });
   int64_t mn = std::numeric_limits<int64_t>::max();
   int64_t mx = std::numeric_limits<int64_t>::min();
-  {
-    std::mutex mu;
-    at::parallel_for(0, n, adaptive_grain(n), [&](int64_t lo, int64_t hi) {
-      int64_t lmn = std::numeric_limits<int64_t>::max();
-      int64_t lmx = std::numeric_limits<int64_t>::min();
-      for (int64_t p = lo; p < hi; ++p) {
-        const int64_t v = static_cast<int64_t>(row_off[p / K] + idx[p - (p / K) * K]);
-        lmn = std::min(lmn, v);
-        lmx = std::max(lmx, v);
-      }
-      std::lock_guard<std::mutex> g(mu);
-      mn = std::min(mn, lmn);
-      mx = std::max(mx, lmx);
-    });
+  for (const auto i : c10::irange(nchunk)) {
+    mn = std::min(mn, vmn[i]);
+    mx = std::max(mx, vmx[i]);
   }
   const int64_t dom = mx - mn + 1;
   if (dom <= 1 || dom > MAX_DOMAIN) return false;
   std::vector<T> table(dom);
   for (int64_t v = 0; v < dom; ++v) table[v] = src[mn + v];
-  at::parallel_for(0, n, adaptive_grain(n), [&](int64_t lo, int64_t hi) {
+  at::parallel_for(0, n, grain, [&](int64_t lo, int64_t hi) {
     for (int64_t p = lo; p < hi; ++p) {
       const int64_t v = static_cast<int64_t>(row_off[p / K] + idx[p - (p / K) * K]) - mn;
       dst[p] = table[v];
+    }
+  });
+  return true;
+}
+// T4 raw 变体：单索引 + B==1 纯 gather（M3 keys[order]、M4 等 1D 形态）完全跳过 linearize，
+// 直接在原始下标上算偏移求值域。B==1 时 offset = idx[k]（row_off=col_off=[0]）。
+template <typename T, typename IdxT>
+bool bucket_gather_pure_raw(const IndexSpec& spec, const IdxT* idx, T* dst, const T* src) {
+  const int64_t n = spec.K;
+  constexpr int64_t MAX_DOMAIN = 2048;
+  const int64_t grain = adaptive_grain(n);
+  const int64_t nchunk = (n + grain - 1) / grain;
+  std::vector<int64_t> vmn(nchunk), vmx(nchunk);
+  at::parallel_for(0, n, grain, [&](int64_t lo, int64_t hi) {
+    const int64_t ci = lo / grain;
+    int64_t lmn = std::numeric_limits<int64_t>::max();
+    int64_t lmx = std::numeric_limits<int64_t>::min();
+    for (int64_t k = lo; k < hi; ++k) {
+      int64_t v = static_cast<int64_t>(idx[k]);
+      if (v < 0) v += spec.indexed_sizes[0];
+      lmn = std::min(lmn, v);
+      lmx = std::max(lmx, v);
+    }
+    vmn[ci] = lmn;
+    vmx[ci] = lmx;
+  });
+  int64_t mn = std::numeric_limits<int64_t>::max();
+  int64_t mx = std::numeric_limits<int64_t>::min();
+  for (const auto i : c10::irange(nchunk)) {
+    mn = std::min(mn, vmn[i]);
+    mx = std::max(mx, vmx[i]);
+  }
+  const int64_t dom = mx - mn + 1;
+  if (dom <= 1 || dom > MAX_DOMAIN) return false;
+  std::vector<T> table(dom);
+  for (int64_t v = 0; v < dom; ++v) table[v] = src[mn + v];
+  at::parallel_for(0, n, grain, [&](int64_t lo, int64_t hi) {
+    for (int64_t k = lo; k < hi; ++k) {
+      int64_t v = static_cast<int64_t>(idx[k]);
+      if (v < 0) v += spec.indexed_sizes[0];
+      dst[k] = table[v - mn];
     }
   });
   return true;
@@ -496,6 +541,25 @@ void gather_direct(const IndexSpec& spec, at::Tensor& out) {
   });
 }
 
+// T4 raw 包装：单索引 1D 纯 gather 时跳过 linearize（省掉 broadcast 解码），直接在原始
+// 下标上求值域并查表。调用方需保证 spec.indices.size()==1 && B==1 && A==1（M3/M4 形态）。
+bool gather_bucket_pure_raw(const IndexSpec& spec, at::Tensor& out) {
+  const at::Tensor& ind = spec.indices[0];
+  const bool idx32 = ind.scalar_type() == at::kInt;
+  bool used = false;
+  AT_DISPATCH_ALL_TYPES_AND_COMPLEX_AND3(at::kHalf, at::kBFloat16, at::kBool,
+      out.scalar_type(), "hpc_index_bucket_pure_raw", [&] {
+    const scalar_t* src = static_cast<const scalar_t*>(spec.transposed_self.data_ptr());
+    scalar_t* dst = static_cast<scalar_t*>(out.data_ptr());
+    if (idx32) {
+      used = bucket_gather_pure_raw<scalar_t, int32_t>(spec, static_cast<const int32_t*>(ind.data_ptr()), dst, src);
+    } else {
+      used = bucket_gather_pure_raw<scalar_t, int64_t>(spec, static_cast<const int64_t*>(ind.data_ptr()), dst, src);
+    }
+  });
+  return used;
+}
+
 // M1 单索引大块 skip-linearize：不物化 idx，直接在 gather 阶段读原始下标、内联边界
 // 检查与负索引规整（等价 linearize 内循环），随后对 A 连续块做 SVE rowcopy。只有
 // spec.after_contiguous 才启用。out 行序 = 原下标序（只改变 src 读序由 T2 阶段 2 处理）。
@@ -546,8 +610,7 @@ void gather_rowcopy_raw(const IndexSpec& spec, at::Tensor& out, bool non_tempora
   });
 }
 
-void gather_fused(const IndexSpec& spec, at::Tensor& out) {
-  AT_DISPATCH_ALL_TYPES_AND_COMPLEX_AND3(at::kHalf, at::kBFloat16, at::kBool,
+void gather_fused(const IndexSpec& spec, at::Tensor& out) {  AT_DISPATCH_ALL_TYPES_AND_COMPLEX_AND3(at::kHalf, at::kBFloat16, at::kBool,
       out.scalar_type(), "hpc_index_gather_fused", [&] {
     gather_fused<scalar_t>(spec, static_cast<scalar_t*>(out.data_ptr()),
         static_cast<const scalar_t*>(spec.transposed_self.data_ptr()));

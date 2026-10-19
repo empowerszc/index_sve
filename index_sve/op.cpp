@@ -33,6 +33,12 @@ at::Tensor index_impl(const at::Tensor& self,
     return out;
   }
 
+  // T4 raw 小值域 1D 纯 gather：单索引 + B==1 + A==1（M3 keys[order]、M4 等）直接查表，
+  // 完全跳过 linearize 的 broadcast 解码。
+  if (spec.indices.size() == 1 && spec.B == 1 && spec.A == 1) {
+    if (gather_bucket_pure_raw(spec, out)) return out;
+  }
+
   const bool sve_rowcopy_dtype =
       out.scalar_type() == at::kFloat || out.scalar_type() == at::kDouble;
 
