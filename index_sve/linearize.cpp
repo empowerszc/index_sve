@@ -1,11 +1,10 @@
 #include "linearize.h"
+#include "grain.h"
 #include <ATen/Parallel.h>
 #include <c10/util/Exception.h>
 #include <c10/util/irange.h>
 
 namespace {
-
-constexpr int64_t GRAIN = 4096;
 
 void linearize_i64(const IndexSpec& spec, int64_t* idx) {
   const int64_t K = spec.K;
@@ -16,7 +15,7 @@ void linearize_i64(const IndexSpec& spec, int64_t* idx) {
   for (int64_t i = nb - 2; i >= 0; --i) {
     bfactor[i] = bfactor[i + 1] * bshape[i + 1];
   }
-  at::parallel_for(0, K, GRAIN, [&](int64_t lo, int64_t hi) {
+  at::parallel_for(0, K, adaptive_grain(K), [&](int64_t lo, int64_t hi) {
     for (int64_t k = lo; k < hi; ++k) {
       int64_t r = k;
       int64_t off = 0;
@@ -55,7 +54,7 @@ void linearize(const IndexSpec& spec, at::Tensor& idx_out) {
     std::vector<int64_t> tmp(spec.K);
     linearize_i64(spec, tmp.data());
     int32_t* dst = static_cast<int32_t*>(idx_out.data_ptr());
-    at::parallel_for(0, spec.K, GRAIN, [&](int64_t lo, int64_t hi) {
+    at::parallel_for(0, spec.K, adaptive_grain(spec.K), [&](int64_t lo, int64_t hi) {
       for (const auto k : c10::irange(lo, hi)) {
         dst[k] = static_cast<int32_t>(tmp[k]);
       }

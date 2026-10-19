@@ -1,4 +1,5 @@
 #include "gather.h"
+#include "grain.h"
 #include <ATen/Parallel.h>
 #include <algorithm>
 #include <arm_sve.h>
@@ -7,7 +8,6 @@
 
 namespace {
 
-constexpr int64_t GRAIN = 4096;
 constexpr int64_t PREFETCH_DIST = 16;  // 微基准扫描 {0,16,32,64} 后定的默认
 
 bool sve_512_ok() {
@@ -159,7 +159,7 @@ template <typename T, typename IdxT, bool NT>
 void pure_gather_sve_flat(const IndexSpec& spec, const IdxT* idx, const T* src, T* dst, int64_t pf) {
   const int64_t B = spec.B, K = spec.K;
   const int64_t* row_off = spec.row_off.data();
-  at::parallel_for(0, B * K, GRAIN, [&](int64_t lo, int64_t hi) {
+  at::parallel_for(0, B * K, adaptive_grain(B * K), [&](int64_t lo, int64_t hi) {
     for (int64_t p = lo; p < hi;) {
       const int64_t r = p / K;
       const int64_t k = p - r * K;
@@ -231,7 +231,7 @@ void copy_contig_sve(const T* src, T* dst, int64_t n) {
 template <typename T, typename IdxT, bool NT>
 void rowcopy_sve(const T* src, const IdxT* idx, T* dst,
                  const int64_t* row_off, int64_t B, int64_t K, int64_t A) {
-  at::parallel_for(0, B * K, GRAIN, [&](int64_t lo, int64_t hi) {
+  at::parallel_for(0, B * K, adaptive_grain(B * K), [&](int64_t lo, int64_t hi) {
     for (int64_t p = lo; p < hi; ++p) {
       const int64_t r = p / K, k = p % K;
       const T* s = src + row_off[r] + idx[k];
@@ -245,7 +245,7 @@ template <typename T, typename IdxT>
 void scalar_gather(const T* src, const IdxT* idx, T* dst,
                    const int64_t* row_off, const int64_t* col_off,
                    int64_t B, int64_t K, int64_t A) {
-  at::parallel_for(0, B * K, GRAIN, [&](int64_t lo, int64_t hi) {
+  at::parallel_for(0, B * K, adaptive_grain(B * K), [&](int64_t lo, int64_t hi) {
     for (int64_t p = lo; p < hi; ++p) {
       const int64_t r = p / K, k = p % K;
       const T* s = src + row_off[r] + idx[k];
@@ -274,7 +274,7 @@ void gather_direct(const IndexSpec& spec, T* dst, const T* src) {
   for (int64_t i = nb - 2; i >= 0; --i) {
     bfactor[i] = bfactor[i + 1] * bshape[i + 1];
   }
-  at::parallel_for(0, B * K, GRAIN, [&](int64_t lo, int64_t hi) {
+  at::parallel_for(0, B * K, adaptive_grain(B * K), [&](int64_t lo, int64_t hi) {
     for (int64_t p = lo; p < hi; ++p) {
       const int64_t r = p / K, k = p % K;
       int64_t off = spec.row_off[r];
