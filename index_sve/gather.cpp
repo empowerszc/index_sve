@@ -365,7 +365,7 @@ void gather_index(const IndexSpec& spec, const at::Tensor& idx, at::Tensor& out,
       return;
     }
     const bool rowcopy = (A > 1);
-    if (rowcopy && spec.after_contiguous && sve_512_ok() && A >= 16 &&
+    if (rowcopy && spec.after_contiguous && sve_512_ok() && A >= 4 &&
         (out.scalar_type() == at::kFloat || out.scalar_type() == at::kDouble)) {
       if (non_temporal) {
         if (idx32) {
