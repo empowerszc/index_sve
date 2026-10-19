@@ -402,3 +402,43 @@ void gather_direct(const IndexSpec& spec, at::Tensor& out) {
                   static_cast<const scalar_t*>(spec.transposed_self.data_ptr()));
   });
 }
+
+// M1 单索引大块 skip-linearize：不物化 idx，直接在 gather 阶段读原始下标、内联边界
+// 检查与负索引规整（等价 linearize 内循环），随后对 A 连续块做 SVE rowcopy。只有
+// spec.after_contiguous 才启用。out 行序 = 原下标序（只改变 src 读序由 T2 阶段 2 处理）。
+template <typename T, typename IdxT, bool NT>
+void rowcopy_raw_single(const IndexSpec& spec, const IdxT* raw, T* dst, const T* src) {
+  const int64_t B = spec.B, K = spec.K, A = spec.A;
+  const int64_t size = spec.indexed_sizes[0];
+  const int64_t stride = spec.indexed_strides[0];
+  const int64_t* row_off = spec.row_off.data();
+  at::parallel_for(0, B * K, adaptive_grain(B * K), [&](int64_t lo, int64_t hi) {
+    for (int64_t p = lo; p < hi; ++p) {
+      const int64_t r = p / K, k = p % K;
+      int64_t v = static_cast<int64_t>(raw[k]);
+      TORCH_CHECK_INDEX(v >= -size && v < size,
+          "index ", v, " is out of bounds for dimension 0 with size ", size);
+      if (v < 0) v += size;
+      const T* s = src + row_off[r] + v * stride;
+      T* d = dst + p * A;
+      copy_contig_sve<T, NT>(s, d, A);
+    }
+  });
+}
+
+void gather_rowcopy_raw(const IndexSpec& spec, at::Tensor& out, bool non_temporal) {
+  const at::Tensor& raw = spec.indices[0];
+  const bool idx32 = raw.scalar_type() == at::kInt;
+  AT_DISPATCH_ALL_TYPES_AND_COMPLEX_AND3(at::kHalf, at::kBFloat16, at::kBool,
+      out.scalar_type(), "hpc_index_rowcopy_raw", [&] {
+    const scalar_t* src = static_cast<const scalar_t*>(spec.transposed_self.data_ptr());
+    scalar_t* dst = static_cast<scalar_t*>(out.data_ptr());
+    if (idx32) {
+      rowcopy_raw_single<scalar_t, int32_t, false>(
+          spec, static_cast<const int32_t*>(raw.data_ptr()), dst, src);
+    } else {
+      rowcopy_raw_single<scalar_t, int64_t, false>(
+          spec, static_cast<const int64_t*>(raw.data_ptr()), dst, src);
+    }
+  });
+}
