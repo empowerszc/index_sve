@@ -307,6 +307,53 @@ void gather_direct(const IndexSpec& spec, T* dst, const T* src) {
   });
 }
 
+// T3：linearize+gather 融合单遍（scalar 小块路径：A<4 或非连续）。与 gather_direct
+// 同源：并行循环内先算偏移（内联边界检查/负索引规整），再就地标量拷贝；不物化 idx
+// 数组（P2）。仅启用于此路径——A>=4 连续块实测 linearize+rowcopy 更快；A==1 纯
+// gather 需 idx 常驻内存走 SVE。与 T2 分支互斥（T2 只处理单索引大块）。
+template <typename T>
+void gather_fused(const IndexSpec& spec, T* dst, const T* src) {
+  const int64_t nidx = spec.indexed_dims.size();
+  const int64_t B = spec.B, K = spec.K, A = spec.A;
+  const std::vector<int64_t>& bshape = spec.broadcast_shape;
+  const int64_t nb = bshape.size();
+  std::vector<int64_t> bfactor(nb, 1);
+  for (int64_t i = nb - 2; i >= 0; --i) {
+    bfactor[i] = bfactor[i + 1] * bshape[i + 1];
+  }
+  at::parallel_for(0, B * K, adaptive_grain(B * K), [&](int64_t lo, int64_t hi) {
+    for (int64_t p = lo; p < hi; ++p) {
+      const int64_t r = p / K, k = p % K;
+      int64_t off = spec.row_off[r];
+      for (const auto j : c10::irange(nidx)) {
+        const at::Tensor& ind = spec.indices[j];
+        const int64_t esize = ind.element_size();
+        int64_t eoff = 0;
+        int64_t rr = k;
+        for (const auto d : c10::irange(nb)) {
+          int64_t c = (bshape[d] > 0) ? (rr / bfactor[d]) % bshape[d] : 0;
+          eoff += c * ind.stride(d);
+          if (bshape[d] > 0) rr %= bfactor[d];
+        }
+        const char* ptr = static_cast<const char*>(ind.data_ptr()) + eoff * esize;
+        int64_t v = (ind.dtype() == at::kLong)
+            ? *reinterpret_cast<const int64_t*>(ptr)
+            : *reinterpret_cast<const int32_t*>(ptr);
+        const int64_t size = spec.indexed_sizes[j];
+        TORCH_CHECK_INDEX(v >= -size && v < size,
+            "index ", v, " is out of bounds for dimension ", j, " with size ", size);
+        if (v < 0) v += size;
+        off += v * spec.indexed_strides[j];
+      }
+      T* d = dst + p * A;
+      const T* s = src + off;
+      for (const auto c : c10::irange(A)) {
+        d[c] = s[spec.col_off[c]];
+      }
+    }
+  });
+}
+
 }  // namespace
 
 void gather_index(const IndexSpec& spec, const at::Tensor& idx, at::Tensor& out,
@@ -433,12 +480,30 @@ void gather_rowcopy_raw(const IndexSpec& spec, at::Tensor& out, bool non_tempora
       out.scalar_type(), "hpc_index_rowcopy_raw", [&] {
     const scalar_t* src = static_cast<const scalar_t*>(spec.transposed_self.data_ptr());
     scalar_t* dst = static_cast<scalar_t*>(out.data_ptr());
-    if (idx32) {
-      rowcopy_raw_single<scalar_t, int32_t, false>(
-          spec, static_cast<const int32_t*>(raw.data_ptr()), dst, src);
+    if (non_temporal) {
+      if (idx32) {
+        rowcopy_raw_single<scalar_t, int32_t, true>(
+            spec, static_cast<const int32_t*>(raw.data_ptr()), dst, src);
+      } else {
+        rowcopy_raw_single<scalar_t, int64_t, true>(
+            spec, static_cast<const int64_t*>(raw.data_ptr()), dst, src);
+      }
     } else {
-      rowcopy_raw_single<scalar_t, int64_t, false>(
-          spec, static_cast<const int64_t*>(raw.data_ptr()), dst, src);
+      if (idx32) {
+        rowcopy_raw_single<scalar_t, int32_t, false>(
+            spec, static_cast<const int32_t*>(raw.data_ptr()), dst, src);
+      } else {
+        rowcopy_raw_single<scalar_t, int64_t, false>(
+            spec, static_cast<const int64_t*>(raw.data_ptr()), dst, src);
+      }
     }
+  });
+}
+
+void gather_fused(const IndexSpec& spec, at::Tensor& out) {
+  AT_DISPATCH_ALL_TYPES_AND_COMPLEX_AND3(at::kHalf, at::kBFloat16, at::kBool,
+      out.scalar_type(), "hpc_index_gather_fused", [&] {
+    gather_fused<scalar_t>(spec, static_cast<scalar_t*>(out.data_ptr()),
+        static_cast<const scalar_t*>(spec.transposed_self.data_ptr()));
   });
 }

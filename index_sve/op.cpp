@@ -33,13 +33,24 @@ at::Tensor index_impl(const at::Tensor& self,
     return out;
   }
 
+  const bool sve_rowcopy_dtype =
+      out.scalar_type() == at::kFloat || out.scalar_type() == at::kDouble;
+
   // f32 且 self.numel() >= 2^31 时 use_i32=false（idx 用 int64），gather_index 里
   // 4B SVE 分支要求 idx32 故不触发 → 自动落标量 dispatch_scalar（2^31 元素越界 int32）。
   const bool use_i32 = self.numel() < (1LL << 31) &&
       (out.scalar_type() == at::kFloat || out.scalar_type() == at::kInt);
   at::Tensor idx = at::empty({spec.K}, self.options().dtype(use_i32 ? at::kInt : at::kLong));
-  linearize(spec, idx);
-  gather_index(spec, idx, out, g_nt);
+
+  // A>=4 连续块 → linearize+rowcopy（T1 证明比融合快）；A==1 → linearize+纯 gather（SVE 需要 idx）。
+  // 其余（A<4 或非连续小块）→ T3 融合单遍，不物化 idx 数组（P2）。
+  if (spec.A == 1 ||
+      (spec.after_contiguous && spec.A >= 4 && sve_rowcopy_dtype)) {
+    linearize(spec, idx);
+    gather_index(spec, idx, out, g_nt);
+    return out;
+  }
+  gather_fused(spec, out);
   return out;
 }
 
