@@ -4,6 +4,8 @@
 #include <algorithm>
 #include <arm_sve.h>
 #include <c10/util/irange.h>
+#include <limits>
+#include <mutex>
 #include <type_traits>
 
 namespace {
@@ -263,6 +265,45 @@ void dispatch_scalar(const IndexSpec& spec, const IdxT* idx, T* out_data, const 
                 spec.B, spec.K, spec.A);
 }
 
+// T4 小值域短路（A==1 纯 gather）：linearize 后先求偏移值域，≤256 时用紧凑查找表 +
+// 标量循环。920F 的 SVE gather 指令 MLP 低（§8.2），对小值域 L1 常驻表，标量随机读
+// 即缓存命中，实测优于 SVE gather。返回是否启用（值域过大时留给 SVE）。
+template <typename T, typename IdxT>
+bool bucket_gather_pure(const IndexSpec& spec, const IdxT* idx, T* dst, const T* src) {
+  const int64_t B = spec.B, K = spec.K;
+  const int64_t n = B * K;
+  constexpr int64_t MAX_DOMAIN = 256;
+  const int64_t* row_off = spec.row_off.data();
+  int64_t mn = std::numeric_limits<int64_t>::max();
+  int64_t mx = std::numeric_limits<int64_t>::min();
+  {
+    std::mutex mu;
+    at::parallel_for(0, n, adaptive_grain(n), [&](int64_t lo, int64_t hi) {
+      int64_t lmn = std::numeric_limits<int64_t>::max();
+      int64_t lmx = std::numeric_limits<int64_t>::min();
+      for (int64_t p = lo; p < hi; ++p) {
+        const int64_t v = static_cast<int64_t>(row_off[p / K] + idx[p - (p / K) * K]);
+        lmn = std::min(lmn, v);
+        lmx = std::max(lmx, v);
+      }
+      std::lock_guard<std::mutex> g(mu);
+      mn = std::min(mn, lmn);
+      mx = std::max(mx, lmx);
+    });
+  }
+  const int64_t dom = mx - mn + 1;
+  if (dom <= 1 || dom > MAX_DOMAIN) return false;
+  std::vector<T> table(dom);
+  for (int64_t v = 0; v < dom; ++v) table[v] = src[mn + v];
+  at::parallel_for(0, n, adaptive_grain(n), [&](int64_t lo, int64_t hi) {
+    for (int64_t p = lo; p < hi; ++p) {
+      const int64_t v = static_cast<int64_t>(row_off[p / K] + idx[p - (p / K) * K]) - mn;
+      dst[p] = table[v];
+    }
+  });
+  return true;
+}
+
 // K<1024 快速路径（spec §6 阈值）：跳过线性化，直接读原始下标 + 内联检查（等价 ATen Indexer）
 template <typename T>
 void gather_direct(const IndexSpec& spec, T* dst, const T* src) {
@@ -367,6 +408,11 @@ void gather_index(const IndexSpec& spec, const at::Tensor& idx, at::Tensor& out,
       out.scalar_type(), "hpc_index_gather", [&] {
     const scalar_t* src = static_cast<const scalar_t*>(spec.transposed_self.data_ptr());
     scalar_t* dst = static_cast<scalar_t*>(out.data_ptr());
+    if (pure && idx32) {
+      if (bucket_gather_pure<scalar_t, int32_t>(spec, static_cast<const int32_t*>(idx.data_ptr()), dst, src)) return;
+    } else if (pure) {
+      if (bucket_gather_pure<scalar_t, int64_t>(spec, static_cast<const int64_t*>(idx.data_ptr()), dst, src)) return;
+    }
     if (pure && !idx32 && sve_512_ok() &&
         (out.scalar_type() == at::kDouble || out.scalar_type() == at::kLong)) {
       const int64_t* idx64 = static_cast<const int64_t*>(idx.data_ptr());
