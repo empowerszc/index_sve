@@ -16,10 +16,15 @@ backward 不受影响。
   预取（`svprfd/svprfw_gather_u32index`）。
 - `K<1024` 快速路径 `gather_direct`：跳过线性化，直接读原始下标 + 内联检查
   （等价 ATen `Indexer`），支持 N-D 整数下标（broadcast_shape 混合进制解码）。
-- 并行：`at::parallel_for`（GRAIN=4096）。**注意必须 `-fopenmp` 编译**，否则
-  `parallel_for` 退化为串行（历史上曾导致 B==1 大 K 性能塌缩）。
+- **优化轮（T0-T4）**：自适应并行粒度 `grain.h`（按 K 与线程数缩放 chunk）；
+  M1 单索引大块 `gather_rowcopy_raw` skip-linearize；T4 小值域桶化
+  （`bucket_gather_pure` / `bucket_gather_pure_raw`，值域 ≤2048 查表）；T3
+  `gather_fused` 融合单遍（A<4 或非连续小块，不物化 idx）；int32 linearize
+  直接写 int32（不再经 int64 临时缓冲）。
+- 并行：`at::parallel_for`（`adaptive_grain`）。**注意必须 `-fopenmp` 编译**，
+  否则 `parallel_for` 退化为串行（历史上曾导致 B==1 大 K 性能塌缩）。
 - 条件回退标量 `dispatch_scalar`：2B/1B 元素（half/bf16/i16/i8/uint8/bool）、
-  complex、f32 且 `numel>=2^31`（防 int32 越界）、rowcopy 的 A<16、非连续
+  complex、f32 且 `numel>=2^31`（防 int32 越界）、rowcopy 的 A<4、非连续
   after-col 等所有 SVE 分支之外的输入类。
 
 ## 目录结构
@@ -32,11 +37,13 @@ index_sve/
 │   ├── register_aten.py  # torch.library.impl("aten::index.Tensor","CPU", torch.ops.hpc_index.index)
 │   ├── op.cpp            # index_impl 入口 + pybind（debug_spec/linearize_spec/idx_dtype_choice）
 │   ├── normalize.{h,cpp} # normalize_index：mask/broadcast/transpose_to_front，对齐 ATen make_info
-│   ├── linearize.{h,cpp} # 线性化 + 越界检查，int32 保持
-│   ├── gather.{h,cpp}    # SVE gather/rowcopy/scalar + K<1024 gather_direct
-├── tests/                # 63+ 测试（smoke/normalize/correctness/errors/sve/model）
+│   ├── linearize.{h,cpp} # 线性化 + 越界检查，int32 保持（直接写 int32）
+│   ├── grain.h           # 自适应并行粒度（T0）
+│   ├── gather.{h,cpp}    # SVE gather/rowcopy/scalar + gather_direct + M1 raw / T3 fused / T4 桶化
+├── tests/                # 64 测试（smoke/normalize/correctness/errors/sve/model）
 ├── benchmarks/           # bench_index.py（原始矩阵）、bench_pinned.py/bench_gate.py（定点核复测）
-│   └── RESULTS.md        # 完整基准报告（§1-§6 原测，§8 定点复测）
+│   │                     # bench_t1.py/bench_t2.py/bench_ai4s.py（优化轮 T0-T4 专项）
+│   └── RESULTS.md        # 完整基准报告（§1-§6 原测，§8 定点复测，§9 AI4S 优化轮）
 └── docs/                 # 本系列文档
 ```
 
@@ -96,10 +103,15 @@ HPC_INDEX_NO_OVERRIDE=1 python your_script.py   # import 不再改 aten::index.T
 - **低线程收益最强**（§8.3 线程扫描）：RowCopy 在 2-4 线程即饱和单节点内存
   带宽（S1 2t **33.7x**、P1 2t **30.5x**、P2 2t **19.7x**），S4 8B 2t 20.7x——
   算子用少量核心即达峰值，而 aten 标量 gather 需 ~30+ 线程。
+- **AI4S workload 优化轮（T0-T4，RESULTS §9，`bench_ai4s.py` M1-M6）**：M1
+  weight.view[ki]（最热形态）1 线程 **8-10x** / 8 线程 1.3-2.7x；M2 feat[r]
+  1-8 线程 2.6-4.0x；M3 keys[order] 小值域查表 1 线程 1.4-2.6x、32 线程 8-12x
+  （优化前 0.2x）；M4 feat[inverse] 3.6-4.8x。
 - **已知硬件限制**：4B（f32/i32）大 K 随机 pure gather 在 920F 上不敌标量
   （SVE 4B gather 指令 MLP 极低，38 线程仅 ~0.75 GB/s，标量 3.4 GB/s）——因此
   1D f32/i32 大 K 会 <1x（仅 2-4 线程窗口有 1.2-1.7x 收益）。f64 8B 路径不受
-  影响。设计定位是模型 gather 密集的行/8B 路径的定向加速器，非通用 1D 索引加速。
+  影响。设计定位是模型 gather 密集的行/8B/小值域路径的定向加速器，非通用 1D
+  索引加速。
 - 共享 608 线程箱噪声大：§1 的 608 列是噪声下限，**以 §8 定点数为准**。
 
 ## 已知限制 / 注意事项
@@ -109,7 +121,6 @@ HPC_INDEX_NO_OVERRIDE=1 python your_script.py   # import 不再改 aten::index.T
   的固有约束。
 - 覆盖是一次性的全局副作用：任何 import index_sve 的进程都会改掉全局
   `x[...]` 行为。如不希望全局生效，用 `HPC_INDEX_NO_OVERRIDE=1`。
-- int32 线性化会临时分配 K×8B int64 缓冲（K=10M 时 80MB）；8B 线性化并行。
 - 语义细节、内核细节、移植指南见 `docs/`（目录见 `docs/index.md`；
   "如何劫持 aten::index" 见 `docs/override-mechanism.md`）。
 

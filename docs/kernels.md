@@ -53,7 +53,7 @@ f64 8B 路径不受影响。若未来要在 4B 大 K 场景加速，可考虑预
 rowcopy_sve<T, IdxT, NT> → copy_contig_sve<T, NT>
 ```
 
-- 条件：`A>1 && after_contiguous && sve_512_ok() && A>=16 && dtype∈{f32,f64}`。
+- 条件：`A>1 && after_contiguous && sve_512_ok() && A>=4 && dtype∈{f32,f64}`。
   `after_contiguous` 保证 `col_off[c]==c`（dims_after 连续），元素
   `out[p*A + c] = src[row_off[r] + idx[k] + c]` 变成**一段连续 A 拷贝**。
 - `copy_contig_sve`：8B 用 `svld1_f64/svst1_f64`，4B 用 `svld1_f32/svst1_f32`；
@@ -62,7 +62,21 @@ rowcopy_sve<T, IdxT, NT> → copy_contig_sve<T, NT>
 - 行拷贝只读一次 idx（`src + row_off[r] + idx[k]`），A 元素连续向量化 ——
   这是 S1 spconv / P1 图消息路径 ~4x（1 线程）/ ~1.9x（38 线程）的收益来源。
 
-**门槛**：A>=16 才启用（太短的开销不值得）。A∈[2,15] 落标量 `scalar_gather`。
+**门槛**：T1 起从 A>=16 放宽到 **A>=4**（微基准 A-sweep 显示 A=4-16 短行在
+1 线程即有 1.1-17x 收益，A>=16 长行路径不变）。A∈[2,3] 落标量 `scalar_gather`。
+
+### 3.1 M1 raw rowcopy（T2，跳过 linearize）
+
+```cpp
+rowcopy_raw_single<T, IdxT, NT>（入口：gather_rowcopy_raw，op.cpp 短路）
+```
+
+- 条件：**单索引 && after_contiguous && A>=4096 && f32/f64**（M1 最热形态）。
+- 与 `rowcopy_sve` 唯一区别：不消费 linearize 的 idx 数组，而是直接遍历
+  `spec.indices[0]` 原始下标（int32/int64），内联 `v>=size || v<-size` 检查 +
+  负索引归一，随后 `copy_contig_sve` 拷贝 A 连续块。
+- 省掉 linearize 的一次 broadcast 解码 + 一次 K×N idx 写入；对单索引大块
+  （A 大）收益显著：M1 weight.view(K,C,o)[ki] 1 线程 2-13x。
 
 ## 4. 标量回退 `dispatch_scalar`
 
@@ -70,12 +84,52 @@ rowcopy_sve<T, IdxT, NT> → copy_contig_sve<T, NT>
 scalar_gather(src, idx, dst, row_off, col_off, B, K, A)
 ```
 
-- `at::parallel_for(0, B*K, GRAIN=4096)`；每位置 `dst[p*A+c] = src[row_off[r]+idx[k]+col_off[c]]`。
+- `at::parallel_for(0, B*K, adaptive_grain(B*K))`；每位置 `dst[p*A+c] = src[row_off[r]+idx[k]+col_off[c]]`。
 - 覆盖所有 SVE 分支不满足的输入：2B/1B dtype（half/bf16/i16/i8/u8/bool）、
-  complex、f32 且 numel>=2^31（idx 自动为 int64）、A∈[2,15]、非连续 after-col、
+  complex、f32 且 numel>=2^31（idx 自动为 int64）、A∈[2,3]、非连续 after-col、
   非 512-bit VL 运行时、`idx32` 与 dtype 不匹配等。
 - **正确性关键**：此路径对所有 dtype/形状都正确（逐元素地址计算），是"任何
   门控外的输入类"的安全落点。
+
+### 4.1 T3 融合单遍 `gather_fused`
+
+```cpp
+gather_fused<T>（入口：gather.cpp 包装，op.cpp 最后分支）
+```
+
+- 条件：**A<4 或非连续小块**（A==1 纯 gather 与 A>=4 连续 rowcopy 之外的其余）。
+- 与 `gather_direct` 同源：并行循环内先算偏移（内联边界检查/负索引规整），再
+  就地标量拷贝；**不物化 idx 数组**（省一次 K×N 分配 + 一次遍历）。
+- 与 T2 互斥（T2 只处理单索引大块）。A/B 实测：A>=4 连续块 linearize+rowcopy
+  仍快于 fused（单线程 C=8 1.05x vs 0.69x；C=64 3.85x vs 1.50x），故 fused 只
+  用于 scalar 小块路径。
+
+### 4.2 T4 小值域桶化 `bucket_gather_pure`
+
+```cpp
+bucket_gather_pure<T, IdxT>（gather_index 内，先于 SVE 分支）
+```
+
+- 条件：`pure`（A==1）+ **偏移值域 ≤2048**。先并行扫一遍 linearize 后的 idx
+  求 min/max（每 chunk 局部 min/max，串行合并，无锁），值域超限则返回 false
+  落到 SVE/scalar。
+- 值域 ≤2048 时构建 L1/L2 常驻查找表（4B 表 8KB / 8B 表 16KB），标量循环
+  `dst[p] = table[row_off[r] + idx[k] - mn]`。
+- **动机**：920F 的 SVE 4B gather MLP 低（§2），小值域时表查的标量随机读命中
+  缓存，实测优于 SVE gather。1D f32/f64 K=1M 小值域在 8-32 线程 1.2-3.1x
+  （SVE 0.2-0.9x）。
+
+### 4.3 T4 raw 桶化 `bucket_gather_pure_raw`
+
+```cpp
+bucket_gather_pure_raw<T, IdxT>（op.cpp 短路，单索引 B==1 A==1）
+```
+
+- 条件：**单索引 && B==1 && A==1**（1D 纯 gather，M3 keys[order]、M4 inverse
+  等）。完全跳过 linearize，直接对 `spec.indices[0]` 原始下标求值域并查表
+  （B==1 时偏移 == idx[k]，无 broadcast 解码）。
+- 实测：M3 keys[order] int64[2048] E=54k 从 0.2x → 1.4-2.6x（1t）与 8-12x
+  （32t）。
 
 ## 5. 快速路径 `gather_direct`（K<1024）
 
@@ -94,7 +148,8 @@ scalar_gather(src, idx, dst, row_off, col_off, B, K, A)
 
 ## 7. 线程并行
 
-- 所有大路径 `at::parallel_for(0, B*K, GRAIN=4096)`；`-fopenmp` 必须（否则
+- 所有大路径 `at::parallel_for(0, B*K, adaptive_grain(B*K))`（T0，
+  `grain.h`：`max(1, min(n, 65536, n/(nt*8)))`）；`-fopenmp` 必须（否则
   `parallel_for` 串行化，历史根因见 architecture.md §7）。
 - 线程数由 `torch.set_num_threads()` 控制；920F 为 608 核 / 32 NUMA，单节点
   38 核。共享箱上 608 线程数字噪声大，**以定点核复测为准**（performance.md §8）。

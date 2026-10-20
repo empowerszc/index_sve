@@ -147,8 +147,8 @@ heavier, so 608-thread medians here are the lower end of that band.
   Task 8 samples; the stable gate ranges are the reliable signal.
 - B==1 fix holds: 1D f64 K=1M gate 1.6–1.8x on both 1 and 608 threads (was 0.02–0.3x
   before Task 8's K-blocking + `-fopenmp`).
-- int32 linearize still mallocs a K×8B int64 tmp before converting (80 MB at K=10M);
-  8B linearize is parallel. Possible follow-up: fill int32 directly in the loop.
+- int32 linearize tmp: the K×8B int64 intermediate noted here was removed in the T4
+  pass (`linearize.cpp` now writes int32 directly); see §9.
 
 ## 7. 集成 / Integration (Task 10 — aten::index.Tensor override)
 

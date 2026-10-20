@@ -8,7 +8,7 @@
 |---|---|---|
 | [architecture.md](architecture.md) | 三段流水线整体架构、控制流、dispatch 树、数据布局 | 架构理解、代码走读 |
 | [semantics.md](semantics.md) | 与 ATen `aten::index.Tensor` 的语义对齐点与**有意差异**、错误信息、dtype 覆盖 | 正确性审查、回归测试 |
-| [kernels.md](kernels.md) | SVE512 各内核（8B/4B gather、rowcopy、scalar）实现细节、预取、NT 开关 | 性能优化、内核修改 |
+| [kernels.md](kernels.md) | SVE512 各内核（8B/4B gather、rowcopy、scalar）实现细节 + 优化轮新路径（M1 raw rowcopy、T3 fused、T4 桶化）、预取、NT 开关 | 性能优化、内核修改 |
 | [performance.md](performance.md) | 基准方法论、模型场景结果表、已知硬件限制、如何复测 | 性能评估、验收 |
 | [integration.md](integration.md) | 默认覆盖 `aten::index.Tensor` 机制、运行时环境契约、逃逸开关、慢场景 fallback 决策（不改） | 集成部署、排障 |
 | [override-mechanism.md](override-mechanism.md) | **Dispatcher 劫持机制详解**：如何覆盖 aten::index、autograd 为何不受影响、递归/唯一性边界、验证方法 | 想搞清"怎么做到的"的读者 |
@@ -23,14 +23,18 @@ import index_sve
 aten::index.Tensor ──► index_impl(self, indices)
         │                 │
         │                 ├─ normalize_index()     对齐 ATen make_info
-        │                 ├─ K < 1024 ? gather_direct()   (快速路径，无线性化)
+        │                 ├─ K < 1024 ? gather_direct()      (快速路径，无线性化)
+        │                 ├─ M1 ? gather_rowcopy_raw()       (单索引 A>=4096 skip-linearize)
+        │                 ├─ T4 ? gather_bucket_pure_raw()   (单索引 B==1 A==1 小值域查表)
         │                 └─ linearize() + gather_index()
         │                                              │
-        │                 ┌─────────┬───────────┬─────┴──────────┐
-        │                 ▼         ▼           ▼                ▼
-        │             8B SVE   4B SVE    RowCopy SVE        dispatch_scalar
-        │             gather    gather    (A>1, A>=16,        (回退全部
-        │             (f64/i64) (f32/i32)  f32/f64 连续)        其他)
+        │                 ┌───────┬───────┬─────┬──────┴──────────┐
+        │                 ▼       ▼       ▼     ▼               ▼
+        │            小值域桶化 8B SVE  4B SVE  RowCopy SVE  dispatch_scalar
+        │            (A==1     gather  gather  (A>1, A>=4,    (回退全部
+        │             值域     (f64/i64)(f32/i32) f32/f64 连续) 其他)
+        │             ≤2048)
+        │         └─ 另：A<4/非连续小块 → gather_fused()（T3 融合单遍，不物化 idx）
         ▼
     out
 ```

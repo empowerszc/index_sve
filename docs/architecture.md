@@ -13,14 +13,23 @@ index_impl(self, indices)
   3. spec = normalize_index(self, vec)        # → IndexSpec
   4. out = at::empty(spec.out_shape, self.options())
   5. if spec.K < 1024: gather_direct(spec, out); return
-  6. use_i32 = self.numel() < 2^31 && dtype ∈ {f32, i32}
-  7. idx = at::empty({K}, dtype = use_i32 ? int32 : int64)
-  8. linearize(spec, idx)                     # 并行，一次遍历
-  9. gather_index(spec, idx, out, g_nt)       # 派发 SVE/scalar
+  6. M1: 单索引 && after_contiguous && A>=4096 && f32/f64
+       → gather_rowcopy_raw(spec, out, g_nt); return    # 跳过 linearize（T2）
+  7. T4 raw: 单索引 && B==1 && A==1
+       → gather_bucket_pure_raw(spec, out)              # 小值域查表，返回 true 即返回
+  8. use_i32 = self.numel() < 2^31 && dtype ∈ {f32, i32}
+  9. idx = at::empty({K}, dtype = use_i32 ? int32 : int64)
+ 10. A==1 || (after_contiguous && A>=4 && f32/f64)
+       → linearize(spec, idx) + gather_index(spec, idx, out, g_nt); return
+ 11. 其余（A<4 或非连续小块）→ gather_fused(spec, out)   # T3 融合单遍，不物化 idx
 ```
 
 静态开关 `g_nt`：`HPC_INDEX_NT` 环境变量（非 "0" 即开），default off，进
-`gather_index` 的 `non_temporal` 参数。
+`gather_index`/`gather_rowcopy_raw` 的 `non_temporal` 参数。
+
+优化任务（T0-T4）引入的优先级：**先试不物化 idx 的短路路径**（gather_direct /
+M1 raw rowcopy / T4 raw 桶化），需要 idx 时再 linearize；T3 fused 只为 A<4 或
+非连续小块服务（A>=4 连续块 linearize+rowcopy 实测更快）。
 
 ## 2. `IndexSpec` 数据布局（normalize.h）
 
@@ -85,19 +94,35 @@ struct IndexSpec {
   与 ATen `Indexer` 的报错一致）。
 - N-D 下标按 `broadcast_shape` 混合进制（bfactor）解码成逐维坐标（A7），非简单
   `k*stride(0)`。
-- int32 保持：`use_i32` 时先写 int64 临时再转换（K×8B 临时缓冲，已知可优化点，
-  见 performance.md）；8B 直接并行填充 int64。
+- int32 保持：`use_i32` 时**直接写 int32**（不再经 K×8B int64 临时缓冲，T4
+  后的改进），8B 直接并行填充 int64。
 
 ## 5. Gather 派发（gather.cpp `gather_index`）
 
-按优先级（`idx32` = idx dtype 是否 int32；`pure` = A==1）：
+按优先级（`idx32` = idx dtype 是否 int32；`pure` = A==1；行 = A 维元素数）：
 
 | 分支 | 条件 | 内核 |
 |---|---|---|
+| 小值域桶化 | `pure`（先于 SVE 检查，值域 ≤2048 才启用） | `bucket_gather_pure<T,IdxT>` |
 | 8B SVE | `pure && !idx32 && sve_512_ok() && dtype∈{f64,i64}` | `pure_gather_sve_flat<T,int64>` |
 | 4B SVE | `pure && idx32 && sve_512_ok() && dtype∈{f32,i32}` | `pure_gather_sve_flat<T,int32>` |
-| RowCopy | `A>1 && after_contiguous && sve_512_ok() && A>=16 && dtype∈{f32,f64}` | `rowcopy_sve<T,IdxT>` |
+| RowCopy | `A>1 && after_contiguous && sve_512_ok() && A>=4 && dtype∈{f32,f64}` | `rowcopy_sve<T,IdxT>` |
 | Scalar | 其余全部 | `dispatch_scalar` |
+
+**注意：`bucket_gather_pure` 在 SVE 分支之前**，因为小值域（值域 ≤2048）时
+L1/L2 常驻查找表的标量随机读优于 920F 低 MLP 的 SVE gather（kernels.md §2）。
+值域 >2048 时返回 false，继续走 SVE/scalar。
+
+`gather_index` 之外还有两个**入口级短路**（在 op.cpp，不经过 linearize）：
+
+| 短路 | 条件 | 内核 |
+|---|---|---|
+| M1 raw rowcopy | 单索引 && after_contiguous && A>=4096 && f32/f64 | `rowcopy_raw_single<T,IdxT,NT>` |
+| T4 raw 桶化 | 单索引 && B==1 && A==1（1D 纯 gather） | `bucket_gather_pure_raw<T,IdxT>` |
+
+这两个路径直接消费 `spec.indices[0]` 原始下标，内联边界检查 + 负索引规整，
+跳过 linearize 的 broadcast 解码。T4 raw 桶化是 M3 keys[order]/M4 等 1D
+小值域形态的专用加速（值域 ≤2048）。
 
 `sve_512_ok()`：运行时 `svcntb()==64` 才启用 SVE（编译按
 `-msve-vector-bits=512`，运行时 VL 不符会 UB，必须门控）。
@@ -117,7 +142,9 @@ N-D 整数下标用 bfactor 按 `broadcast_shape` 解码元素坐标（A7 修复
 
 ## 7. 并行模型
 
-- 除 `gather_direct` 外的所有内核走 `at::parallel_for(0, B*K, GRAIN=4096)`。
+- 除 `gather_direct` 外的所有内核走 `at::parallel_for(0, B*K, adaptive_grain(B*K))`，
+  grain 由 `grain.h` 的自适应公式给出：`max(1, min(n, 65536, n/(nt*8)))`（T0）。
+  小 K 也能占满所有线程，大 K 不因 grain 过大退化。
 - **`-fopenmp` 是硬依赖**：`at::parallel_for` 底层是 `at::parallel_for_impl`，
   无 `_OPENMP` 时 `p-7 for loop in different threads` 实际是串行（历史根因：
   曾导致 B==1 大 K 从预期加速变成 0.02-0.3x）。setup.py 已加 `-fopenmp`。
@@ -130,11 +157,17 @@ op.cpp:index_impl
 ├── normalize.cpp:normalize_index
 │   ├── IndexingUtils 语义：mask.nonzero() / select / transpose_to_front
 │   └── AdvancedIndex 语义：dims_before/dims_after / size-0 检查
-├── linearize.cpp:linearize            # parallel_for
-├── gather.cpp:gather_index            # dispatch_scalar / SVE 分支
-│   ├── pure_gather_sve_flat<T,IdxT,NT>
-│   │   └── pure_gather_sve_{8b_f64|8b_s64|4b_f32|4b_s32}
-│   ├── rowcopy_sve<T,IdxT,NT> → copy_contig_sve<T,NT>
-│   └── dispatch_scalar → scalar_gather
-└── gather.cpp:gather_direct           # K<1024 快速路径
+├── gather.cpp:gather_direct               # K<1024 快速路径
+├── gather.cpp:gather_rowcopy_raw          # M1 单索引大块 skip-linearize（T2）
+│   └── rowcopy_raw_single<T,IdxT,NT> → copy_contig_sve<T,NT>
+├── gather.cpp:gather_bucket_pure_raw      # T4 raw 1D 小值域查表（单索引 B==1 A==1）
+│   └── bucket_gather_pure_raw<T,IdxT>
+├── gather.cpp:gather_fused                # T3 融合单遍（A<4 或非连续小块，不物化 idx）
+├── linearize.cpp:linearize                # parallel_for
+└── gather.cpp:gather_index                # dispatch_scalar / SVE / 桶化分支
+    ├── bucket_gather_pure<T,IdxT>         # T4 小值域（A==1，先于 SVE）
+    ├── pure_gather_sve_flat<T,IdxT,NT>
+    │   └── pure_gather_sve_{8b_f64|8b_s64|4b_f32|4b_s32}
+    ├── rowcopy_sve<T,IdxT,NT> → copy_contig_sve<T,NT>
+    └── dispatch_scalar → scalar_gather
 ```

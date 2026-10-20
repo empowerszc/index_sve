@@ -62,9 +62,13 @@
 
 ## 6. 已知可优化项（后续工作）
 
-- **int32 线性化临时缓冲**：`linearize.cpp` 为 int32 先分配 K×8B int64 再转换
-  （K=10M 时 80MB）。可改为循环内直接填 int32（8B 线性化已并行，4B 待做）。
 - **P3 mask 多线程**：nonzero→scalar gather 在 38 线程 0.35x。可考虑 mask 路径
   直接行式 gather 并行（避免 nonzero 后再 gather 的两段式）。
 - **4B 大 K 随机 gather**：受 920F SVE 4B gather MLP 限制；可试软件预取加深
   展开或标量多路预取（kernels.md §2）。
+- **M1 值域桶化（T2 阶段 2，未做）**：M1 大块路径当前是 skip-linearize 直接
+  rowcopy，未对下标做值域分析（keys[order] 等若值域小可再桶化）。文档见
+  优化任务建议 T2 阶段 2；`gather_rowcopy_raw` 已为后续接入留好入口。
+
+已完成（T4 后不再需要）：~~int32 线性化临时缓冲~~ —— `linearize.cpp` 已改为
+int32 直接写（不再分配 K×8B int64 再转换）。
