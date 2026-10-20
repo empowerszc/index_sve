@@ -1,0 +1,209 @@
+# 优化记录：T0-T4 性能优化轮
+
+本文档详细记录针对 AI4S 真实负载的优化工作（T0-T4）。背景：用户实测真实 AI4S
+模型端到端**无提升甚至劣化**后，按优化任务建议（T0-T4）逐项实现，每项单独
+commit、全量测试 + 前后对比。对应性能数据见 `benchmarks/RESULTS.md` §9 与
+`performance.md` §4.1。
+
+## 1. 背景与目标
+
+`index_sve` 覆盖 `aten::index.Tensor` 后，原有基准（RESULTS §1-§8）显示 RowCopy
+/ 8B gather 形态有 2-4x 收益，但真实 AI4S 模型端到端收益为负。原因是：基准里的
+合成形态（大 C 连续行、8B 纯 gather）不是模型里的热路径；模型实际命中：
+- **M1** `weight.view(K,C,o)[ki]`（最热，14 模型累计 27270ms）；
+- **M2** `feat[r]`（spconv 规则表，~28.7s）；
+- **M3** `keys[order]`（int64 小值域查表）；
+- **M4** `feat[inverse]`（高重复）；
+- **M5/M6** 标量小块 / 2D 索引。
+
+这些形态恰好落在旧实现的最差路径：M1 是"单索引 + A 大"但 K 小（2k-20k），旧
+`linearize+gather_index` 的 linearize 解码开销占比高；M3/M4 是 int64 小值域，
+线性化后走 low-MLP 的 SVE gather（4B 指令），单线程更慢。
+
+优化总目标：**让新路径 ≥ 旧路径**（`linearize`+SVE 基线），优先 M1+M2 两个最热
+形态，且不改硬件探测（`sve_512_ok`）、不动 S5/S6 通用路径、不做无脑 GRAIN 常量
+调优。
+
+## 2. 变更清单（对应 commit）
+
+| 任务 | 变更 | 代码 | commit |
+|---|---|---|---|
+| T0 | 自适应并行粒度 | `index_sve/grain.h` 新增；linearize.cpp / gather.cpp 用 `adaptive_grain` 替换固定 GRAIN=4096 | 472f8a7 |
+| T1 | rowcopy 门槛 A>=16 → A>=4 | gather.cpp 分支条件 | 09a406c |
+| T2 p1 | M1 大块 skip-linearize | `gather.cpp:gather_rowcopy_raw` / `rowcopy_raw_single`；op.cpp 短路 | 320bcb7 |
+| T3 | 融合单遍（scalar 小块） | `gather.cpp:gather_fused`；op.cpp 末支 | db8251b |
+| T4 | 小值域桶化 + int32 直写 | `bucket_gather_pure`（gather_index 内）+ int32 linearize 直接写 int32 | 4fd733b |
+| T4+ | raw 桶化 + 无锁归约 | `bucket_gather_pure_raw`（op.cpp 短路，单索引 B==1 A==1）；min/max 归约改 per-chunk 数组 | 10921c1 |
+
+## 3. 逐项详解
+
+### 3.1 T0 自适应并行粒度（472f8a7）
+
+**问题**：固定 `GRAIN=4096` 使小 K 场景（M1 E=2k，B*K=54k）在 8+ 线程时每个
+chunk 只有 6 个元素，parallel_for 线程调度开销超过计算本身；大 K 又可能因
+grain 过小生成过多 chunk。
+
+**实现**（`grain.h`）：
+
+```cpp
+inline int64_t adaptive_grain(int64_t n) {
+  constexpr int64_t MAX_GRAIN = 65536;
+  const int64_t nt = at::get_num_threads();
+  if (nt <= 1) return std::max<int64_t>(1, n);           // 单线程整块
+  int64_t grain = std::max<int64_t>(1, n / (nt * 8));    // 每线程 ~8 chunk
+  return std::min<int64_t>(grain, MAX_GRAIN);            // 上限防 chunk 过粗
+}
+```
+
+`linearize`、`gather_index` 全部内核、`gather_fused`、`gather_direct`、
+`rowcopy_raw_single`、桶化内核均改用 `adaptive_grain(B*K)`。
+
+**验证**：全线程扫描（1/2/4/8/16/32/36）M1/M2/M3/M4 形态均无退化，1 线程整块
+保证 M1 这类小 K 形态的收益不被 parallel_for 开销吃掉。
+
+### 3.2 T1 rowcopy 门槛 A>=4（09a406c）
+
+**问题**：旧门槛 `A>=16` 才启用 SVE rowcopy；M2 spconv 的 `feat[r]` 若
+C=8（A=8）则落 `dispatch_scalar`，与 aten 无差甚至更慢。
+
+**实现**：门槛放宽到 `A>=4`，分支顺序改为 `A==1 纯 gather / A>=4 rowcopy /
+else scalar`。A-sweep 实测 A=4-16 短行在 1 线程即有 1.1-17x 收益，A>=16 长行
+路径不变。
+
+**代价**：A∈[2,3] 仍走标量（太短，向量化不值得）。`scalar_gather` 覆盖范围
+从 A∈[2,15] 收窄到 A∈[2,3]。
+
+### 3.3 T2 p1 M1 大块 skip-linearize（320bcb7）
+
+**问题**：M1 `weight.view(K,C,o)[ki]` 是**单索引 + after_contiguous + A 大
+（4096）** 形态，但旧实现先 `linearize`（对 K 个位置做 broadcast 解码 + 写
+K×8B/4B idx 数组）再 `gather_index`。linearize 的 K 遍解码对 A 大形态纯属浪费
+——rowcopy 其实只需要原始下标值。
+
+**实现**：`gather_rowcopy_raw(spec, out, nt)` 直接遍历 `spec.indices[0]` 原始
+下标（int32/int64），内联边界检查 + 负索引归一，每行 `copy_contig_sve` 拷 A
+连续块。op.cpp 短路条件：`indices.size()==1 && after_contiguous && A>=4096 &&
+dtype∈{f32,f64}`。
+
+**实测**（pin node 5，interleaved median）：M1 (27,32,32) E=2k 1 线程 **9.1x**、
+M1 (27,64,64) E=20k 1 线程 **9.9x**（旧路径该形态是"无收益"）。8 线程 i64
+0.6-1.0x（box 噪声），i32 2.7x。
+
+### 3.4 T3 融合单遍（db8251b）
+
+**问题**：scalar 小块（A<4 或非连续）旧实现走 `linearize + dispatch_scalar`，
+两次遍历 idx。对 P2 pos[src] A=3 这类形态，linearize 的开销占比大。
+
+**实现**：`gather_fused` 在并行循环内先算偏移（复用 `gather_direct` 的 bfactor
+broadcast 解码 + 内联检查），再就地标量拷贝，**不物化 idx 数组**。op.cpp 末支
+条件：`A<4 或非连续小块`（即不满足 A==1 也不满足 A>=4 连续 rowcopy 的输入）。
+
+**A/B 决策**：`linearize+rowcopy` 与 `gather_fused` 在 A>=4 连续块上对比——fused
+单线程更慢（C=8: 0.69x vs 1.05x；C=64: 1.50x vs 3.85x），故 **fused 只用于 scalar
+小块路径**，A>=4 连续块仍走 linearize+rowcopy。这与 T2 互斥（T2 只处理单索引
+大块）。
+
+### 3.5 T4 小值域桶化 + int32 直写（4fd733b）
+
+**问题**：M3 `keys[order]` 是 int64 小值域纯 gather（2048 个可能值，E=54k），
+旧实现 0.2x——linearize 的解码 + 4B/8B SVE gather 的 low-MLP 双重拖累。另有
+遗留项：`linearize` 的 int32 分支先建 K×8B int64 tmp 再转换（K=1M 时 24.6ms
+/ 27.7ms 全 op，占 89%）。
+
+**实现**（两个独立修复）：
+
+1. **int32 linearize 直接写 int32**：`linearize` 的 int32 分支在循环内直接填
+   `int32_t`（`use_i32` 保证偏移 < 2^31 值域安全），删掉 K×8B int64 中间缓冲。
+2. **`bucket_gather_pure`**（gather_index 内、SVE 分支之前）：先并行扫一遍
+   linearize 后的 idx 求偏移 min/max，值域 ≤2048 时构建 L1/L2 常驻查找表
+   （4B 表 8KB / 8B 表 16KB），标量循环 `dst[p] = table[offset - mn]`。
+
+**动机**：小值域时表查的标量随机读命中缓存，优于 920F 低 MLP 的 SVE gather
+指令（RESULTS §8.2：SVE 4B gather 38 线程仅 0.75 GB/s vs 标量 3.4 GB/s）。
+值域 >2048 时返回 false，落回 SVE/scalar（大值域随机 gather 仍是硬件上限）。
+
+**实测**：1D f32/f64 K=1M 小值域 8-32 线程 1.2-3.1x（SVE 0.2-0.9x）。单线程
+仍受 linearize 解码限制，但不再比旧路径差。
+
+### 3.6 T4+ raw 桶化 + 无锁归约（10921c1）
+
+**问题**：上一版 `bucket_gather_pure` 仍依赖 `linearize`（M3 i64 单线程
+linearize=1.24ms / full=1.69ms）。对 **B==1 单索引 1D 纯 gather**（M3/M4
+形态），偏移就是 `idx[k]` 本身，linearize 的 broadcast 解码纯属浪费。
+
+**实现**：
+
+1. **`bucket_gather_pure_raw`**（op.cpp 短路，条件 `单索引 && B==1 && A==1`）：
+   直接对 `spec.indices[0]` 原始下标求值域（内联负索引归一），值域 ≤2048 时
+   建表 + 标量填充，完全跳过 linearize。
+2. **归约去锁**：两处桶化的 min/max 归约从 `std::mutex` 保护改为 **per-chunk
+   局部数组 + 串行合并**（`vmn/vmx[lo/grain]`），消除多 chunk 间锁竞争；值域
+   上限从 256 提到 **2048**（8B 表 16KB 仍 L1/L2 常驻）。
+
+**实测**：M3 keys[order] int64[2048] E=54k 从 0.2x → **1.4x（i64）/ 2.6x（i32）
+单线程**、**8.0x/11.6x 32 线程**；M4 feat[inverse] (200,64) E=20k 3.6-4.8x。
+
+## 4. 路由优先级总览（优化后）
+
+```
+index_impl
+  1. K < 1024                     → gather_direct（无 linearize）
+  2. 单索引 && after_contig && A>=4096 && f32/f64   → M1 raw rowcopy（skip-linearize）
+  3. 单索引 && B==1 && A==1       → T4 raw 桶化（skip-linearize）
+  4. A==1 || (after_contig && A>=4 && f32/f64)      → linearize + gather_index
+       └─ gather_index：先试 bucket（A==1 值域≤2048）→ SVE 8B/4B → rowcopy → scalar
+  5. 其余（A<4 或非连续小块）    → T3 gather_fused（不物化 idx）
+```
+
+优先级逻辑：**先试不物化 idx 的短路路径**（direct / raw rowcopy / raw 桶化），
+需要 idx 时才 linearize；fused 只服务 A<4 或非连续小块。
+
+## 5. 性能结果汇总（pin node 5，interleaved median，RESULTS §9.3）
+
+| 形态 | 1t | 8t | 32t | 优化前 |
+|---|---|---|---|---|
+| M1 (27,32,32) E=2k | **9.1x** | 1.3x | 3.9x | ~无收益 |
+| M1 (27,64,64) E=20k i64 | **9.9x** | 0.6-1.0x | 1.0x | ~无收益 |
+| M1 (27,64,64) E=20k i32 | 7.9x | **2.7x** | 0.95x | ~无收益 |
+| M2 feat[r] (20000,64) E=100k | 3.9x | 2.6x | 0.6-7.1x | ~1x |
+| M2 C=8（A=8 短行） | 0.93x | 0.95x | 0.92x | ~1x |
+| M3 keys[order] E=54k i64 | 1.4x | 0.6-1.3x | **8.0x** | **0.2x** |
+| M3 keys[order] E=54k i32 | 2.6x | 1.3-2.2x | **11.6x** | **0.2x** |
+| M4 feat[inverse] E=20k | 3.6x | 3.8x | **4.8x** | ~1x |
+
+注：8t/32t 共享箱噪声大（aten 单格曾摆动 104→426us）；可靠数字是交错
+aten/hpc 的 median。4B f32 K=10M 大值域随机 gather 仍是硬件上限（1t 0.7x、
+高线程 0.2x），T4 桶化因值域 >>2048 不启用。
+
+## 6. 验证
+
+- 全 6 个测试套件 **64/64 通过**（每步都跑：test_correctness 25、test_errors 4、
+  test_model 9、test_normalize 9、test_smoke 2、test_sve 15）。
+- 正确性对拍：两进程法（无覆盖进程生成 true-aten 参考 `.pt`，覆盖进程比对），
+  含 K>=1024 用例。
+- 桶化路径正确性由 test_correctness 的小值域用例覆盖（`randint(0,64/100,...)`）。
+
+## 7. 复测
+
+```bash
+# M1-M6 workload 形态全线程扫描（pin node 5 静默节点，50 iters interleaved）
+HPC_INDEX_NO_OVERRIDE=1 HPC_THREADS=1,2,4,8,16,32,36 python benchmarks/bench_ai4s.py
+
+# T1 A 扫描
+HPC_INDEX_NO_OVERRIDE=1 python benchmarks/bench_t1.py
+# T2 M1 扫描
+HPC_INDEX_NO_OVERRIDE=1 python benchmarks/bench_t2.py
+
+# 全量正确性
+for t in tests/test_smoke.py tests/test_normalize.py tests/test_correctness.py \
+         tests/test_errors.py tests/test_sve.py tests/test_model.py; do python $t; done
+```
+
+## 8. 后续可优化项（未做）
+
+- **M1 值域桶化（T2 阶段 2）**：M1 raw rowcopy 路径未对下标做值域分析；若
+  keys[order] 等值域小可再桶化。`gather_rowcopy_raw` 已留好接入入口。
+- **P3 mask 多线程**：nonzero→scalar gather 在 38 线程 0.35x（独立于本轮的
+  内核并行性问题）。
+- **4B 大 K 随机 gather**：920F SVE 4B gather MLP 硬件上限（RESULTS §8.2）；
+  可试软件预取 / 标量多路预取。
