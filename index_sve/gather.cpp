@@ -322,6 +322,8 @@ bool bucket_gather_pure_raw(const IndexSpec& spec, const IdxT* idx, T* dst, cons
     int64_t lmx = std::numeric_limits<int64_t>::min();
     for (int64_t k = lo; k < hi; ++k) {
       int64_t v = static_cast<int64_t>(idx[k]);
+      TORCH_CHECK_INDEX(v >= -spec.indexed_sizes[0] && v < spec.indexed_sizes[0],
+          "index ", v, " is out of bounds for dimension 0 with size ", spec.indexed_sizes[0]);
       if (v < 0) v += spec.indexed_sizes[0];
       lmn = std::min(lmn, v);
       lmx = std::max(lmx, v);

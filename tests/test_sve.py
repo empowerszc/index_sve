@@ -85,6 +85,41 @@ def test_rowcopy_f32_tail_after():
     i = torch.randint(0, 8, (2000,))
     torch.testing.assert_close(index(x, [i]), x[i])
 
+def test_rowcopy_short_rows_a4_15():
+    # T1：rowcopy 门槛 A>=16 -> A>=4。覆盖 A=4/8/12/15 短行（含 4B 尾数边界）
+    for A in (4, 8, 12, 15):
+        for dt in (torch.float32, torch.float64):
+            x = torch.randn(200, A, dtype=dt)
+            i = torch.randint(0, 200, (2048,))
+            torch.testing.assert_close(index(x, [i]), x[i])
+
+def test_m1_raw_rowcopy_large_after():
+    # T2 M1：单索引 + A>=4096 + f32/f64 skip-linearize 路径
+    for dt in (torch.float32, torch.float64):
+        x = torch.randn(27, 64, 64, dtype=dt)     # A=4096
+        i = torch.randint(0, 27, (20000,), dtype=torch.int32)
+        torch.testing.assert_close(index(x, [i]), x[i])
+
+def test_bucket_small_domain():
+    # T4 桶化：A==1 纯 gather + 值域<=2048（raw：B==1 A==1 单索引）
+    for dt in (torch.float32, torch.float64, torch.int64):
+        x = torch.randn(2048).to(dt)
+        for K in (1024, 2048, 4096):
+            i = torch.randint(0, 2048, (K,))
+            torch.testing.assert_close(index(x, [i]), x[i])
+            i32 = i.to(torch.int32)
+            torch.testing.assert_close(index(x, [i32]), x[i32])
+    # B==1 但 A==1 的 2D 形态（x[:, i] 值域小）走 linearize 后桶化
+    x = torch.randn(64, 2048)
+    i = torch.randint(0, 2048, (2048,))
+    torch.testing.assert_close(index(x, [None, i]), x[:, i])
+
+def test_bucket_negative_indices():
+    # T4 桶化 + 负索引归一
+    x = torch.arange(2048, dtype=torch.int64)
+    i = torch.tensor([0, -1, -2048, 1024], dtype=torch.int64).repeat(300)
+    torch.testing.assert_close(index(x, [i]), x[i])
+
 if __name__ == "__main__":
     sys.path.insert(0, __file__.rsplit("/", 1)[0])
     import _harness
