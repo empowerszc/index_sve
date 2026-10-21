@@ -37,6 +37,12 @@ at::Tensor index_impl(const at::Tensor& self,
   // 完全跳过 linearize 的 broadcast 解码。
   if (spec.indices.size() == 1 && spec.B == 1 && spec.A == 1) {
     if (gather_bucket_pure_raw(spec, out)) return out;
+    // 大值域（>2048）时 1 线程走单遍标量（跳过 linearize）：SVE gather 单线程 MLP 低
+    // + linearize 两遍开销，实测 1 线程 0.6-0.8x；单遍标量追平 aten。多线程仍走 SVE。
+    if (at::get_num_threads() == 1) {
+      gather_single_1d(spec, out);
+      return out;
+    }
   }
 
   const bool sve_rowcopy_dtype =
@@ -48,8 +54,14 @@ at::Tensor index_impl(const at::Tensor& self,
       (out.scalar_type() == at::kFloat || out.scalar_type() == at::kInt);
   at::Tensor idx = at::empty({spec.K}, self.options().dtype(use_i32 ? at::kInt : at::kLong));
 
-  // A>=4 连续块 → linearize+rowcopy（T1 证明比融合快）；A==1 → linearize+纯 gather（SVE 需要 idx）。
-  // 其余（A<4 或非连续小块）→ T3 融合单遍，不物化 idx 数组（P2）。
+  // 1 线程单索引 A>1（rowcopy/scalar 短行）：跳过 linearize 走 fused 单遍。SVE
+  // rowcopy 单线程 MLP 低，且 linearize 对单索引 1 线程开销占比大（rowcopy A=4 短行
+  // 实测 linearize 占 80%）。A==1 单索引已在上方 gather_single_1d 短路；多索引/mask
+  // 保持 linearize+SVE（fused 解码开销更大，实测更差）。
+  if (at::get_num_threads() == 1 && spec.indices.size() == 1 && spec.A > 1) {
+    gather_fused(spec, out);
+    return out;
+  }
   if (spec.A == 1 ||
       (spec.after_contiguous && spec.A >= 4 && sve_rowcopy_dtype)) {
     linearize(spec, idx);

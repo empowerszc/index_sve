@@ -409,25 +409,69 @@ void gather_fused(const IndexSpec& spec, T* dst, const T* src) {
   for (int64_t i = nb - 2; i >= 0; --i) {
     bfactor[i] = bfactor[i + 1] * bshape[i + 1];
   }
+  // 预提取各下标张量的指针/stride/size/esize/长整型标志，避免内层循环每次访问
+  // at::Tensor 方法（引用计数 + 虚调用），这是 fused 单遍慢于 aten 的根因。
+  std::vector<const void*> ind_ptr(nidx);
+  std::vector<const int64_t*> ind_stride(nidx);
+  std::vector<int64_t> ind_size(nidx);
+  std::vector<int64_t> ind_esize(nidx);
+  std::vector<bool> ind_long(nidx);
+  bool all_full_contig = (nb == 1);
+  for (const auto j : c10::irange(nidx)) {
+    const at::Tensor& ind = spec.indices[j];
+    ind_ptr[j] = ind.data_ptr();
+    ind_stride[j] = ind.strides().data();
+    ind_size[j] = spec.indexed_sizes[j];
+    ind_esize[j] = ind.element_size();
+    ind_long[j] = (ind.dtype() == at::kLong);
+    if (ind.numel() != K || !ind.is_contiguous()) all_full_contig = false;
+  }
+  // nb==1 快速路径：所有索引与 K 全长对齐且连续（无广播展开，如 x[i,j] 双全长索引、
+  // 单索引 rowcopy），解码退化为直读 idx_j[k]，省掉 bfactor 混合进制展开。
+  if (all_full_contig) {
+    at::parallel_for(0, B * K, adaptive_grain(B * K), [&](int64_t lo, int64_t hi) {
+      for (int64_t p = lo; p < hi; ++p) {
+        const int64_t r = p / K, k = p % K;
+        int64_t off = spec.row_off[r];
+        for (const auto j : c10::irange(nidx)) {
+          const char* ptr = static_cast<const char*>(ind_ptr[j]) + k * ind_esize[j];
+          int64_t v = ind_long[j]
+              ? *reinterpret_cast<const int64_t*>(ptr)
+              : *reinterpret_cast<const int32_t*>(ptr);
+          const int64_t size = ind_size[j];
+          TORCH_CHECK_INDEX(v >= -size && v < size,
+              "index ", v, " is out of bounds for dimension ", j, " with size ", size);
+          if (v < 0) v += size;
+          off += v * spec.indexed_strides[j];
+        }
+        T* d = dst + p * A;
+        const T* s = src + off;
+        for (const auto c : c10::irange(A)) {
+          d[c] = s[spec.col_off[c]];
+        }
+      }
+    });
+    return;
+  }
   at::parallel_for(0, B * K, adaptive_grain(B * K), [&](int64_t lo, int64_t hi) {
     for (int64_t p = lo; p < hi; ++p) {
       const int64_t r = p / K, k = p % K;
       int64_t off = spec.row_off[r];
       for (const auto j : c10::irange(nidx)) {
-        const at::Tensor& ind = spec.indices[j];
-        const int64_t esize = ind.element_size();
+        const int64_t esize = ind_esize[j];
+        const int64_t* ind_st = ind_stride[j];
         int64_t eoff = 0;
         int64_t rr = k;
         for (const auto d : c10::irange(nb)) {
           int64_t c = (bshape[d] > 0) ? (rr / bfactor[d]) % bshape[d] : 0;
-          eoff += c * ind.stride(d);
+          eoff += c * ind_st[d];
           if (bshape[d] > 0) rr %= bfactor[d];
         }
-        const char* ptr = static_cast<const char*>(ind.data_ptr()) + eoff * esize;
-        int64_t v = (ind.dtype() == at::kLong)
+        const char* ptr = static_cast<const char*>(ind_ptr[j]) + eoff * esize;
+        int64_t v = ind_long[j]
             ? *reinterpret_cast<const int64_t*>(ptr)
             : *reinterpret_cast<const int32_t*>(ptr);
-        const int64_t size = spec.indexed_sizes[j];
+        const int64_t size = ind_size[j];
         TORCH_CHECK_INDEX(v >= -size && v < size,
             "index ", v, " is out of bounds for dimension ", j, " with size ", size);
         if (v < 0) v += size;
@@ -543,6 +587,25 @@ void gather_direct(const IndexSpec& spec, at::Tensor& out) {
   });
 }
 
+// 1D 单索引纯 gather 专用单遍内核（1 线程路径）：跳过 linearize，把下标张量的
+// data_ptr/stride/size/dtype 提到循环外一次提取，循环内等价 aten 单遍标量
+// （read idx → 边界检查 → 负索引归一 → out[k]=src[off]）。920F SVE gather 单线程
+// MLP 低（RESULTS §8.2），linearize 两遍又是固定开销，1 线程用本内核追平 aten。
+template <typename T, typename IdxT>
+void gather_single_1d(const IndexSpec& spec, const IdxT* idx, T* dst, const T* src) {
+  const int64_t n = spec.K;
+  const int64_t size = spec.indexed_sizes[0];
+  at::parallel_for(0, n, adaptive_grain(n), [&](int64_t lo, int64_t hi) {
+    for (int64_t k = lo; k < hi; ++k) {
+      int64_t v = static_cast<int64_t>(idx[k]);
+      TORCH_CHECK_INDEX(v >= -size && v < size,
+          "index ", v, " is out of bounds for dimension 0 with size ", size);
+      if (v < 0) v += size;
+      dst[k] = src[v];
+    }
+  });
+}
+
 // T4 raw 包装：单索引 1D 纯 gather 时跳过 linearize（省掉 broadcast 解码），直接在原始
 // 下标上求值域并查表。调用方需保证 spec.indices.size()==1 && B==1 && A==1（M3/M4 形态）。
 bool gather_bucket_pure_raw(const IndexSpec& spec, at::Tensor& out) {
@@ -560,6 +623,22 @@ bool gather_bucket_pure_raw(const IndexSpec& spec, at::Tensor& out) {
     }
   });
   return used;
+}
+
+// 1D 单索引纯 gather 单遍（1 线程路径）：跳过 linearize + SVE gather，直接标量单遍。
+void gather_single_1d(const IndexSpec& spec, at::Tensor& out) {
+  const at::Tensor& ind = spec.indices[0];
+  const bool idx32 = ind.scalar_type() == at::kInt;
+  AT_DISPATCH_ALL_TYPES_AND_COMPLEX_AND3(at::kHalf, at::kBFloat16, at::kBool,
+      out.scalar_type(), "hpc_index_gather_single_1d", [&] {
+    const scalar_t* src = static_cast<const scalar_t*>(spec.transposed_self.data_ptr());
+    scalar_t* dst = static_cast<scalar_t*>(out.data_ptr());
+    if (idx32) {
+      gather_single_1d<scalar_t, int32_t>(spec, static_cast<const int32_t*>(ind.data_ptr()), dst, src);
+    } else {
+      gather_single_1d<scalar_t, int64_t>(spec, static_cast<const int64_t*>(ind.data_ptr()), dst, src);
+    }
+  });
 }
 
 // M1 单索引大块 skip-linearize：不物化 idx，直接在 gather 阶段读原始下标、内联边界

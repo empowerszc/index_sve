@@ -120,6 +120,65 @@ def test_bucket_negative_indices():
     i = torch.tensor([0, -1, -2048, 1024], dtype=torch.int64).repeat(300)
     torch.testing.assert_close(index(x, [i]), x[i])
 
+def test_multi_index_full_length():
+    # nb==1 快路径（linearize/fused）：x[i,j] 双全长索引（K=100000 触发 SVE gather）
+    x = torch.randn(5000, 5000)
+    i = torch.randint(0, 5000, (100_000,))
+    j = torch.randint(0, 5000, (100_000,))
+    torch.testing.assert_close(index(x, [i, j]), x[i, j])
+    i32 = i.to(torch.int32); j32 = j.to(torch.int32)
+    torch.testing.assert_close(index(x, [i32, j32]), x[i32, j32])
+
+def test_multi_index_broadcast_scalar():
+    # 非全长索引（广播标量 numel==1）→ generic 解码，非快路径
+    x = torch.randn(5000, 5000)
+    i = torch.randint(0, 5000, (100_000,))
+    j = torch.tensor([42])
+    torch.testing.assert_close(index(x, [i, j]), x[i, j])
+    j64 = torch.tensor([4999], dtype=torch.int64)
+    torch.testing.assert_close(index(x, [i, j64]), x[i, j64])
+
+def test_multi_index_noncontig_index():
+    # 索引非连续（步进）→ all_full_contig=false，generic 路径
+    x = torch.randn(5000, 5000)
+    i = torch.randint(0, 5000, (200_000,))[::2]
+    j = torch.randint(0, 5000, (200_000,))[::2]
+    torch.testing.assert_close(index(x, [i, j]), x[i, j])
+
+def test_rowcopy_short_rows_1thread():
+    # 1 线程单索引 A>1 → fused nb==1 快路径（跳过 linearize）
+    nt = torch.get_num_threads()
+    torch.set_num_threads(1)
+    try:
+        for A in (2, 3, 4, 8):
+            for dt in (torch.float32, torch.float64):
+                x = torch.randn(20000, A, dtype=dt)
+                i = torch.randint(0, 20000, (200_000,))
+                torch.testing.assert_close(index(x, [i]), x[i])
+    finally:
+        torch.set_num_threads(nt)
+
+def test_pure_gather_1thread_large_domain():
+    # 1 线程单索引 A==1 大值域 → gather_single_1d（跳过 linearize）
+    nt = torch.get_num_threads()
+    torch.set_num_threads(1)
+    try:
+        for dt in (torch.float32, torch.float64):
+            x = torch.randn(5_000_000, dtype=dt)
+            i = torch.randint(0, 5_000_000, (2_000_000,))
+            torch.testing.assert_close(index(x, [i]), x[i])
+            torch.testing.assert_close(index(x, [i]), x[i.to(torch.int32)])
+    finally:
+        torch.set_num_threads(nt)
+
+def test_linearize_nb1_matches_generic():
+    # linearize 快/慢路径输出一致：同一 spec 下 nb==1 全长 vs 广播（值相同索引张量）
+    x = torch.randn(64, 2048)
+    i = torch.randint(0, 2048, (5000,), dtype=torch.int32)
+    torch.testing.assert_close(index(x, [None, i]), x[:, i])   # B>1 全长 nb==1
+    i_1 = torch.tensor([0, 2047], dtype=torch.int32).repeat(2500)
+    torch.testing.assert_close(index(x, [None, i_1]), x[:, i_1])
+
 if __name__ == "__main__":
     sys.path.insert(0, __file__.rsplit("/", 1)[0])
     import _harness

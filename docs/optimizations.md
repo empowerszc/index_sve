@@ -207,3 +207,56 @@ for t in tests/test_smoke.py tests/test_normalize.py tests/test_correctness.py \
   内核并行性问题）。
 - **4B 大 K 随机 gather**：920F SVE 4B gather MLP 硬件上限（RESULTS §8.2）；
   可试软件预取 / 标量多路预取。
+
+## 9. T5：1 线程回归修复（线性化两遍模型 vs aten 单遍）
+
+### 背景
+
+回归扫描（`benchmarks/bench_regression.py`，interleaved median，pin node 5）发现
+1 线程下多形态劣化（0.6-0.9x），2+ 线程全部占优（rowcopy A=4 2t 7x、1D pure 2t
+15-20x、x[i,j] 2t 5.98x）。1 线程劣化根因（1D f32 K=5M 分解）：
+
+- linearize 两遍模型固定开销：`linearize` 104ms + `gather` 124ms = 228ms vs
+  aten 单遍 169ms；linearize 对 1 线程无并行加速，纯属多余的一遍。
+- 920F SVE gather 单线程 MLP 低（RESULTS §8.2），换 SVE→scalar 无济于事
+  （dispatch_scalar 0.64x 与 SVE 0.71-0.79x 相当）。
+- 融合单遍（`gather_fused`）每元素做 at::Tensor 方法访问（element_size/stride/
+  dtype/data_ptr，引用计数 + 虚调用），5M 元素下反而更慢（0.22-0.53x）。
+
+### 变更
+
+| 项 | 变更 | 代码 | 1 线程效果 |
+|---|---|---|---|
+| T5-1 | 单索引 A==1 大值域 1 线程走 `gather_single_1d`（单遍标量，跳过 linearize） | gather.cpp 新增内核 + op.cpp 路由 | 1D f32 0.75x→**1.07x**、f64 0.71x→**1.24x** |
+| T5-2 | 单索引 A>1 1 线程走 `gather_fused` 单遍 | op.cpp 路由收窄（仅单索引 A>1） | rowcopy A=4 0.87x→**1.39x** |
+| T5-3 | fused/linearize 预提取索引张量属性 + nb==1 全长连续快路径（直读 idx_j[k]） | gather.cpp `gather_fused`、linearize.cpp 两变体 | x[i,j] 0.66x→**1.21x**（linearize 4.84→1.10ms）；rowcopy A=4 1.35x |
+| T5-4 | 修正路由范围 | op.cpp（多索引 A==1 与 mask 保持 linearize+SVE，fused 实测更差） | 避免 blanket fused 误伤（x[i,j] 曾 0.49x、x[:,i] 0.28x） |
+
+### 路由现状（op.cpp index_impl）
+
+```
+1. K < 1024                                  → gather_direct
+2. 单索引 && after_contig && A>=4096 && f32/f64 → M1 raw rowcopy
+3. 单索引 && B==1 && A==1                    → T4 raw 桶化
+4. 1 线程 && 单索引 && A>1                   → T3 gather_fused（跳过 linearize）
+5. A==1 || (after_contig && A>=4 && f32/f64) → linearize + gather_index（含 SVE/桶化）
+6. 其余                                    → T3 gather_fused
+```
+
+### 实测（pin node 5，interleaved median）
+
+| 形态 | 1t 修复前 | 1t 修复后 | 2t | 8t | 32t |
+|---|---|---|---|---|---|
+| 1D pure K=5M f32 | 0.75x | **1.07-1.28x** | 33.6x | 11.9x | 5.1x |
+| 1D pure K=5M f64 | 0.71x | **1.23-1.24x** | 20.8x | — | — |
+| x[i,j] K=100k | 0.66x | **1.21x** | 5.98x | 3.02x | 1.13x |
+| rowcopy A=4 K=200k | 0.86x | **1.39x** | 9.28x | 8.01x | 8.30x |
+| mask（广播） | ~1x | ~0.97-1.13x（噪声级） | 1.20x | 1.23x | 0.97-1.13x |
+
+mask 1 线程与高线程在 0.97-1.13x 间波动（不同密度 0.05/0.3/0.5），属噪声级，
+不做 fallback（integration.md §7 论证 fallback 自身有开销）。
+
+### 验证
+
+全 6 套件 **75/75 通过**（新增 6 个：多索引全长/广播标量/非连续、1 线程 rowcopy
+短行、1 线程大值域纯 gather、linearize 快/慢路径一致性）。
