@@ -17,19 +17,24 @@ index_impl(self, indices)
        → gather_rowcopy_raw(spec, out, g_nt); return    # 跳过 linearize（T2）
   7. T4 raw: 单索引 && B==1 && A==1
        → gather_bucket_pure_raw(spec, out)              # 小值域查表，返回 true 即返回
+       └─ 大值域 && 1 线程 → gather_single_1d(spec, out); return   # 单遍标量（T5）
   8. use_i32 = self.numel() < 2^31 && dtype ∈ {f32, i32}
   9. idx = at::empty({K}, dtype = use_i32 ? int32 : int64)
- 10. A==1 || (after_contiguous && A>=4 && f32/f64)
+ 10. 1 线程 && 单索引 && A>1 → gather_fused(spec, out); return   # 跳过 linearize（T5）
+ 11. A==1 || (after_contiguous && A>=4 && f32/f64)
        → linearize(spec, idx) + gather_index(spec, idx, out, g_nt); return
- 11. 其余（A<4 或非连续小块）→ gather_fused(spec, out)   # T3 融合单遍，不物化 idx
+ 12. 其余（A<4 或非连续小块）→ gather_fused(spec, out)   # T3 融合单遍，不物化 idx
 ```
 
 静态开关 `g_nt`：`HPC_INDEX_NT` 环境变量（非 "0" 即开），default off，进
 `gather_index`/`gather_rowcopy_raw` 的 `non_temporal` 参数。
 
-优化任务（T0-T4）引入的优先级：**先试不物化 idx 的短路路径**（gather_direct /
+优化任务（T0-T5）引入的优先级：**先试不物化 idx 的短路路径**（gather_direct /
 M1 raw rowcopy / T4 raw 桶化），需要 idx 时再 linearize；T3 fused 只为 A<4 或
-非连续小块服务（A>=4 连续块 linearize+rowcopy 实测更快）。
+非连续小块服务（A>=4 连续块 linearize+rowcopy 实测更快）；**T5 让 1 线程走
+单遍**（单索引 A==1 大值域 `gather_single_1d`、单索引 A>1 `gather_fused`），
+避开 linearize 两遍模型与 SVE 单线程低 MLP。多索引 A==1 与 mask **保持
+linearize+SVE**（实测 fused 解码更差）。
 
 ## 2. `IndexSpec` 数据布局（normalize.h）
 

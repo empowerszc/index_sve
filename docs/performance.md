@@ -2,7 +2,8 @@
 
 完整报告见 `benchmarks/RESULTS.md`（§1 原始矩阵、§2 全矩阵 6 轮中位数、§3 NT
 diff、§4 聚焦门禁、§5 结论、§6 备注、§7 集成、**§8 定点复测**、**§9 AI4S
-workload 优化轮 T0-T4**）。本文档是方法论与结论摘要。
+workload 优化轮 T0-T4**）。本文档是方法论与结论摘要；T5（1 线程回归修复）
+见 `optimizations.md` §9。
 
 ## 1. 环境
 
@@ -94,6 +95,14 @@ rowcopy 阈值 A>=4、M1 skip-linearize、T3 融合单遍、T4 小值域桶化�
 - **M4 feat[inverse] 高重复**：1t 3.6x、8-32t 3.8-4.8x。
 - **4B f32 K=10M 仍是硬件天花板**（§8.2）：T4 桶化值域需 ≤2048，大值域随机
   gather 仍走 SVE gather，高线程 0.2x。
+
+### 4.2 T5 1 线程回归修复（bd21485，见 optimizations.md §9）
+
+回归扫描（`benchmarks/bench_regression.py`）发现 1 线程多形态 0.6-0.9x（根因：
+linearize 两遍模型 + SVE gather 单线程低 MLP + 内层循环 at::Tensor 方法开销）。
+T5 用单遍标量（`gather_single_1d` / 1 线程 fused）+ fused/linearize 的 nb==1
+全长连续快路径修复，全部 ≥1.0x；2+ 线程本就全面占优。mask 1 线程保持 ~1.0x
+噪声级，不做 fallback。完整数据见 `optimizations.md` §9 实测表。
 
 ## 5. 与设计文档 §8 的对照
 

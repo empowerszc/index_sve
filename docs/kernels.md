@@ -131,6 +131,30 @@ bucket_gather_pure_raw<T, IdxT>（op.cpp 短路，单索引 B==1 A==1）
 - 实测：M3 keys[order] int64[2048] E=54k 从 0.2x → 1.4-2.6x（1t）与 8-12x
   （32t）。
 
+### 4.4 T5 1 线程单遍路径 `gather_single_1d` / fused nb==1 快路径（bd21485）
+
+**背景**：回归扫描发现 1 线程多形态劣化（0.6-0.9x），根因是 linearize 两遍模型
+固定开销 + 920F SVE gather 单线程低 MLP（§2），且 fused/linearize 内层循环每次
+访问 at::Tensor 方法（引用计数 + 虚调用）。2+ 线程全部占优。
+
+```cpp
+gather_single_1d<T, IdxT>（gather.cpp 新增，op.cpp 短路：1 线程单索引 B==1 A==1 大值域）
+gather_fused nb==1 快路径（all_full_contig：所有索引 numel==K 且连续时直读 idx_j[k]）
+linearize 同样预提取 + nb==1 快路径
+```
+
+- **T5-1** `gather_single_1d`：单索引 1D 纯 gather，1 线程跳过 linearize 直接
+  标量单遍（read idx → 边界检查 → 负索引归一 → `dst[k]=src[v]`）。下标张量属性
+  循环外一次提取。1D f32 K=5M 0.75x → 1.07x，f64 0.71x → 1.24x。
+- **T5-2** 1 线程单索引 A>1（rowcopy/scalar 短行）改走 `gather_fused` 单遍：
+  rowcopy A=4 K=200k 0.87x → 1.39x（linearize 原占 80% 开销，跳过即追平）。
+- **T5-3** fused/linearize 预提取索引张量属性 + nb==1 全长连续快路径（跳过
+  bfactor 混合进制广播解码，直读 `idx_j[k]`）：x[i,j] 双全长索引 0.66x → 1.21x
+  （linearize 4.84 → 1.10ms）。
+- **路由边界**：多索引 A==1（x[i,j]）与 mask 在 1 线程**保持 linearize+SVE**；
+  blanket "1 线程全 fused" 实测更差（x[i,j] 0.49x、x[:,i] 0.28x），因 fused 解码
+  开销在广播/多索引形态超过两遍模型的收益。
+
 ## 5. 快速路径 `gather_direct`（K<1024）
 
 - 跳过线性化分配，直接遍历原始下标张量（`spec.indices[j]` 逐个元素读

@@ -16,11 +16,13 @@ backward 不受影响。
   预取（`svprfd/svprfw_gather_u32index`）。
 - `K<1024` 快速路径 `gather_direct`：跳过线性化，直接读原始下标 + 内联检查
   （等价 ATen `Indexer`），支持 N-D 整数下标（broadcast_shape 混合进制解码）。
-- **优化轮（T0-T4）**：自适应并行粒度 `grain.h`（按 K 与线程数缩放 chunk）；
+- **优化轮（T0-T5）**：自适应并行粒度 `grain.h`（按 K 与线程数缩放 chunk）；
   M1 单索引大块 `gather_rowcopy_raw` skip-linearize；T4 小值域桶化
   （`bucket_gather_pure` / `bucket_gather_pure_raw`，值域 ≤2048 查表）；T3
   `gather_fused` 融合单遍（A<4 或非连续小块，不物化 idx）；int32 linearize
-  直接写 int32（不再经 int64 临时缓冲）。
+  直接写 int32（不再经 int64 临时缓冲）；**T5 1 线程单遍修复**（`gather_single_1d`
+  单索引大值域纯 gather、1 线程单索引 A>1 走 fused、fused/linearize 预提取索引
+  属性 + nb==1 全长连续快路径）。
 - 并行：`at::parallel_for`（`adaptive_grain`）。**注意必须 `-fopenmp` 编译**，
   否则 `parallel_for` 退化为串行（历史上曾导致 B==1 大 K 性能塌缩）。
 - 条件回退标量 `dispatch_scalar`：2B/1B 元素（half/bf16/i16/i8/uint8/bool）、
@@ -40,9 +42,9 @@ index_sve/
 │   ├── linearize.{h,cpp} # 线性化 + 越界检查，int32 保持（直接写 int32）
 │   ├── grain.h           # 自适应并行粒度（T0）
 │   ├── gather.{h,cpp}    # SVE gather/rowcopy/scalar + gather_direct + M1 raw / T3 fused / T4 桶化
-├── tests/                # 64 测试（smoke/normalize/correctness/errors/sve/model）
+├── tests/                # 75 测试（smoke/normalize/correctness/errors/sve/model）
 ├── benchmarks/           # bench_index.py（原始矩阵）、bench_pinned.py/bench_gate.py（定点核复测）
-│   │                     # bench_t1.py/bench_t2.py/bench_ai4s.py（优化轮 T0-T4 专项）
+│   │                     # bench_t1.py/bench_t2.py/bench_ai4s.py（优化轮专项）、bench_regression.py（回归扫描）
 │   └── RESULTS.md        # 完整基准报告（§1-§6 原测，§8 定点复测，§9 AI4S 优化轮）
 └── docs/                 # 本系列文档
 ```
@@ -107,6 +109,11 @@ HPC_INDEX_NO_OVERRIDE=1 python your_script.py   # import 不再改 aten::index.T
   weight.view[ki]（最热形态）1 线程 **8-10x** / 8 线程 1.3-2.7x；M2 feat[r]
   1-8 线程 2.6-4.0x；M3 keys[order] 小值域查表 1 线程 1.4-2.6x、32 线程 8-12x
   （优化前 0.2x）；M4 feat[inverse] 3.6-4.8x。
+- **T5 1 线程回归修复（`bench_regression.py`，bd21485）**：修复 1 线程下
+  0.6-0.9x 的劣化形态（linearize 两遍模型 + SVE 单线程低 MLP）：1D pure
+  f32/f64 K=5M 0.75x/0.71x → **1.07x/1.24x**；x[i,j] 多索引 0.66x → **1.21x**；
+  rowcopy A=4 短行 0.87x → **1.39x**。2+ 线程本就全面占优（1D pure 2t ~20-33x、
+  x[i,j] 2t 5.98x、rowcopy 8t 8x）。mask 1 线程 ~1.0x 噪声级。
 - **已知硬件限制**：4B（f32/i32）大 K 随机 pure gather 在 920F 上不敌标量
   （SVE 4B gather 指令 MLP 极低，38 线程仅 ~0.75 GB/s，标量 3.4 GB/s）——因此
   1D f32/i32 大 K 会 <1x（仅 2-4 线程窗口有 1.2-1.7x 收益）。f64 8B 路径不受
@@ -132,5 +139,6 @@ for t in tests/test_smoke.py tests/test_normalize.py tests/test_correctness.py \
          tests/test_errors.py tests/test_sve.py tests/test_model.py; do python $t; done
 ```
 
-全部通过 = 64/64（覆盖激活态）。覆盖下的正确性对拍采用两进程法：无覆盖进程
-生成 true-aten 参考，覆盖进程比较（`agent_space/sdd-index-sve/task10_ref_*`）。
+全部通过 = 75/75（覆盖激活态；test_correctness 25、test_errors 5、test_model 9、
+test_normalize 9、test_smoke 2、test_sve 25）。覆盖下的正确性对拍采用两进程法：
+无覆盖进程生成 true-aten 参考，覆盖进程比较（`agent_space/sdd-index-sve/task10_ref_*`）。

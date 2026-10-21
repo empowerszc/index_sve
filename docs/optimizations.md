@@ -1,9 +1,9 @@
-# 优化记录：T0-T4 性能优化轮
+# 优化记录：T0-T5 性能优化轮
 
-本文档详细记录针对 AI4S 真实负载的优化工作（T0-T4）。背景：用户实测真实 AI4S
+本文档详细记录针对 AI4S 真实负载的优化工作（T0-T5）。背景：用户实测真实 AI4S
 模型端到端**无提升甚至劣化**后，按优化任务建议（T0-T4）逐项实现，每项单独
-commit、全量测试 + 前后对比。对应性能数据见 `benchmarks/RESULTS.md` §9 与
-`performance.md` §4.1。
+commit、全量测试 + 前后对比；T5 针对回归扫描暴露的 1 线程劣化做定向修复。
+对应性能数据见 `benchmarks/RESULTS.md` §9 与 `performance.md` §4.1。
 
 ## 1. 背景与目标
 
@@ -34,6 +34,8 @@ commit、全量测试 + 前后对比。对应性能数据见 `benchmarks/RESULTS
 | T3 | 融合单遍（scalar 小块） | `gather.cpp:gather_fused`；op.cpp 末支 | db8251b |
 | T4 | 小值域桶化 + int32 直写 | `bucket_gather_pure`（gather_index 内）+ int32 linearize 直接写 int32 | 4fd733b |
 | T4+ | raw 桶化 + 无锁归约 | `bucket_gather_pure_raw`（op.cpp 短路，单索引 B==1 A==1）；min/max 归约改 per-chunk 数组 | 10921c1 |
+| T4++ | OOB 越界检查 | `bucket_gather_pure_raw` 缺小 src + 大 OOB 的边界检查（dom≤2048 曾静默错误）；补 `TORCH_CHECK_INDEX` | 31687d4 |
+| T5 | 1 线程回归修复 | `gather_single_1d`（单遍标量）+ fused/linearize nb==1 全长连续快路径 + 索引属性预提取；op.cpp 1 线程路由 | bd21485 |
 
 ## 3. 逐项详解
 
@@ -177,8 +179,8 @@ aten/hpc 的 median。4B f32 K=10M 大值域随机 gather 仍是硬件上限（1
 
 ## 6. 验证
 
-- 全 6 个测试套件 **64/64 通过**（每步都跑：test_correctness 25、test_errors 4、
-  test_model 9、test_normalize 9、test_smoke 2、test_sve 15）。
+- 全 6 个测试套件 **75/75 通过**（T5 后：test_correctness 25、test_errors 5、
+  test_model 9、test_normalize 9、test_smoke 2、test_sve 25）。
 - 正确性对拍：两进程法（无覆盖进程生成 true-aten 参考 `.pt`，覆盖进程比对），
   含 K>=1024 用例。
 - 桶化路径正确性由 test_correctness 的小值域用例覆盖（`randint(0,64/100,...)`）。
