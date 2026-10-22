@@ -137,6 +137,9 @@ HPC_INDEX_NO_OVERRIDE=1 python your_script.py   # import 不再改 aten::index.T
   `x[...]` 行为。如不希望全局生效，用 `HPC_INDEX_NO_OVERRIDE=1`。
 - 索引张量必须在 CPU（meta/CUDA 索引抛 aten 同文错误，不再段错误）；`out=`
   变体（`aten::index.Tensor_out`）也已覆盖。详见 semantics.md / optimizations.md §11。
+- **`torch.compile` 下默认不生效**：Inductor 会把 `aten::index` 内联成自己的
+  kernel，绕过 dispatcher 覆盖（实测慢 2.6x）。已验证强制 fallback 可恢复到
+  1.07-1.3x；方案、坑与 opt-in 计划见 `docs/torch-compile.md`（尚未默认启用）。
 - 语义细节、内核细节、移植指南见 `docs/`（目录见 `docs/index.md`；
   "如何劫持 aten::index" 见 `docs/override-mechanism.md`）。
 

@@ -291,3 +291,11 @@ mask 1 线程与高线程在 0.97-1.13x 间波动（不同密度 0.05/0.3/0.5）
   `test_errors.py` 增加 meta 索引子进程不崩溃用例（修复前 rc=-11）。
 - 全 7 套件 **83/83 通过**；true-aten 值级对拍 40/40；autograd / vmap / jvp /
   index_put / setitem 行为不变；`HPC_INDEX_NO_OVERRIDE=1` 下 out= 仍为真 aten。
+
+## 12. T7（实验，未落地）：`torch.compile` fallback
+
+`torch.compile` 默认由 Inductor 内联生成 `aten::index` 的 kernel，绕过 dispatcher
+覆盖（实测慢 2.6x）。用 `force_fallback(aten.index.Tensor)` 可让它回落到运行时
+调用、重新命中本算子，实测 2.6x → 1.07-1.3x。含 inductor 缓存、私有 API、
+FakeTensor 等坑与 opt-in 落地计划，见 [torch-compile.md](torch-compile.md)；
+实测数据见 `benchmarks/RESULTS.md` §11。**尚未实现，仅记录可行性结论。**

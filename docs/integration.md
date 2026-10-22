@@ -110,3 +110,11 @@ and the same dispatch key
   920F 的 `svld1_gather_u32index` 内存级并行度低是硬件上限（kernels.md §2）。
 - **维持现状**：override 仅注册 C++ op（每次调用 ~13µs 额外开销，S1 4ms 场景
   <0.5%），慢场景如实记录为硬件/算法边界，不做特殊回退。
+
+## 8. 与 torch.compile 的关系
+
+`torch.compile` 默认会把 `aten::index` 内联成 Inductor 自己生成的 kernel，运行时
+不再有 dispatcher 调用，**CPU 覆盖不生效**（实测慢 2.6x）。已验证强制 fallback
+可让 compile 重新走回本算子（1.07-1.3x）；机制、缓存/私有 API/FakeTensor 坑与
+opt-in 落地计划见 [torch-compile.md](torch-compile.md)。部署时若模型使用
+`torch.compile`，需注意这一点。

@@ -368,3 +368,25 @@ Full raw data (GB/s columns) in the run log; reproduce with:
 `HPC_INDEX_NO_OVERRIDE=1 HPC_AFFINITY=190-227 HPC_THREADS=1,2,4,8,16,32,36,38
 python benchmarks/bench_threads.py` on a quiet node.
 
+
+## 11. torch.compile 交互（T0-T6 构建，spike）
+
+`torch.compile` 默认不调用运行时 index 内核：Inductor 有 `aten.index` 的 lowering
+（`torch/_inductor/lowering.py:3878`），会生成自己的 `cpp_fused_index_0`，绕过
+dispatcher 覆盖。用 `force_fallback(aten.index.Tensor)` 可把它钉回成运行时调用，
+重新命中本算子。实测（f32 K=2M、int64 下标、8 线程、pin node 5，interleaved median，
+关闭 inductor 磁盘缓存）：
+
+| 路径 | 时间 | 相对 eager hpc |
+|---|---|---|
+| eager（本算子覆盖） | 2.01 ms | 1.00x |
+| compile 默认（Inductor 生成） | 5.30 ms | 2.64x 慢 |
+| compile + force_fallback（回到本算子） | 2.57-2.67 ms | 1.28-1.33x |
+| 真 aten 参考（`Tensor_out`，绕过覆盖） | 8.9 ms | — |
+
+规模曲线（compiled-fallback / eager）：1k 4.2x、100k 3.2x、2M 1.28x、8M **1.07x**。
+小 N 差距主要是 `torch.compile` 固定调用开销（同机平凡 `clone` 约 0.3ms）。
+
+注意：**inductor 磁盘缓存会让 fallback 补丁静默失效**（图哈希不含 lowering
+注册；`cache_key_tag` 只影响 autotune cache）。复现须用独立 `TORCHINDUCTOR_CACHE_DIR`
+并 `force_disable_caches=True`。完整分析、坑与 opt-in 计划见 `docs/torch-compile.md`。

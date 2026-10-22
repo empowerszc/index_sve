@@ -83,6 +83,9 @@ SVE 4B gather 指令 MLP 极低（38t ~0.75 GB/s vs 标量 3.4 GB/s，独立探�
   SIGSEGV）。`aten::index.Tensor_out` 也已覆盖（`out=` 同等加速）。
 - 扩展链 BiSheng `libomp.so`，`LD_LIBRARY_PATH` 必须含 BiSheng lib，否则
   import 报 `libomp.so: cannot open`（`README.md` 快速开始）。
+- **`torch.compile` 下默认不生效**：Inductor 把 `aten::index` 内联成自己生成的
+  kernel，dispatcher 覆盖被绕开（实测慢 2.6x）。已验证强制 fallback 可恢复
+  （1.07-1.3x），方案、坑与 opt-in 计划见 `torch-compile.md`（尚未落地）。
 - 慢形态与"为什么不 fallback"的深度分析见 `fallback-analysis.md`：核心结论是
   4B（f32/i32）大 K 大值域 pure gather 受 920F SVE 4B gather 指令 MLP 上限
   （探针 0.75 vs 标量 3.4 GB/s，硬件不可消除）；mask/A<4/非连续/2B-1B 等相对
@@ -95,6 +98,8 @@ SVE 4B gather 指令 MLP 极低（38t ~0.75 GB/s vs 标量 3.4 GB/s，独立探�
 - 4B 大 K 大值域 gather：软件预取 / 标量多路预取（硬件 MLP 上限的软件规避）。
 - mask 多线程 nonzero→scalar 的并行性问题（38t 0.35x，独立于本内核并行性）。
 - 端到端 AI4S 模型复测（验证 T0-T5 在真实负载上的整体收益）。
+- 落地 `compile_support.py`（opt-in `HPC_INDEX_COMPILE=1`）：`register_fake` +
+  `aten.index` fallback + 独立 inductor cache dir，再在真实模型上验证后决定默认值。
 
 ## 8. 复现 / 复测命令
 
