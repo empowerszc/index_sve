@@ -125,6 +125,8 @@ mask 经 T8 后 1.3-4.2x；
   标量已持平，换指令无收益）。
 - 端到端 AI4S 模型复测（验证 T0-T11 在真实负载上的整体收益）。
 - 小规模并行的有效线程上限（按每线程字节数），消除 S4/小 K 的 0.46-0.96x。
+- 扩展 dtype 白名单到 ATen 的完整集合（barebones u16/u32/u64、float8、
+  complex32 当前抛 NotImplementedError；见 semantics.md §4）。
 - 在真实 AI4S 模型上验证 `HPC_INDEX_COMPILE=1` 的端到端收益与编译时间，再决定
   是否默认开启（当前默认关闭）。
 
@@ -133,7 +135,9 @@ mask 经 T8 后 1.3-4.2x；
 ```bash
 # 全量测试
 for t in tests/test_smoke.py tests/test_normalize.py tests/test_correctness.py \
-         tests/test_errors.py tests/test_sve.py tests/test_model.py; do python $t; done
+         tests/test_errors.py tests/test_sve.py tests/test_model.py \
+         tests/test_index_out.py tests/test_mask_fused.py tests/test_smallk.py \
+         tests/test_compile_optin.py; do python $t; done
 
 # true-aten 值级对拍（正确性，非性能）
 python tests/verify_against_aten.py --mode both

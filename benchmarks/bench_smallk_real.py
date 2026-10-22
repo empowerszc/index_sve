@@ -12,10 +12,12 @@ import ctypes
 import json
 import os
 import statistics
+import sys
 import time
 
 import torch
 
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import index_sve  # 覆盖是否安装由 HPC_INDEX_NO_OVERRIDE 决定
 
 _LIBOMP = None
@@ -32,7 +34,15 @@ def set_threads(t):
     if _LIBOMP is not None:
         _LIBOMP.omp_set_num_threads(t)
 
-os.sched_setaffinity(0, set(range(190, 228)))
+_affinity = os.environ.get("HPC_AFFINITY", "190-227")
+_cpus = set()
+for _part in _affinity.replace(" ", "").split(","):
+    if "-" in _part:
+        _lo, _hi = _part.split("-")
+        _cpus.update(range(int(_lo), int(_hi) + 1))
+    else:
+        _cpus.add(int(_part))
+os.sched_setaffinity(0, _cpus)
 
 THREADS = [int(t) for t in os.environ.get("HPC_THREADS", "1,2,4,8,16,32,36").split(",")]
 ITERS = int(os.environ.get("HPC_ITERS", "200"))

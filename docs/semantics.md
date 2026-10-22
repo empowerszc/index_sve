@@ -49,10 +49,15 @@ index {v} is out of bounds for dimension {j} with size {s}
 
 ## 4. dtype 覆盖
 
-与 ATen CPU index 内核的 dtype 集合**完全一致**：
-`AT_DISPATCH_ALL_TYPES_AND_COMPLEX_AND3(kHalf, kBFloat16, kBool)`。
-即：f32/f64/i32/i64/i16/i8/u8/bool/half/bf16/complex64/complex128。
-u32/u64/f8 等在任何实现下都报错（白名单外）。**无 dtype 回归**。
+白名单为
+`AT_DISPATCH_ALL_TYPES_AND_COMPLEX_AND3(kHalf, kBFloat16, kBool)`：
+f32/f64/i32/i64/i16/i8/u8/bool/half/bf16/complex64/complex128。
+
+**已知 gap（非 T11 引入）**：torch 2.10 的 ATen CPU `index` 还支持
+barebones unsigned（u16/u32/u64）、float8 系列与 complex32；本实现的 dispatch
+未包含这些类型，会抛 `NotImplementedError: "hpc_index_..." not implemented for
+'UInt16'`。它们不在 AI4S 模型路径上，暂未扩展；若需要，应把 8 处 dispatch
+统一扩到完整集合并补 dtype 回归。白名单内**无 dtype 回归**。
 
 ## 5. 有意差异（设计决策，非 bug）
 

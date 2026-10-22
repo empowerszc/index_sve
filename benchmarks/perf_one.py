@@ -17,7 +17,15 @@ import torch
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import index_sve
 
-os.sched_setaffinity(0, set(range(190, 228)))
+_affinity = os.environ.get("HPC_AFFINITY", "190-227")
+_cpus = set()
+for _part in _affinity.replace(" ", "").split(","):
+    if "-" in _part:
+        _lo, _hi = _part.split("-")
+        _cpus.update(range(int(_lo), int(_hi) + 1))
+    else:
+        _cpus.add(int(_part))
+os.sched_setaffinity(0, _cpus)
 
 _LIBOMP = None
 for _line in open("/proc/self/maps"):
