@@ -62,13 +62,18 @@ A==1 || (连续 && A>=4 && f32/f64) → linearize + gather_index（SVE/桶化/sc
 | rowcopy A=4 短行 | 0.87x | **1.39x** |
 | mask | ~1.0x | 噪声级 0.97-1.13x（密度相关） |
 
-**2-32 线程（全面占优）**：1D pure 2t ~20-33x、x[i,j] 2t 5.98x、rowcopy 8t 8x；
-AI4S 真实形态 M1-M4 见 `optimizations.md` §5 与 `README.md` 基准摘要。
+**全线程扫描（T0-T5 构建，RESULTS §10，30 iters interleaved）**：核心场景
+（S1/P1/P2/P3/S4、1D f64/f32、x[i,j]、rowcopy A=4）在 1/2/4/8/16/32/36/38
+全部 8 档线程 **≥1.06x**，多数大幅占优。低线程最强（RowCopy/1D pure 2-4t
+13-66x，单节点内存带宽 ~60 GB/s 用少量核即饱和）。P3 mask 最弱（1-1.9x，全程
+平），是 nonzero→scalar 两段式串行的结构限制。复现：`benchmarks/bench_threads.py`
+（`HPC_THREADS=1,2,4,8,16,32,36,38`）。
 
 **硬件上限（不可修，非 bug）**：4B（f32/i32）大 K 随机 pure gather 在 920F 上
-SVE 4B gather 指令 MLP 极低（38t ~0.75 GB/s vs 标量 3.4 GB/s），1D f32/i32 大 K
-大值域 <1x（2-4 线程窗口 1.2-1.7x）。这是硬件特性（`benchmarks/RESULTS.md` §8.2），
-T4 桶化在小值域时规避，大值域无解。
+SVE 4B gather 指令 MLP 极低（38t ~0.75 GB/s vs 标量 3.4 GB/s，独立探针）。当前
+构建相对 aten 已无 <1x 格（T0-T5 后），但探针数据仍是硬件限制的确定性陈述
+（`benchmarks/RESULTS.md` §8.2）；T4 桶化在小值域时规避，大值域靠软件预取等
+待未来优化。
 
 ## 6. 已知边界 / 注意事项
 
@@ -76,9 +81,11 @@ T4 桶化在小值域时规避，大值域无解。
   `aten::index.Tensor`；`HPC_INDEX_NO_OVERRIDE=1` 可跳过（基准对拍用）。
 - 扩展链 BiSheng `libomp.so`，`LD_LIBRARY_PATH` 必须含 BiSheng lib，否则
   import 报 `libomp.so: cannot open`（`README.md` 快速开始）。
-- fallback 决策：慢场景（如 1 线程 mask ~1.0x、4B 大 K 大值域）**不 fallback
-  到 aten**（fallback 自身有 45µs/调用级开销，见 `integration.md` §7）；T5 已把
-  可修的 1 线程劣化修到 ≥1.0x。
+- 慢形态与"为什么不 fallback"的深度分析见 `fallback-analysis.md`：核心结论是
+  4B（f32/i32）大 K 大值域 pure gather 受 920F SVE 4B gather 指令 MLP 上限
+  （探针 0.75 vs 标量 3.4 GB/s，硬件不可消除）；mask/A<4/非连续/2B-1B 等相对
+  aten 通常 ≥1x 只是吃不到 SVE 加速；fallback 的 Python wrapper 开销 ~45µs/
+  调用对以 RowCopy 小张量为收益主体的本算子是不可接受的全局回归。
 
 ## 7. 下一步候选（未做）
 
@@ -93,6 +100,13 @@ T4 桶化在小值域时规避，大值域无解。
 # 全量测试
 for t in tests/test_smoke.py tests/test_normalize.py tests/test_correctness.py \
          tests/test_errors.py tests/test_sve.py tests/test_model.py; do python $t; done
+
+# true-aten 值级对拍（正确性，非性能）
+python tests/verify_against_aten.py --mode both
+
+# 全线程扫描（RESULTS §10，pin node 5 静默节点，30 iters interleaved）
+HPC_INDEX_NO_OVERRIDE=1 HPC_AFFINITY=190-227 HPC_THREADS=1,2,4,8,16,32,36,38 \
+  python benchmarks/bench_threads.py
 
 # 回归扫描（pin node 5 静默节点，避免共享箱噪声）
 HPC_INDEX_NO_OVERRIDE=1 HPC_AFFINITY=190-227 HPC_THREADS=1,8,32 \

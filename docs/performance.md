@@ -2,8 +2,8 @@
 
 完整报告见 `benchmarks/RESULTS.md`（§1 原始矩阵、§2 全矩阵 6 轮中位数、§3 NT
 diff、§4 聚焦门禁、§5 结论、§6 备注、§7 集成、**§8 定点复测**、**§9 AI4S
-workload 优化轮 T0-T4**）。本文档是方法论与结论摘要；T5（1 线程回归修复）
-见 `optimizations.md` §9。
+workload 优化轮 T0-T4**、**§10 T0-T5 全线程扫描 1-38t**）。本文档是方法论与
+结论摘要；T5（1 线程回归修复）见 `optimizations.md` §9。
 
 ## 1. 环境
 

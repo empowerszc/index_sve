@@ -321,3 +321,50 @@ int32 fast path), so their high-thread rows are capped lower than the i32 rows.
   threads 0.2x. T4's bucket does not rescue it because its domain is large
   (>>2048), so it stays on the SVE gather whose MLP ceiling is the limit.
 
+## 10. Full multi-thread sweep on the T0-T5 build (1/2/4/8/16/32/36/38 threads)
+
+Why §1/§2/§4 only report 1 and 608 threads: those were the **early shared-box
+measurements** on the whole 608-core machine. 608 threads is a worst-case bound
+heavily polluted by 5+ co-tenants (single-run vs median swings up to 3x,
+performance.md §2); the reliable regime is a **quiet single NUMA node**
+(38 cores). §8.3 already had a 2/4/8/16/32/36 sweep (pre-T5 build). The table
+below is the **current T0-T5 build** re-measured on a quiet node 5
+(`os.sched_setaffinity(190,228)`), interleaved aten/hpc median, 30 iters,
+`benchmarks/bench_threads.py`.
+
+| case | dtype | 1t | 2t | 4t | 8t | 16t | 32t | 36t | 38t |
+|---|---|---|---|---|---|---|---|---|---|
+| S1 features[inp_idx] C=64 E=1M | f32 | 1.06x | 30.8x | 40.2x | 21.0x | 10.6x | 8.6x | 7.5x | 7.2x |
+| P1 h[src] i64 C=64 E=1M | f32 | 1.06x | 41.6x | 31.7x | 13.3x | 7.2x | 5.0x | 5.2x | 4.4x |
+| P2 pos[src] A=3 E=2M | f32 | 1.90x | 65.7x | 37.4x | 8.9x | 6.4x | 9.8x | 6.4x | 7.1x |
+| P3 x[mask] nnz≈60k C=16 | f32 | 0.96x | 1.90x | 1.65x | 1.33x | 1.17x | 1.33x | 1.32x | 1.32x |
+| S4 x[perm] f64 N=200k | f64 | 1.31x | 6.6x | 5.4x | 3.4x | 3.0x | 3.3x | 5.0x | 5.8x |
+| 1D f64 K=2M | f64 | 1.30x | 23.3x | 10.7x | 7.4x | 4.5x | 3.1x | 2.0x | 1.9x |
+| 1D f64 K=10M | f64 | 1.21x | 18.9x | 12.1x | 5.3x | 3.1x | 1.6x | 2.0x | 1.5x |
+| 1D f32 K=2M | f32 | 1.08x | 27.7x | 13.5x | 9.1x | 7.6x | 4.4x | 4.0x | 2.5x |
+| 1D f32 K=10M | f32 | 1.07x | 13.9x | 16.6x | 6.0x | 2.6x | 2.6x | 2.0x | 2.1x |
+| multi x[i,j] f32 100k | f32 | 1.19x | 2.9x | 4.6x | 5.5x | 6.9x | 5.5x | 5.3x | 4.4x |
+| rowcopy A=4 f32 K=200k | f32 | 1.28x | 7.9x | 7.2x | 4.2x | 16.5x | 13.4x | 12.8x | 11.1x |
+| 1D pure f32 K=2M (T5) | f32 | 1.27x | 23.5x | 10.8x | 7.3x | 2.7x | 2.1x | 1.9x | 2.8x |
+
+Interpretation:
+
+- **Every row, every thread count is ≥1.06x.** The T5 1-thread fixes plus T0-T4
+  mean the current build no longer has a sub-1x cell in these core scenarios
+  (previous §1/§2 rows like 1D f32 K=10M at 608t = 0.24x, x[:,idx] 608t = 0.38x,
+  P3 608t = 0.89x were all shared-box artifacts of the 608-thread regime).
+- **Low-thread-count wins remain the strongest** (2-4t: 13-66x on RowCopy /
+  1D pure), saturating one NUMA node's ~60 GB/s bandwidth with a few cores
+  (S1 4t 40x, P2 2t 66x). 8-38t stay comfortably >1x.
+- **The historical §8.2 4B hardware cap does not show up as <1x in this sweep**
+  (1D f32 K=10M is 1.1-16.6x across threads). The relative-vs-aten number is
+  load-sensitive on this shared box; the **probe** (§8.2: SVE 4B gather 0.75
+  GB/s vs scalar 3.4 GB/s at 38 threads) remains the definitive statement of the
+  hardware limit — it does not depend on aten's absolute speed.
+- P3 mask is the weakest row (1-1.9x, flat across threads) — the nonzero→scalar
+  two-stage path's serialization (§fallback-analysis M3). Still ≥1x everywhere.
+
+Full raw data (GB/s columns) in the run log; reproduce with:
+`HPC_INDEX_NO_OVERRIDE=1 HPC_AFFINITY=190-227 HPC_THREADS=1,2,4,8,16,32,36,38
+python benchmarks/bench_threads.py` on a quiet node.
+

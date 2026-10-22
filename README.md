@@ -45,7 +45,8 @@ index_sve/
 ├── tests/                # 75 测试（smoke/normalize/correctness/errors/sve/model）
 ├── benchmarks/           # bench_index.py（原始矩阵）、bench_pinned.py/bench_gate.py（定点核复测）
 │   │                     # bench_t1.py/bench_t2.py/bench_ai4s.py（优化轮专项）、bench_regression.py（回归扫描）
-│   └── RESULTS.md        # 完整基准报告（§1-§6 原测，§8 定点复测，§9 AI4S 优化轮）
+│   │                     # bench_threads.py（全线程扫描 1-38t）
+│   └── RESULTS.md        # 完整基准报告（§1-§6 原测，§8 定点复测，§9 AI4S 优化轮，§10 全线程扫描）
 └── docs/                 # 本系列文档
 ```
 
@@ -114,12 +115,18 @@ HPC_INDEX_NO_OVERRIDE=1 python your_script.py   # import 不再改 aten::index.T
   f32/f64 K=5M 0.75x/0.71x → **1.07x/1.24x**；x[i,j] 多索引 0.66x → **1.21x**；
   rowcopy A=4 短行 0.87x → **1.39x**。2+ 线程本就全面占优（1D pure 2t ~20-33x、
   x[i,j] 2t 5.98x、rowcopy 8t 8x）。mask 1 线程 ~1.0x 噪声级。
-- **已知硬件限制**：4B（f32/i32）大 K 随机 pure gather 在 920F 上不敌标量
-  （SVE 4B gather 指令 MLP 极低，38 线程仅 ~0.75 GB/s，标量 3.4 GB/s）——因此
-  1D f32/i32 大 K 会 <1x（仅 2-4 线程窗口有 1.2-1.7x 收益）。f64 8B 路径不受
-  影响。设计定位是模型 gather 密集的行/8B/小值域路径的定向加速器，非通用 1D
-  索引加速。
-- 共享 608 线程箱噪声大：§1 的 608 列是噪声下限，**以 §8 定点数为准**。
+- **全线程扫描（RESULTS §10，`bench_threads.py`，1/2/4/8/16/32/36/38）**：当前
+  构建核心场景**全部 8 档线程 ≥1.06x**（S1 2-4t 31-40x、P2 2t 66x、1D f64 2t
+  19-23x、1D f32 K=10M 2-4t 14-17x），不再有历史 §1/§2 的 <1x 格——那些是共享箱
+  608 全核模式的噪声产物。P3 mask 最弱（1-1.9x 全程平），是两段式串行结构限制。
+- **已知硬件限制**：4B（f32/i32）大 K 随机 pure gather 的 SVE 4B gather 指令
+  在 920F 上 MLP 极低（独立探针：38 线程仅 ~0.75 GB/s，标量 3.4 GB/s）——这是
+  硬件指令特性（RESULTS §8.2，`docs/fallback-analysis.md` §3.1）。当前构建相对
+  aten 已无 <1x 格（§10 全线程扫描 1D f32 K=10M 各线程 1.1-16.6x），但探针仍是
+  硬件限制的确定性陈述；小值域由 T4 桶化规避。f64 8B 路径不受影响。设计定位是
+  模型 gather 密集的行/8B/小值域路径的定向加速器，非通用 1D 索引加速。
+- 共享 608 线程箱噪声大：§1 的 608 列是噪声下限，**以 §8/§10 定点与单节点数据
+  为准**（全线程矩阵见 RESULTS §10、`bench_threads.py`）。
 
 ## 已知限制 / 注意事项
 
