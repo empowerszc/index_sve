@@ -4,6 +4,7 @@
 #include "gather.h"
 #include <ATen/MemoryOverlap.h>
 #include <c10/util/Exception.h>
+#include <atomic>
 #include <cstdlib>
 
 namespace {
@@ -80,6 +81,39 @@ void index_into(const at::Tensor& self, const IndexSpec& spec, at::Tensor& out) 
   return;
 }
 
+// 单 mask 融合快路径：一次扫描 bool/byte 掩码直接压实 + 行拷贝，跳过 nonzero 的中间
+// int64 下标与第二次 gather。仅在 mask 覆盖 self 前 md 维、两者均连续、同 CPU 时启用。
+std::atomic<uint64_t> g_mask_fused{0};
+
+bool mask_fast_path(const at::Tensor& self,
+                    const std::vector<c10::optional<at::Tensor>>& vec,
+                    at::Tensor& out) {
+  if (vec.size() != 1 || !vec[0].has_value() || !vec[0]->defined()) return false;
+  const at::Tensor& mask = *vec[0];
+  const auto st = mask.scalar_type();
+  if (st != at::kBool && st != at::kByte) return false;
+  if (!self.is_cpu() || !mask.is_cpu()) return false;
+  const int64_t md = mask.dim();
+  if (md < 1 || md > self.dim()) return false;
+  if (!mask.is_contiguous() || !self.is_contiguous()) return false;
+  for (const auto j : c10::irange(md)) {
+    if (mask.size(j) != self.size(j)) {
+      TORCH_CHECK_INDEX(false,
+          "The shape of the mask ", mask.sizes(),
+          " at index ", j,
+          " does not match the shape of the indexed tensor ", self.sizes(),
+          " at index ", j);
+    }
+  }
+  if (st == at::kByte) {
+    TORCH_WARN("indexing with dtype torch.uint8 is now deprecated,"
+               " please use a dtype torch.bool instead.");
+  }
+  out = gather_mask(self, mask);
+  g_mask_fused.fetch_add(1, std::memory_order_relaxed);
+  return true;
+}
+
 }  // namespace
 
 at::Tensor index_impl(const at::Tensor& self,
@@ -88,8 +122,10 @@ at::Tensor index_impl(const at::Tensor& self,
   TORCH_CHECK_INDEX(!vec.empty(), "at least one index must be provided");
   TORCH_CHECK_INDEX(vec.size() <= (size_t)self.dim(),
       "too many indices for tensor of dimension ", self.dim(), " (got ", vec.size(), ")");
+  at::Tensor out;
+  if (mask_fast_path(self, vec, out)) return out;
   auto spec = normalize_index(self, vec);
-  at::Tensor out = at::empty(spec.out_shape, self.options());
+  out = at::empty(spec.out_shape, self.options());
   index_into(self, spec, out);
   return out;
 }
@@ -154,6 +190,9 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     return std::make_tuple(spec.transposed_self, spec.indexed_dims, spec.indexed_sizes,
                            spec.indexed_strides, spec.B, spec.K, spec.A, spec.out_shape,
                            spec.row_off, spec.col_off, spec.after_contiguous, spec.indices);
+  });
+  m.def("mask_fused_count", []() {
+    return g_mask_fused.load(std::memory_order_relaxed);
   });
   m.def("idx_dtype_choice", [](int64_t numel, const std::string& dtype) {
     // 镜像 index_impl 的 use_i32 判定（仅供测试验证 f32 溢出回退逻辑）

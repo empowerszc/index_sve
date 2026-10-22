@@ -25,10 +25,13 @@ CPU 键覆盖，autograd 不受影响）。构建/运行契约见 `README.md` �
 | T4+ | raw 桶化 `bucket_gather_pure_raw`（单索引 B==1 A==1）+ 无锁归约 | 10921c1 | ✅ |
 | T4++ | raw 桶化补 OOB 越界检查（曾静默错误） | 31687d4 | ✅ |
 | T5 | 1 线程回归修复（单遍标量 + nb==1 快路径） | bd21485 | ✅ |
+| T6 | 跨设备索引校验 + `aten::index.Tensor_out` 覆盖 | f791c39 | ✅ |
+| T8 | mask 单遍融合 compaction（跳过 nonzero） | 本轮 | ✅ |
 
 ## 3. 路由现状（op.cpp `index_impl`）
 
 ```
+单 mask && 覆盖前 m 维 && 连续 && CPU → gather_mask（单遍压实，T8）
 K < 1024                          → gather_direct（无线性化）
 单索引 && A>=4096 && 连续 && f32/f64 → M1 raw rowcopy（skip-linearize）
 单索引 && B==1 && A==1            → T4 raw 桶化（小值域查表）
@@ -42,9 +45,9 @@ A==1 || (连续 && A>=4 && f32/f64) → linearize + gather_index（SVE/桶化/sc
 
 ## 4. 测试
 
-- **83/83 通过**：test_correctness 25、test_errors 6、test_model 9、
-  test_normalize 9、test_smoke 2、test_sve 25、test_index_out 7。
-- 复跑：`for t in tests/test_smoke.py tests/test_normalize.py tests/test_correctness.py tests/test_errors.py tests/test_sve.py tests/test_model.py tests/test_index_out.py; do python $t; done`
+- **92/92 通过**：test_correctness 25、test_errors 6、test_model 9、
+  test_normalize 9、test_smoke 2、test_sve 25、test_index_out 7、test_mask_fused 9。
+- 复跑：`for t in tests/test_smoke.py tests/test_normalize.py tests/test_correctness.py tests/test_errors.py tests/test_sve.py tests/test_model.py tests/test_index_out.py tests/test_mask_fused.py; do python $t; done`
 - 注意：测试同一进程串行跑，1 线程用例必须 `try/finally` 恢复
   `torch.get_num_threads()`（test_sve.py 内已如此）。
 - **true-aten 值级对拍**（覆盖下测试自洽，须两进程法）：
@@ -60,13 +63,14 @@ A==1 || (连续 && A>=4 && f32/f64) → linearize + gather_index（SVE/桶化/sc
 | 1D pure f32/f64 K=5M | 0.75x / 0.71x | **1.07x / 1.24x** |
 | x[i,j] 多索引 | 0.66x | **1.21x** |
 | rowcopy A=4 短行 | 0.87x | **1.39x** |
-| mask | ~1.0x | 噪声级 0.97-1.13x（密度相关） |
+| mask | ~1.0x | **2.1x**（T8 单遍融合后） |
 
 **全线程扫描（T0-T5 构建，RESULTS §10，30 iters interleaved）**：核心场景
 （S1/P1/P2/P3/S4、1D f64/f32、x[i,j]、rowcopy A=4）在 1/2/4/8/16/32/36/38
 全部 8 档线程 **≥1.06x**，多数大幅占优。低线程最强（RowCopy/1D pure 2-4t
-13-66x，单节点内存带宽 ~60 GB/s 用少量核即饱和）。P3 mask 最弱（1-1.9x，全程
-平），是 nonzero→scalar 两段式串行的结构限制。复现：`benchmarks/bench_threads.py`
+13-66x，单节点内存带宽 ~60 GB/s 用少量核即饱和）。P3 mask 在 T8 前最弱
+（1-1.9x，nonzero 两段式）；T8 单遍融合后 1t 2.1x、2-32t 为新路径旧路径的
+3.6-5.4x、38t 4.6x（RESULTS §12）。复现：`benchmarks/bench_threads.py`
 （`HPC_THREADS=1,2,4,8,16,32,36,38`）。
 
 **硬件上限（不可修，非 bug）**：4B（f32/i32）大 K 随机 pure gather 在 920F 上
@@ -88,15 +92,14 @@ SVE 4B gather 指令 MLP 极低（38t ~0.75 GB/s vs 标量 3.4 GB/s，独立探�
   （1.07-1.3x），方案、坑与 opt-in 计划见 `torch-compile.md`（尚未落地）。
 - 慢形态与"为什么不 fallback"的深度分析见 `fallback-analysis.md`：核心结论是
   4B（f32/i32）大 K 大值域 pure gather 受 920F SVE 4B gather 指令 MLP 上限
-  （探针 0.75 vs 标量 3.4 GB/s，硬件不可消除）；mask/A<4/非连续/2B-1B 等相对
-  aten 通常 ≥1x 只是吃不到 SVE 加速；fallback 的 Python wrapper 开销 ~45µs/
+  （探针 0.75 vs 标量 3.4 GB/s，硬件不可消除）；A<4/非连续/2B-1B 等相对 aten
+  通常 ≥1x 只是吃不到 SVE 加速，mask 经 T8 后 2-8x；fallback 的 Python wrapper 开销 ~45µs/
   调用对以 RowCopy 小张量为收益主体的本算子是不可接受的全局回归。
 
 ## 7. 下一步候选（未做）
 
 - M1 值域桶化（T2 阶段 2）：`gather_rowcopy_raw` 未对下标做值域分析，可再桶化。
 - 4B 大 K 大值域 gather：软件预取 / 标量多路预取（硬件 MLP 上限的软件规避）。
-- mask 多线程 nonzero→scalar 的并行性问题（38t 0.35x，独立于本内核并行性）。
 - 端到端 AI4S 模型复测（验证 T0-T5 在真实负载上的整体收益）。
 - 落地 `compile_support.py`（opt-in `HPC_INDEX_COMPILE=1`）：`register_fake` +
   `aten.index` fallback + 独立 inductor cache dir，再在真实模型上验证后决定默认值。

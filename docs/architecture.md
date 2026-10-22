@@ -33,8 +33,9 @@ index_impl(self, indices)
 M1 raw rowcopy / T4 raw 桶化），需要 idx 时再 linearize；T3 fused 只为 A<4 或
 非连续小块服务（A>=4 连续块 linearize+rowcopy 实测更快）；**T5 让 1 线程走
 单遍**（单索引 A==1 大值域 `gather_single_1d`、单索引 A>1 `gather_fused`），
-避开 linearize 两遍模型与 SVE 单线程低 MLP。多索引 A==1 与 mask **保持
-linearize+SVE**（实测 fused 解码更差）。
+避开 linearize 两遍模型与 SVE 单线程低 MLP。多索引 A==1 **保持
+linearize+SVE**（实测 fused 解码更差）；单 mask 在入口走 `mask_fast_path` →
+`gather_mask` 单遍压实（T8），绕过 normalize 的 nonzero。
 
 ## 2. `IndexSpec` 数据布局（normalize.h）
 
@@ -69,7 +70,8 @@ struct IndexSpec {
 1. `check_index_types` — 下标 dtype 白名单 {int64, int32, uint8, bool}（
    ATen `checkIndexTensorTypes(allow_int=true)`）。越界 dtype（u32/f16/f8 等）报
    "tensors used as indices must be long, int, byte or bool tensors"。
-2. **mask 处理** — bool/byte 下标先 `nonzero()` 再 `select(1, j)` 成 1 列，同时
+2. **mask 处理** — 可融合的单 mask 已在 `op.cpp` 入口短路（T8，见 §1）；其余
+   bool/byte 下标在此先 `nonzero()` 再 `select(1, j)` 成 1 列，同时
    维护 `srcIdx`（mask 展开后结果维度）。mask 的维度不对报 "The shape of the
    mask {..} at index {j} does not match the shape of the indexed tensor {..} at
    index {0}"。byte mask 保留 ATen 的 deprecation 警告。

@@ -58,12 +58,11 @@
 6. `tests/test_model.py`（模型场景）；
 7. 两进程 true-aten 对拍（semantics.md §6，含 K>=1024 用例）。
 
-全部通过 = 83/83（覆盖激活态）。
+全部通过 = 92/92（覆盖激活态）。
 
 ## 6. 已知可优化项（后续工作）
 
-- **P3 mask 多线程**：nonzero→scalar gather 在 38 线程 0.35x。可考虑 mask 路径
-  直接行式 gather 并行（避免 nonzero 后再 gather 的两段式）。
+- ~~**P3 mask 多线程**~~：T8 已用单遍 compaction 修复（RESULTS §12）。
 - **4B 大 K 随机 gather**：受 920F SVE 4B gather MLP 限制；可试软件预取加深
   展开或标量多路预取（kernels.md §2）。
 - **M1 值域桶化（T2 阶段 2，未做）**：M1 大块路径当前是 skip-linearize 直接

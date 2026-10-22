@@ -6,6 +6,7 @@
 #include <c10/util/irange.h>
 #include <limits>
 #include <mutex>
+#include <vector>
 #include <type_traits>
 
 namespace {
@@ -696,4 +697,75 @@ void gather_fused(const IndexSpec& spec, at::Tensor& out) {  AT_DISPATCH_ALL_TYP
     gather_fused<scalar_t>(spec, static_cast<scalar_t*>(out.data_ptr()),
         static_cast<const scalar_t*>(spec.transposed_self.data_ptr()));
   });
+}
+
+at::Tensor gather_mask(const at::Tensor& self, const at::Tensor& mask) {
+  const int64_t md = mask.dim();
+  const int64_t n = mask.numel();
+  const uint8_t* mb = static_cast<const uint8_t*>(mask.data_ptr());
+  int64_t A = 1;
+  for (const auto d : c10::irange(md, self.dim())) A *= self.size(d);
+
+  const int64_t grain = adaptive_grain(n);
+  const int64_t nchunks = (n + grain - 1) / grain;
+  std::vector<int64_t> counts(nchunks, 0);
+  auto count_range = [&](int64_t lo, int64_t hi) {
+    for (int64_t c = lo; c < hi; ++c) {
+      const int64_t s = c * grain, e = std::min(n, s + grain);
+      int64_t cnt = 0;
+      for (int64_t p = s; p < e; ++p) cnt += (mb[p] != 0);
+      counts[c] = cnt;
+    }
+  };
+  // 小掩码并行计数被任务开销吞噬（200KB 实测并行反而慢 ~2x），串行扫描即可。
+  if (n < (1LL << 20)) {
+    count_range(0, nchunks);
+  } else {
+    at::parallel_for(0, nchunks, 1, count_range);
+  }
+  int64_t nnz = 0;
+  std::vector<int64_t> offsets(nchunks + 1, 0);
+  for (const auto c : c10::irange(nchunks)) {
+    nnz += counts[c];
+    offsets[c + 1] = nnz;
+  }
+
+  std::vector<int64_t> out_shape;
+  out_shape.reserve(1 + self.dim() - md);
+  out_shape.push_back(nnz);
+  for (const auto d : c10::irange(md, self.dim())) out_shape.push_back(self.size(d));
+  at::Tensor out = at::empty(out_shape, self.options());
+  if (nnz == 0 || A == 0) return out;
+
+  AT_DISPATCH_ALL_TYPES_AND_COMPLEX_AND3(at::kHalf, at::kBFloat16, at::kBool,
+      out.scalar_type(), "hpc_index_mask", [&] {
+    const scalar_t* src = static_cast<const scalar_t*>(self.data_ptr());
+    scalar_t* dst = static_cast<scalar_t*>(out.data_ptr());
+    at::parallel_for(0, nchunks, 1, [&](int64_t lo, int64_t hi) {
+      for (int64_t c = lo; c < hi; ++c) {
+        int64_t w = offsets[c];
+        const int64_t s = c * grain, e = std::min(n, s + grain);
+        for (int64_t p = s; p < e; ++p) {
+          if (mb[p] == 0) continue;
+          const scalar_t* sp = src + p * A;
+          scalar_t* dp = dst + w * A;
+          if (A >= 4 && out.scalar_type() == at::kFloat) {
+            copy_contig_sve<float, false>(
+                reinterpret_cast<const float*>(sp), reinterpret_cast<float*>(dp), A);
+            ++w;
+            continue;
+          }
+          if (A >= 4 && out.scalar_type() == at::kDouble) {
+            copy_contig_sve<double, false>(
+                reinterpret_cast<const double*>(sp), reinterpret_cast<double*>(dp), A);
+            ++w;
+            continue;
+          }
+          for (const auto k : c10::irange(A)) dp[k] = sp[k];
+          ++w;
+        }
+      }
+    });
+  });
+  return out;
 }

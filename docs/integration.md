@@ -96,7 +96,8 @@ and the same dispatch key
 调查，结论是**不实现 fallback**。记录理由供日后复读：
 
 - **慢场景**（RESULTS §8/performance §3）：1D f32/i32 大 K（K=10M）纯 gather 在
-  ≥8 线程（0.18-0.7x）、P3 mask 高线程（0.35x）、P2 608t（0.38x）。低线程的
+  ≥8 线程（0.18-0.7x）、P2 608t（0.38x）。P3 mask 高线程问题已由 T8 单遍融合
+  修复（38t 4.6x）。低线程的
   RowCopy/PureGather 8B 是本算子的可靠收益（2-4t 20-34x），不受影响。
 - **Python-wrapper fallback 不可取**：实测 `torch.library.get_kernel` +
   `with_keyset` + `call_boxed` 能正确回退且 autograd 安全（无递归），但任何

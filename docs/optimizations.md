@@ -149,6 +149,7 @@ linearize=1.24ms / full=1.69ms）。对 **B==1 单索引 1D 纯 gather**（M3/M4
 
 ```
 index_impl
+  0. 单 mask && 覆盖前 m 维 && mask/self 连续 && CPU → gather_mask（单遍 compaction，T8）
   1. K < 1024                     → gather_direct（无 linearize）
   2. 单索引 && after_contig && A>=4096 && f32/f64   → M1 raw rowcopy（skip-linearize）
   3. 单索引 && B==1 && A==1       → T4 raw 桶化（skip-linearize）
@@ -172,6 +173,7 @@ index_impl
 | M3 keys[order] E=54k i64 | 1.4x | 0.6-1.3x | **8.0x** | **0.2x** |
 | M3 keys[order] E=54k i32 | 2.6x | 1.3-2.2x | **11.6x** | **0.2x** |
 | M4 feat[inverse] E=20k | 3.6x | 3.8x | **4.8x** | ~1x |
+| P3 x[mask] C=16 (T8) | **2.1x** | **8.0x** | **7.2x** | 1.1-1.5x |
 
 注：8t/32t 共享箱噪声大（aten 单格曾摆动 104→426us）；可靠数字是交错
 aten/hpc 的 median。4B f32 K=10M 大值域随机 gather 仍是硬件上限（1t 0.7x、
@@ -206,8 +208,7 @@ for t in tests/test_smoke.py tests/test_normalize.py tests/test_correctness.py \
 
 - **M1 值域桶化（T2 阶段 2）**：M1 raw rowcopy 路径未对下标做值域分析；若
   keys[order] 等值域小可再桶化。`gather_rowcopy_raw` 已留好接入入口。
-- **P3 mask 多线程**：nonzero→scalar gather 在 38 线程 0.35x（独立于本轮的
-  内核并行性问题）。
+- ~~**P3 mask 多线程**~~：T8 已用单遍 compaction 修复（见 §13），不再列入。
 - **4B 大 K 随机 gather**：920F SVE 4B gather MLP 硬件上限（RESULTS §8.2）；
   可试软件预取 / 标量多路预取。
 
@@ -299,3 +300,45 @@ mask 1 线程与高线程在 0.97-1.13x 间波动（不同密度 0.05/0.3/0.5）
 调用、重新命中本算子，实测 2.6x → 1.07-1.3x。含 inductor 缓存、私有 API、
 FakeTensor 等坑与 opt-in 落地计划，见 [torch-compile.md](torch-compile.md)；
 实测数据见 `benchmarks/RESULTS.md` §11。**尚未实现，仅记录可行性结论。**
+
+## 13. T8：mask 单遍融合（跳过 nonzero）
+
+### 问题
+
+旧路径 `x[mask]`：`normalize_index` 先 `mask.nonzero()` 物化 int64 位置下标，
+再 linearize + gather。两段完整遍历，且 nonzero 输出长度数据相关、并行度差，P3
+在高线程只有 1.0-1.9x（§5 注）。
+
+### 变更
+
+- `op.cpp` 入口新增 `mask_fast_path`：仅当 `indices` 恰为一个 bool/byte mask、
+  mask 覆盖 self 前 `md` 维且形状逐维匹配、mask 与 self 均连续、均在 CPU 时启用；
+  形状错误仍抛 aten 同文错误，byte mask 保留 deprecation 警告。
+- `gather.cpp` 新增 `gather_mask`：chunk 计数（n<1MB 串行，避免并行任务开销）→
+  前缀和 → 第二遍按 chunk 直接压实并 `copy_contig_sve` 整行拷贝（f32/f64），其余
+  dtype 标量行拷贝；`nnz==0` / `A==0` 直接返回空输出。
+- 不满足条件的 mask（非连续、跨设备、混合其它下标）仍走原路径；
+  `index.Tensor_out` + mask 也仍走原路径（out 变体罕见）。
+
+### 实测（P3 N=200k C=16 d=0.3 nnz≈60k，pin node 5，interleaved median）
+
+| 线程 | 旧 hpc | 新 hpc | 新/旧 | aten/新 |
+|---|---|---|---|---|
+| 1 | 4.86 ms | 2.19 ms | 2.2x | 2.1x |
+| 2 | 4.19 | 0.77 | 5.4x | 6.0x |
+| 4 | 2.87 | 0.70 | 4.1x | 6.8x |
+| 8 | 2.66 | 0.73 | 3.6x | 8.0x |
+| 16 | 2.69 | 0.74 | 3.6x | 7.3x |
+| 32 | 3.66 | 0.70 | 5.2x | 7.2x |
+| 38 | — | 0.66 | — | 3.1-4.6x |
+
+其它形态（8t，aten/新）：C=64 d=0.1 1.9-2.1x、1D A=1 1M 1.1-2.2x、全维 mask
+512² 1.6-1.8x、2D mask→8 2.1-2.5x、byte 1.5-1.7x、空 mask 0.9x。共享箱上 aten
+绝对时间波动大（同一 P3 8t 曾 1.1-5.9ms），hpc 侧 0.66-0.77ms 稳定。
+
+### 验证
+
+- 新增 `tests/test_mask_fused.py` 9 用例：1D/2D/full-dim/空/byte 掩码、
+  f32/f64/int64、1/2/4/8 线程、非连续 self/mask 回退；参考值用
+  `mask.nonzero()` + `index_select`（未被覆盖）。
+- 全 8 套件 **92/92**；`mask_fused_count()` 调试计数断言融合路径确实命中。

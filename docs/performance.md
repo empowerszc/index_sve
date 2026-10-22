@@ -30,12 +30,14 @@ workload 优化轮 T0-T4**、**§10 T0-T5 全线程扫描 1-38t**）。本文档
 | S1 spconv features[inp_idx] C=64 | **3.96x** | 1.72x |
 | P1 h[src] i64 C=64 | **3.86x** | 1.94x |
 | P2 pos[src] A=3 | **1.76x** | 0.86x |
-| P3 x[mask] C=16 | 1.11x | 0.35x |
+| P3 x[mask] C=16 | 1.11x¹ | 0.35x¹ |
 | S4 x[perm] f64 N=200k | 0.94x | 0.53x |
 | 1D f64 K=2M | 0.80x | 0.77x |
 | 1D f64 K=10M | 0.74x | 0.80x |
 | 1D f32 K=2M | 0.88x | 0.71x |
 | 1D f32 K=10M | 0.69x | **0.18x** |
+
+¹ T8 前数据。T8 单遍融合后 P3：1t 2.1x、38t 4.6x（RESULTS §12）。
 
 RowCopy 附加数据（node 4 全矩阵定点）：`x[:,idx]` B=256 K=100k **3.48x**、
 `x[idx,:]` C=32 E=1M **3.50x**（1 线程）。608 全核定点（node 4）S4 可达 5.6x
@@ -65,8 +67,8 @@ RowCopy 附加数据（node 4 全矩阵定点）：`x[:,idx]` B=256 K=100k **3.4
   预取把延迟隐藏，2 线程标量无法做到。
 - f32 K=10M 在扫描中再次确认 4B 硬件天花板：2t 1.7x 是唯一收益窗口，8t 起
   <1x，16-36t 塌到 0.2x（kernels.md §2）。
-- P3 mask 全程平 ~1.1-1.5x，无线程依赖，与 §3 中 0.35x（38t）一致——mask 路径
-  并行性差是独立于内核的。
+- P3 mask 在 T8 前全程平 ~1.1-1.5x（nonzero 两段式）；T8 单遍融合后 1t 2.1x、
+  2-32t 0.66-0.77ms，为新路径旧路径的 3.6-5.4x（RESULTS §12）。
 - 32/36t 单元（P2 3.4x、S4 8.6-11.6x）run-to-run 散布更大（中位数对应 0.8-3.4x
   的轮间摆动），2-16t 单元最可靠；36t 是 38 核节点近满载，受 SMT 邻居影响。
 
@@ -78,8 +80,8 @@ RowCopy 附加数据（node 4 全矩阵定点）：`x[:,idx]` B=256 K=100k **3.4
 - **8B PureGather（S4）**：608 线程 5.6x；1D f64 小 K 1.6-1.8x（B==1 K 分块 +
   `-fopenmp` 修复，Task 8 前 0.02-0.3x）。
 - **不收益**：1D f32/i32 大 K 随机 gather（4B SVE gather 硬件 MLP 限制，见
-  kernels.md §2）；P3 mask 多线程（nonzero→scalar 并行性差，0.35x）；x[i,j]
-  随机二维 gather（0.72-0.85x）。
+  kernels.md §2）；x[i,j] 随机二维 gather（0.72-0.85x）。P3 mask 已由 T8
+  单遍融合修复（2-8x）。
 
 ### 4.1 AI4S workload 优化轮（T0-T4，见 RESULTS §9）
 

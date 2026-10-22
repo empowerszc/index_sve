@@ -151,9 +151,10 @@ linearize 同样预提取 + nb==1 快路径
 - **T5-3** fused/linearize 预提取索引张量属性 + nb==1 全长连续快路径（跳过
   bfactor 混合进制广播解码，直读 `idx_j[k]`）：x[i,j] 双全长索引 0.66x → 1.21x
   （linearize 4.84 → 1.10ms）。
-- **路由边界**：多索引 A==1（x[i,j]）与 mask 在 1 线程**保持 linearize+SVE**；
+- **路由边界**：多索引 A==1（x[i,j]）在 1 线程**保持 linearize+SVE**；
   blanket "1 线程全 fused" 实测更差（x[i,j] 0.49x、x[:,i] 0.28x），因 fused 解码
-  开销在广播/多索引形态超过两遍模型的收益。
+  开销在广播/多索引形态超过两遍模型的收益。单 mask 由 T8 `gather_mask` 单遍
+  压实处理（见 §6）。
 
 ## 5. 快速路径 `gather_direct`（K<1024）
 
@@ -186,3 +187,18 @@ linearize 同样预提取 + nb==1 快路径
 3. int32 下标与 f32 numel>=2^31 的交互是否仍然安全（use_i32 决定 idx dtype）。
 4. N-D 下标在 `gather_direct` 的 bfactor 解码不可丢。
 5. 跑全量测试 + 两进程 true-aten 对拍（semantics.md §6）。
+
+## 6. T8 mask 单遍压实 `gather_mask`（gather.cpp）
+
+```cpp
+gather_mask(self, mask)  // op.cpp mask_fast_path 调用
+```
+
+- 条件：`indices` 仅一个 bool/byte mask、覆盖 self 前 `md` 维且形状匹配、
+  mask 与 self 均连续、均在 CPU。否则回退 `normalize_index` 的 nonzero 路径。
+- 第 1 遍按 chunk 统计 true 数（`n<1MB` 串行，避免并行任务开销），前缀和求
+  `nnz` 与每 chunk 写偏移；`at::empty({nnz, *trailing})`。
+- 第 2 遍按 chunk 并行：顺序扫描掩码，命中则把 `self[p*A : p*A+A]` 整行拷到
+  `out[w*A]`；f32/f64 且 `A>=4` 用 `copy_contig_sve`，其余 dtype/短行标量拷贝。
+  chunk 内 `w` 局部递增，无原子操作。
+- `nnz==0 || A==0` 直接返回空输出；空掩码 8t ~0.15ms。

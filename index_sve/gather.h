@@ -8,3 +8,4 @@ void gather_rowcopy_raw(const IndexSpec& spec, at::Tensor& out, bool non_tempora
 void gather_fused(const IndexSpec& spec, at::Tensor& out);  // T3 linearize+gather 融合单遍（scalar 小块）
 bool gather_bucket_pure_raw(const IndexSpec& spec, at::Tensor& out);  // T4 raw：1D 纯 gather 跳 linearize 直接查表
 void gather_single_1d(const IndexSpec& spec, at::Tensor& out);  // 1 线程单索引 1D 纯 gather 单遍（追平 aten）
+at::Tensor gather_mask(const at::Tensor& self, const at::Tensor& mask);  // 单 mask 单遍 compaction + 行拷贝

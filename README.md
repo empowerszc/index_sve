@@ -97,7 +97,7 @@ HPC_INDEX_NO_OVERRIDE=1 python your_script.py   # import 不再改 aten::index.T
 | S1 spconv features[inp_idx] C=64 | **3.96x** | 1.72x |
 | P1 h[src] i64 C=64 | **3.86x** | 1.94x |
 | P2 pos[src] A=3 | **1.76x** | 0.86x |
-| P3 x[mask] C=16 | 1.11x | 0.35x |
+| P3 x[mask] C=16 | **2.1x** | **4.6x** |
 | S4 x[perm] f64 | 0.94x | 0.53x |
 
 - 可靠收益在 **RowCopy**（行拷贝，模型 spconv/图消息主要形态）与 S4 8B 大
@@ -118,7 +118,8 @@ HPC_INDEX_NO_OVERRIDE=1 python your_script.py   # import 不再改 aten::index.T
 - **全线程扫描（RESULTS §10，`bench_threads.py`，1/2/4/8/16/32/36/38）**：当前
   构建核心场景**全部 8 档线程 ≥1.06x**（S1 2-4t 31-40x、P2 2t 66x、1D f64 2t
   19-23x、1D f32 K=10M 2-4t 14-17x），不再有历史 §1/§2 的 <1x 格——那些是共享箱
-  608 全核模式的噪声产物。P3 mask 最弱（1-1.9x 全程平），是两段式串行结构限制。
+  608 全核模式的噪声产物。P3 mask 在 T8 前最弱（1-1.9x，nonzero 两段式）；
+  T8 单遍融合后 1t 2.1x、2-32t 为新路径旧路径的 3.6-5.4x（RESULTS §12）。
 - **已知硬件限制**：4B（f32/i32）大 K 随机 pure gather 的 SVE 4B gather 指令
   在 920F 上 MLP 极低（独立探针：38 线程仅 ~0.75 GB/s，标量 3.4 GB/s）——这是
   硬件指令特性（RESULTS §8.2，`docs/fallback-analysis.md` §3.1）。当前构建相对
@@ -151,8 +152,9 @@ for t in tests/test_smoke.py tests/test_normalize.py tests/test_correctness.py \
          tests/test_errors.py tests/test_sve.py tests/test_model.py; do python $t; done
 ```
 
-全部通过 = 83/83（覆盖激活态；test_correctness 25、test_errors 6、test_model 9、
-test_normalize 9、test_smoke 2、test_sve 25）。覆盖下测试是自洽的（`x[i]` 也走
+全部通过 = 92/92（覆盖激活态；test_correctness 25、test_errors 6、test_model 9、
+test_normalize 9、test_smoke 2、test_sve 25、test_index_out 7、test_mask_fused 9）。
+覆盖下测试是自洽的（`x[i]` 也走
 本算子），值级真对拍用两进程法（无覆盖进程生成 true-aten 参考，覆盖进程比对）：
 
 ```bash

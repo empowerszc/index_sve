@@ -16,7 +16,7 @@ aten::index），受限于什么**。这是"回退到 aten"类问题（integrati
 |---|---|---|---|
 | **M1 内存级并行度（MLP）瓶颈** | 随机 gather 是延迟敏感操作；920F 的 SVE gather 指令能发的**在途内存请求（outstanding loads）太少**，向量宽度弥补不了随机访问的延迟 | 4B（f32/i32）大 K 大值域 pure gather；高线程数下尤甚 | 部分（软件预取/多路标量），硬件上限不可消除 |
 | **M2 两遍模型固定开销** | linearize 先物化偏移数组、gather 再读它 = 两次遍历 + 一次分配；小 K 时固定开销占比高；1 线程无并行加速 | 1 线程所有需 linearize 的形态（T5 已大部分修复） | 已修（单遍路径） |
-| **M3 串行/低并行阶段** | 某些形态内部有无法并行化的阶段（如 mask 的 nonzero 定位、scalar_gather 的 col_off 解引用） | mask；A<4 短行 rowcopy | 结构性问题，难修 |
+| **M3 串行/低并行阶段** | 某些形态内部有无法并行化的阶段（如 scalar_gather 的 col_off 解引用） | A<4 短行 rowcopy | 结构性问题，难修 |
 | **M4 语义强制的标量回退** | 某些 dtype/形状**根本没有 SVE 内核可走**，只能落 `dispatch_scalar` | 2B/1B、complex、非连续 after、f32 超大 numel | 需新增内核（未做） |
 
 此外有一个**全局性开销**：Python wrapper（若做 fallback）会给每次调用加 ~45µs
@@ -63,7 +63,7 @@ index_impl(self, indices)
 | rowcopy A∈[2,3] 短行 | dispatch_scalar | M3（col_off 逐个解引用）|
 | rowcopy 非连续 after 维 | dispatch_scalar | M3（无连续块可向量化）|
 | 4B 大 K 大值域 pure gather（idx32+f32/i32） | 4B SVE gather（本身低效） | M1 |
-| mask（bool） | linearize(nonzero) + gather | M3（nonzero 定位串行）+ M2 |
+| mask（bool） | T8 gather_mask 单遍压实（不可融合时仍 nonzero + gather） | 旧路径 M3+M2；T8 已修 |
 | 1 线程单索引 A==1 大值域 | gather_single_1d（T5，已追平） | M2（已修）|
 
 ## 3. 逐场景深度分析
@@ -153,23 +153,15 @@ significant 收益（单遍 + 自适应粒度），高线程回落但仍 >1x。*
 
 ### 3.5 mask（bool 索引）
 
-**触发**：bool 掩码 → normalize 先 `index.nonzero()` 展开成位置下标，再走
-linearize + gather。
+**现状（T8 后已修复）**：旧路径 bool 掩码 → `normalize` 先 `index.nonzero()`
+展开成位置下标，再走 linearize + gather。两段式 + nonzero 输出长度数据相关、
+并行度差，高线程比值退化（P3 38t 0.35x）。
 
-**为什么慢**：**两段式 + 一个串行环节（M3+M2）**：
-1. `nonzero()` 本身是一次遍历，且输出长度取决于掩码密度（数据相关，难以
-   高效并行/预分配）；
-2. 之后才是 linearize + gather，等价于"定位（nonzero）+ 取值（gather）"两次
-   完整的内存遍历；
-3. aten 的 mask 路径同样有 nonzero 成本，但本项目在**高线程**下比值退化
-   （P3 mask 38t 0.35x）——因为 nonzero 阶段并行度差，把整体拖住。
-
-**实测**（本机）：mask nnz≈0.3M：1t 0.99x、8t 1.11x、32t 1.06x。全程平 ~1x，
-无线程收益。历史 P3（nnz≈60k C=16）：1t 1.11x、38t 0.35x。
-
-**限制性质**：nonzero 的串行性 + 两段式。理论上可做"直接行式 gather 并行"
-（跳过 nonzero 单独成段），列为未来优化（status.md §7）。当前模型用 mask 少、
-低线程接近 1x，可接受。
+T8 在入口识别"单 mask + 覆盖前 m 维 + mask/self 连续 + CPU"走 `gather_mask`：
+一遍计数 + 前缀和，第二遍直接压实并整行拷贝，跳过 nonzero 与第二次 gather。
+P3（N=200k C=16 nnz≈60k）：1t 4.86→2.19ms（2.1x vs aten）、8t 2.66→0.73ms
+（8.0x vs aten）、38t 0.66ms（3.1-4.6x vs aten）。非连续 mask/self、混合其它
+下标仍走旧路径（正确性不变）。
 
 ### 3.6 多索引广播形态（x[i,j]）
 
@@ -208,7 +200,7 @@ at::Tensor 方法（引用计数/虚调用）→ 0.66x。**T5 已修复**（nb==
 | 1D pure f32/f64 K=5M | 0.75x / 0.71x | 1.07x / 1.24x |
 | x[i,j] 1t | 0.66x | 1.21x |
 | rowcopy A=4 1t | 0.87x | 1.39x |
-| mask 1t | ~1.0x | ~1.0x（噪声级）|
+| mask 1t | ~1.0x | **2.1x**（T8）|
 
 详细见 `optimizations.md` §9。
 
@@ -222,8 +214,9 @@ integration.md §7 有完整调查；此处给出机制层面的简明理由：
   GB/s 标量），但**代价是给所有形态引入全局开销**（见下）。且本项目自己的
   标量回退（0.32-0.55 GB/s，auto-vec 后 0.85-0.99 GB/s）也远低于 aten——
   单纯"内核内回退标量"追不平，必须真调 aten。
-- **mask / A<4 / 非连续 / 2B-1B**：这些形态**相对 aten 通常是 ≥1x**（§3.2-§3.5
-  实测），只是吃不到 SVE 主路径的加速。fallback 反而可能更慢（多了分支）。
+- **A<4 / 非连续 / 2B-1B**：这些形态**相对 aten 通常是 ≥1x**（§3.2-§3.5
+  实测），只是吃不到 SVE 主路径的加速。mask 经 T8 后 2-8x。fallback 反而可能
+  更慢（多了分支）。
 - **1 线程**：T5 已修，无需 fallback。
 
 ### 4.2 全局开销不可接受（Python wrapper ~45µs/调用）
@@ -251,7 +244,7 @@ integration.md §7 有完整调查；此处给出机制层面的简明理由：
 | 现象 | 先查 | 最可能原因 | 处置 |
 |---|---|---|---|
 | f32/i32 1D 大 K，值域大，高线程 <1x | idx 是否 int32、值域 >2048 | M1 4B SVE MLP 上限 | 硬件，接受；小值域走桶化 |
-| 高线程 mask 0.35x | 掩码路径 | M3 nonzero 串行 | 结构，未来优化 |
+| 高线程 mask 0.35x | 掩码路径 | M3 nonzero 串行 | T8 已修复（§3.5） |
 | 1 线程 <1x | 是否命中 T5 单遍路径 | M2 两遍模型 | 已修；确认构建含 bd21485 |
 | half/bf16/complex <1x 高线程 | dtype | M4 无内核 | 接受；罕见 dtype |
 | rowcopy A∈[2,3] <1x | A 值 | M3 短行 | 相对 aten 通常 ≥1x |

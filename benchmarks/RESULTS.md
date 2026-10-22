@@ -361,8 +361,10 @@ Interpretation:
   load-sensitive on this shared box; the **probe** (§8.2: SVE 4B gather 0.75
   GB/s vs scalar 3.4 GB/s at 38 threads) remains the definitive statement of the
   hardware limit — it does not depend on aten's absolute speed.
-- P3 mask is the weakest row (1-1.9x, flat across threads) — the nonzero→scalar
-  two-stage path's serialization (§fallback-analysis M3). Still ≥1x everywhere.
+- P3 mask was the weakest row on this build (1-1.9x, flat across threads) — the
+  nonzero→scalar two-stage path's serialization (§fallback-analysis M3). This
+  row is superseded by T8 mask fusion (§12): 2.2x at 1t and 3.6-5.4x over the
+  old path at 2-32t.
 
 Full raw data (GB/s columns) in the run log; reproduce with:
 `HPC_INDEX_NO_OVERRIDE=1 HPC_AFFINITY=190-227 HPC_THREADS=1,2,4,8,16,32,36,38
@@ -390,3 +392,29 @@ dispatcher 覆盖。用 `force_fallback(aten.index.Tensor)` 可把它钉回成�
 注意：**inductor 磁盘缓存会让 fallback 补丁静默失效**（图哈希不含 lowering
 注册；`cache_key_tag` 只影响 autotune cache）。复现须用独立 `TORCHINDUCTOR_CACHE_DIR`
 并 `force_disable_caches=True`。完整分析、坑与 opt-in 计划见 `docs/torch-compile.md`。
+
+## 12. T8 mask 单遍融合（跳过 nonzero）
+
+旧路径 `x[mask]`：`normalize_index` 先 `nonzero()` 物化 int64 位置下标，再
+linearize + gather（两段串行）。T8 在入口识别「单 mask + 覆盖前 m 维 +
+mask/self 连续 + CPU」走 `gather_mask`：chunk 计数 → 前缀和 → 第二遍直接压实
+并整行拷贝；小掩码（<1MB）计数串行，避免并行任务开销。
+
+P3（N=200k C=16 d=0.3 nnz≈60k，pin node 5，interleaved median，
+`HPC_INDEX_NO_OVERRIDE=1`）：
+
+| threads | 旧 hpc | 新 hpc | 真 aten | 新/旧 | aten/新 |
+|---|---|---|---|---|---|
+| 1 | 4.86 ms | 2.19 ms | 4.67 ms | 2.2x | 2.1x |
+| 2 | 4.19 | 0.77 | 4.64 | 5.4x | 6.0x |
+| 4 | 2.87 | 0.70 | 4.77 | 4.1x | 6.8x |
+| 8 | 2.66 | 0.73 | 5.91 | 3.6x | 8.0x |
+| 16 | 2.69 | 0.74 | 5.33 | 3.6x | 7.3x |
+| 32 | 3.66 | 0.70 | 5.06 | 5.2x | 7.2x |
+| 38 | — | 0.66 | 2.99 | — | 4.6x |
+
+其它形态（8t，aten/新）：C=64 d=0.1 1.9-2.1x、1D A=1 1M 1.1-2.2x、全维 mask
+512² 1.6-1.8x、2D mask→8 2.1-2.5x、byte 1.5-1.7x、空 mask 0.9x。共享箱 aten
+波动大，hpc 0.66-0.77ms 稳定。
+
+`index.Tensor_out` + mask 未接融合路径（out 变体罕见），仍走原 nonzero 路径。
