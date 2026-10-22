@@ -266,9 +266,9 @@ void dispatch_scalar(const IndexSpec& spec, const IdxT* idx, T* out_data, const 
                 spec.B, spec.K, spec.A);
 }
 
-// T4 小值域短路（A==1 纯 gather）：linearize 后先求偏移值域，≤256 时用紧凑查找表 +
-// 标量循环。920F 的 SVE gather 指令 MLP 低（§8.2），对小值域 L1 常驻表，标量随机读
-// 即缓存命中，实测优于 SVE gather。返回是否启用（值域过大时留给 SVE）。
+// T4 小值域短路（A==1 纯 gather）：linearize 后先求偏移值域，≤2048 时用紧凑查找表 +
+// 标量循环。offset 表小、源数据块常驻 L1/L2，标量查表命中缓存；4B SVE gather 受
+// 64B 行放大限制（RESULTS §8.4），此形态查表更快。返回是否启用（值域过大时留给 SVE）。
 template <typename T, typename IdxT>
 bool bucket_gather_pure(const IndexSpec& spec, const IdxT* idx, T* dst, const T* src) {
   const int64_t B = spec.B, K = spec.K;
@@ -313,6 +313,7 @@ bool bucket_gather_pure(const IndexSpec& spec, const IdxT* idx, T* dst, const T*
 template <typename T, typename IdxT>
 bool bucket_gather_pure_raw(const IndexSpec& spec, const IdxT* idx, T* dst, const T* src) {
   const int64_t n = spec.K;
+  const int64_t stride0 = spec.indexed_strides[0];
   constexpr int64_t MAX_DOMAIN = 2048;
   const int64_t grain = adaptive_grain(n);
   const int64_t nchunk = (n + grain - 1) / grain;
@@ -341,7 +342,7 @@ bool bucket_gather_pure_raw(const IndexSpec& spec, const IdxT* idx, T* dst, cons
   const int64_t dom = mx - mn + 1;
   if (dom <= 1 || dom > MAX_DOMAIN) return false;
   std::vector<T> table(dom);
-  for (int64_t v = 0; v < dom; ++v) table[v] = src[mn + v];
+  for (int64_t v = 0; v < dom; ++v) table[v] = src[(mn + v) * stride0];
   at::parallel_for(0, n, grain, [&](int64_t lo, int64_t hi) {
     for (int64_t k = lo; k < hi; ++k) {
       int64_t v = static_cast<int64_t>(idx[k]);
@@ -363,25 +364,72 @@ void gather_direct(const IndexSpec& spec, T* dst, const T* src) {
   for (int64_t i = nb - 2; i >= 0; --i) {
     bfactor[i] = bfactor[i + 1] * bshape[i + 1];
   }
+  // 每元素调用 at::Tensor 方法（element_size/stride/data_ptr/dtype）在 B*K 大时
+  // 是主要开销（x[:,i] 实测 1t 0.18x）；循环外提取一次。
+  std::vector<const void*> ind_ptr(nidx);
+  std::vector<const int64_t*> ind_stride(nidx);
+  std::vector<int64_t> ind_size(nidx), ind_esize(nidx);
+  std::vector<bool> ind_long(nidx);
+  bool all_full_contig = (nb == 1);
+  for (const auto j : c10::irange(nidx)) {
+    const at::Tensor& ind = spec.indices[j];
+    ind_ptr[j] = ind.data_ptr();
+    ind_stride[j] = ind.strides().data();
+    ind_size[j] = spec.indexed_sizes[j];
+    ind_esize[j] = ind.element_size();
+    ind_long[j] = (ind.dtype() == at::kLong);
+    if (ind.numel() != K || !ind.is_contiguous()) all_full_contig = false;
+  }
+  // A==1 + 单索引 + 全长连续：先把 K 个下标校验/归一化一次，再跑无检查的紧凑循环。
+  // 逐元素边界检查 + col_off 内层循环在 x[:,i]（B 大、K 小、A=1）上占主要开销，
+  // 提到循环外后内层等价 aten 的 dst[i]=src[idx[i]]（见 degradation-analysis.md）。
+  if (A == 1 && nidx == 1 && all_full_contig && spec.after_contiguous) {
+    const int64_t size = ind_size[0];
+    const int64_t stride0 = spec.indexed_strides[0];
+    const int64_t col0 = spec.col_off.empty() ? 0 : spec.col_off[0];
+    const int32_t* i32 = ind_long[0] ? nullptr
+        : static_cast<const int32_t*>(ind_ptr[0]);
+    const int64_t* i64 = ind_long[0]
+        ? static_cast<const int64_t*>(ind_ptr[0]) : nullptr;
+    std::vector<int64_t> vbuf(K);
+    for (const auto k : c10::irange(K)) {
+      int64_t v = i64 ? i64[k] : static_cast<int64_t>(i32[k]);
+      TORCH_CHECK_INDEX(v >= -size && v < size,
+          "index ", v, " is out of bounds for dimension 0 with size ", size);
+      vbuf[k] = v < 0 ? v + size : v;
+    }
+    const int64_t* row_off = spec.row_off.data();
+    const int64_t* vp = vbuf.data();
+    at::parallel_for(0, B * K, adaptive_grain(B * K), [&](int64_t lo, int64_t hi) {
+      int64_t r = lo / K, k = lo % K;
+      for (int64_t p = lo; p < hi; ++p) {
+        dst[p] = src[row_off[r] + vp[k] * stride0 + col0];
+        if (++k == K) { k = 0; ++r; }
+      }
+    });
+    return;
+  }
   at::parallel_for(0, B * K, adaptive_grain(B * K), [&](int64_t lo, int64_t hi) {
+    int64_t r = lo / K, k = lo % K;
     for (int64_t p = lo; p < hi; ++p) {
-      const int64_t r = p / K, k = p % K;
       int64_t off = spec.row_off[r];
       for (const auto j : c10::irange(nidx)) {
-        const at::Tensor& ind = spec.indices[j];
-        const int64_t esize = ind.element_size();
-        int64_t eoff = 0;
-        int64_t rr = k;
-        for (const auto d : c10::irange(nb)) {   // A7：按 broadcast_shape 坐标读元素
-          int64_t c = (bshape[d] > 0) ? (rr / bfactor[d]) % bshape[d] : 0;
-          eoff += c * ind.stride(d);
-          if (bshape[d] > 0) rr %= bfactor[d];
+        const char* ptr;
+        if (all_full_contig) {
+          ptr = static_cast<const char*>(ind_ptr[j]) + k * ind_esize[j];
+        } else {
+          int64_t eoff = 0, rr = k;
+          for (const auto d : c10::irange(nb)) {   // A7：按 broadcast_shape 坐标读元素
+            int64_t c = (bshape[d] > 0) ? (rr / bfactor[d]) % bshape[d] : 0;
+            eoff += c * ind_stride[j][d];
+            if (bshape[d] > 0) rr %= bfactor[d];
+          }
+          ptr = static_cast<const char*>(ind_ptr[j]) + eoff * ind_esize[j];
         }
-        const char* ptr = static_cast<const char*>(ind.data_ptr()) + eoff * esize;
-        int64_t v = (ind.dtype() == at::kLong)
+        int64_t v = ind_long[j]
             ? *reinterpret_cast<const int64_t*>(ptr)
             : *reinterpret_cast<const int32_t*>(ptr);
-        const int64_t size = spec.indexed_sizes[j];
+        const int64_t size = ind_size[j];
         TORCH_CHECK_INDEX(v >= -size && v < size,
             "index ", v, " is out of bounds for dimension ", j, " with size ", size);
         if (v < 0) v += size;
@@ -392,6 +440,7 @@ void gather_direct(const IndexSpec& spec, T* dst, const T* src) {
       for (const auto c : c10::irange(A)) {
         d[c] = s[spec.col_off[c]];
       }
+      if (++k == K) { k = 0; ++r; }
     }
   });
 }
@@ -590,19 +639,21 @@ void gather_direct(const IndexSpec& spec, at::Tensor& out) {
 
 // 1D 单索引纯 gather 专用单遍内核（1 线程路径）：跳过 linearize，把下标张量的
 // data_ptr/stride/size/dtype 提到循环外一次提取，循环内等价 aten 单遍标量
-// （read idx → 边界检查 → 负索引归一 → out[k]=src[off]）。920F SVE gather 单线程
-// MLP 低（RESULTS §8.2），linearize 两遍又是固定开销，1 线程用本内核追平 aten。
+// （read idx → 边界检查 → 负索引归一 → out[k]=src[off]）。SVE gather 单线程在此
+// 形态不占优（4B 受 64B 行放大限制，8B 收益也有限），linearize 两遍又是固定开销，
+// 1 线程用本内核追平 aten。
 template <typename T, typename IdxT>
 void gather_single_1d(const IndexSpec& spec, const IdxT* idx, T* dst, const T* src) {
   const int64_t n = spec.K;
   const int64_t size = spec.indexed_sizes[0];
+  const int64_t stride0 = spec.indexed_strides[0];
   at::parallel_for(0, n, adaptive_grain(n), [&](int64_t lo, int64_t hi) {
     for (int64_t k = lo; k < hi; ++k) {
       int64_t v = static_cast<int64_t>(idx[k]);
       TORCH_CHECK_INDEX(v >= -size && v < size,
           "index ", v, " is out of bounds for dimension 0 with size ", size);
       if (v < 0) v += size;
-      dst[k] = src[v];
+      dst[k] = src[v * stride0];
     }
   });
 }

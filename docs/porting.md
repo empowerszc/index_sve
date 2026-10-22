@@ -1,6 +1,6 @@
 # 移植指南
 
-本算子面向 HiSilicon 920F（aarch64, SVE2, VL=512-bit）编写。本文档列出移植到
+本算子面向鲲鹏 920F（Kunpeng 920F, aarch64, SVE2, VL=512-bit）编写。本文档列出移植到
 其他平台/配置时的检查点。
 
 ## 1. 其他 VL（如 128/256/1024）
@@ -20,9 +20,9 @@
 - 无 SVE 时 `arm_sve.h` 相关代码全部不触发（`sve_512_ok()` false → 全部落
   `dispatch_scalar`），语义仍正确，只是退化为标量实现（含并行
   `at::parallel_for`，仍快于串行 aten）。
-- 注意：**920F 的 SVE 4B gather MLP 极低**（kernels.md §2）。若目标平台
-  SVE gather 指令吞吐更好，4B 分支的 <1x 大 K 问题可能消失，可重新基准确认
-  是否启用 4B SVE 分支。
+- 注意：**920F 的 4B 随机 gather 受 64B 行放大 + DRAM 延迟限制**（SVE 4B 与
+  标量持平，kernels.md §2）。若目标平台的行/预取特性更好，4B 分支的大 K 带宽
+  可能更高，可重新基准确认是否启用 4B SVE 分支。
 
 ## 3. 其他 torch 版本
 
@@ -58,13 +58,13 @@
 6. `tests/test_model.py`（模型场景）；
 7. 两进程 true-aten 对拍（semantics.md §6，含 K>=1024 用例）。
 
-全部通过 = 99/99（覆盖激活态）。
+全部通过 = 102/102（覆盖激活态）。
 
 ## 6. 已知可优化项（后续工作）
 
 - ~~**P3 mask 多线程**~~：T8 已用单遍 compaction 修复（RESULTS §12）。
-- **4B 大 K 随机 gather**：受 920F SVE 4B gather MLP 限制；可试软件预取加深
-  展开或标量多路预取（kernels.md §2）。
+- **4B 大 K 随机 gather**：受 64B 行放大/DRAM 延迟限制（SVE 与标量持平）；
+  可试预取加深/软件流水，或按 cache line 分桶排序（kernels.md §2）。
 - **M1 值域桶化（T2 阶段 2，未做）**：M1 大块路径当前是 skip-linearize 直接
   rowcopy，未对下标做值域分析（keys[order] 等若值域小可再桶化）。文档见
   优化任务建议 T2 阶段 2；`gather_rowcopy_raw` 已为后续接入留好入口。

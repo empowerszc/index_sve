@@ -8,6 +8,12 @@
 #include <atomic>
 #include <cstring>
 #include <cstdlib>
+#ifdef _OPENMP
+#include <omp.h>
+#endif
+#ifdef __ARM_FEATURE_SVE
+#include <arm_sve.h>
+#endif
 
 namespace {
 
@@ -27,6 +33,14 @@ bool non_temporal_enabled() {
   return v;
 }
 
+void sync_omp_threads() {
+#ifdef _OPENMP
+  // 扩展用 BiSheng libomp，ATen 用 libgomp；torch.set_num_threads 只改后者。
+  // 入口同步一次，使 torch.set_num_threads 对本内核的所有路径生效（T11）。
+  omp_set_num_threads(static_cast<int>(at::get_num_threads()));
+#endif
+}
+
 // 核心路由：out 已由调用方确定为正确 shape/dtype/device（functional 分配或 out 变体校验）。
 void index_into(const at::Tensor& self, const IndexSpec& spec, at::Tensor& out) {
   const bool g_nt = non_temporal_enabled();
@@ -38,26 +52,38 @@ void index_into(const at::Tensor& self, const IndexSpec& spec, at::Tensor& out) 
 
   // M1 单索引大块 skip-linearize：单索引 + after_contiguous + A 大 + 值域小（S1 最热形态）。
   // 跳过 linearize，直接在 gather 阶段读原始下标算偏移（T2 阶段 1，无桶化）。
-  if (spec.indices.size() == 1 && spec.after_contiguous && spec.A >= 4096 &&
+  if (spec.indices.size() == 1 && spec.after_contiguous &&
+      spec.indices[0].is_contiguous() && spec.A >= 4096 &&
       (out.scalar_type() == at::kFloat || out.scalar_type() == at::kDouble)) {
     gather_rowcopy_raw(spec, out, g_nt);
     return;
   }
 
   // T4 raw 小值域 1D 纯 gather：单索引 + B==1 + A==1（M3 keys[order]、M4 等）直接查表，
-  // 完全跳过 linearize 的 broadcast 解码。
+  // 完全跳过 linearize 的 broadcast 解码。fast_1d 要求索引连续（raw 内核按 idx[k]
+  // 平坦读；非连续索引走下面的 linearize 通用路径）。
+  // 无 SVE 内核的 dtype（2B/1B/complex、f32+i64idx、f64+i32idx）在任何线程数都走
+  // 单遍标量：linearize 物化一遍偏移对这类标量 gather 纯属额外开销（实测 2-16t
+  // 0.5-0.9x）。有 SVE 内核时 1 线程仍用单遍（T5），多线程走 linearize+SVE。
   if (spec.indices.size() == 1 && spec.B == 1 && spec.A == 1) {
-    if (gather_bucket_pure_raw(spec, out)) return;
-    // 大值域（>2048）时 1 线程走单遍标量（跳过 linearize）：SVE gather 单线程 MLP 低
-    // + linearize 两遍开销，实测 1 线程 0.6-0.8x；单遍标量追平 aten。多线程仍走 SVE。
-    if (at::get_num_threads() == 1) {
+    const at::Tensor& ind0 = spec.indices[0];
+    const bool fast_1d = ind0.is_contiguous();
+    if (fast_1d && gather_bucket_pure_raw(spec, out)) return;
+    const bool idx32 = ind0.scalar_type() == at::kInt;
+    const auto st = out.scalar_type();
+#ifdef __ARM_FEATURE_SVE
+    const bool hw_sve512 = (svcntb() == 64);
+#else
+    const bool hw_sve512 = false;
+#endif
+    const bool sve_ok = hw_sve512 &&
+        ((idx32 && (st == at::kFloat || st == at::kInt)) ||
+         (!idx32 && (st == at::kDouble || st == at::kLong)));
+    if (fast_1d && (!sve_ok || at::get_num_threads() == 1)) {
       gather_single_1d(spec, out);
       return;
     }
   }
-
-  const bool sve_rowcopy_dtype =
-      out.scalar_type() == at::kFloat || out.scalar_type() == at::kDouble;
 
   // f32 且 self.numel() >= 2^31 时 use_i32=false（idx 用 int64），gather_index 里
   // 4B SVE 分支要求 idx32 故不触发 → 自动落标量 dispatch_scalar（2^31 元素越界 int32）。
@@ -65,12 +91,20 @@ void index_into(const at::Tensor& self, const IndexSpec& spec, at::Tensor& out) 
       (out.scalar_type() == at::kFloat || out.scalar_type() == at::kInt);
   at::Tensor idx = at::empty({spec.K}, self.options().dtype(use_i32 ? at::kInt : at::kLong));
 
-  // 1 线程单索引 A>1（rowcopy/scalar 短行）：跳过 linearize 走 fused 单遍。SVE
-  // rowcopy 单线程 MLP 低，且 linearize 对单索引 1 线程开销占比大（rowcopy A=4 短行
-  // 实测 linearize 占 80%）。A==1 单索引已在上方 gather_single_1d 短路；多索引/mask
-  // 保持 linearize+SVE（fused 解码开销更大，实测更差）。
+  const bool sve_rowcopy_dtype =
+      out.scalar_type() == at::kFloat || out.scalar_type() == at::kDouble;
+
+  // 1 线程单索引 A>1：短行（A<4）用 fused 单遍，省掉 linearize；A>=4 连续块用
+  // raw rowcopy 单遍（跳过 linearize，仍走 SVE 整块拷贝）。旧规则对所有 A>1 都用
+  // fused，使 A=64 的 S1/P1 1 线程丢掉了 SVE rowcopy（1.06x vs >3.9x）。
+  // A==1 单索引已在上方 gather_single_1d 短路；多索引/mask 保持 linearize+SVE。
   if (at::get_num_threads() == 1 && spec.indices.size() == 1 && spec.A > 1) {
-    gather_fused(spec, out);
+    if (spec.A >= 4 && spec.after_contiguous &&
+        spec.indices[0].is_contiguous() && sve_rowcopy_dtype) {
+      gather_rowcopy_raw(spec, out, g_nt);
+    } else {
+      gather_fused(spec, out);
+    }
     return;
   }
   if (spec.A == 1 ||
@@ -166,8 +200,9 @@ bool small_single_index(const at::Tensor& self,
         }
       }
     };
-    // 小 K 下 parallel_for 的任务开销超过收益，n<16384 时串行。
-    if (n >= 16384) {
+    // 小 K 下 parallel_for 的任务开销超过收益；阈值按总拷贝元素数 n*A 而非 n
+    // （2D A=16 K=4096 曾因只看 n=4096 而串行，8-36t 掉到 0.55-0.66x）。
+    if (n * A >= 16384) {
       at::parallel_for(0, n, adaptive_grain(n), run);
     } else {
       run(0, n);
@@ -184,6 +219,7 @@ at::Tensor index_impl(const at::Tensor& self,
   TORCH_CHECK_INDEX(!vec.empty(), "at least one index must be provided");
   TORCH_CHECK_INDEX(vec.size() <= (size_t)self.dim(),
       "too many indices for tensor of dimension ", self.dim(), " (got ", vec.size(), ")");
+  sync_omp_threads();
   at::Tensor out;
   if (mask_fast_path(self, vec, out)) return out;
   if (small_single_index(self, vec, out)) return out;
@@ -212,6 +248,7 @@ at::Tensor index_out_impl(const at::Tensor& self,
   at::assert_no_internal_overlap(out);
   at::assert_no_overlap(out, self);
   for (const auto& idx : spec.indices) at::assert_no_overlap(out, idx);
+  sync_omp_threads();
   if (out.is_contiguous()) {
     index_into(self, spec, out);
   } else {

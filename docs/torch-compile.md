@@ -3,7 +3,8 @@
 > **一句话结论**：`torch.compile` 默认会把 `aten::index` **内联成 Inductor 自己生成的
 > kernel**，根本不在运行时调用任何 index 内核，所以本算子的 CPU 覆盖**不生效**
 > （实测慢 2.6x）。把该 op "钉"回成运行时调用（Inductor fallback）后，覆盖重新
-> 生效，差距收敛到 1.07-1.3x。方案已验证，**尚未落地**为默认能力。
+> 生效，差距收敛到 1.07-1.3x。已实现为 opt-in（`HPC_INDEX_COMPILE=1`，§6），
+> 默认关闭。
 
 本文记录 2026-10 的 spike 结论（torch 2.10.0+cpu，pin node 5，8 线程）。
 

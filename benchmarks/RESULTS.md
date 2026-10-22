@@ -127,10 +127,12 @@ heavier, so 608-thread medians here are the lower end of that band.
   spconv rulebook / point-cloud message path (§9.2/§10.3 "白付开销" targets). 1D
   PureGather f64 wins at small-K (1.6–1.8x) where the B==1 K-blocking + `-fopenmp`
   fix (Task 8) turns the old fully serial collapse into full-row parallelism.
-- **Where it does not win.** 1D f32/i32 pure gather stays <1x at large K: random
-  memory-latency-bound gather; SVE 4B gather is ~2–5x slower than 8B per standalone
-  probes. 608-thread scaling of the model rows is masked by machine noise (shared
-  box, 5+ users) — the design's own priority list ranks rowcopy/S4 ahead of 1D.
+- **Where it does not win.** 1D f32/i32 pure gather at large K is limited by
+  random 64 B cache-line amplification (4 B useful per 64 B line) plus DRAM latency;
+  in the real kernel SVE 4B and scalar are equal (§8.4), and 8B is faster only
+  because it gets 2x useful bytes per line. 608-thread scaling of the model rows is
+  masked by machine noise (shared box, 5+ users) — the design's own priority list
+  ranks rowcopy/S4 ahead of 1D.
 - **Comparison to design §8.** Design priority A-linearize → L-SVE512 gather →
   C-prefetch/M-NT is confirmed: SVE gather + RowCopy carry the wins; prefetch
   PF=16 is the best of {0,16,32,64} (Task 8 sweep); NT measured within noise, left
@@ -211,19 +213,29 @@ the reliable figure.
   608-thread medians**: S1 1.72x, P1 ~1.9x (vs §1's 1.07x / 1.35x, which were lower
   bounds under heavy shared-box load). The §5 "608-thread = noise-dominated" caveat
   is replaced by clean single-node numbers.
-- **f32 K=10M 4B pure-gather collapse is a hardware limit, not noise.** 38 threads:
-  hpc ~1.2 GB/s vs aten 6.7 GB/s (0.18x), stable across rounds. Root cause isolated
-  with a standalone probe (`svld1_gather_u32index_f32`, OpenMP, node 5): SVE 4B
-  gather tops at ~0.75 GB/s with 38 threads while a scalar gather loop reaches
-  3.4 GB/s — the 920F's SVE gather instruction has very low memory-level
-  parallelism; vector width does not help a random 4B gather. f64 8B gather is
-  unaffected (probe: 5.0 GB/s at 4-38 threads vs aten 3.6). This is why §5 says
-  "not a general 1D-index speedup" — the honest scope holds under pinning.
+- **f32 K=10M 4B pure-gather: the earlier MLP attribution did not reproduce.**
+  The historical 0.18x cell conflated two effects: the per-element `at::Tensor`
+  overhead in `gather_direct` (fixed in T11) and thread labels that did not limit
+  the extension's libomp team (§10/§15). A same-build A/B on the real kernel
+  (identical random pattern) shows SVE 4B gather and a scalar loop are equal:
+  1.85 vs 1.86 ms (src 8 MB) and 7.46 vs 7.45 ms (src 256 MB) at 8/38 threads.
+  The limit is 64 B cache-line amplification (4 B useful per line, 16x) plus DRAM
+  latency, not an instruction-specific MLP deficit. See §8.4. f64 8B is faster
+  because the same line count carries 2x useful bytes, not because of higher MLP.
+  This still supports §5's "not a general 1D-index speedup" scope.
 - **P3 mask at 38 threads is 0.35x** — the mask path (nonzero → scalar gather) does
   not parallelize well; at 1 thread it is 1.11x. Known limitation; the model uses
   masks rarely and the 1-thread regime is the measured win.
 
 ### 8.3 Thread-count sweep (2/4/8/16/32/36 threads, node 5, median of 3 rounds)
+
+> **⚠ Retracted by T11.** The 2-36t columns below are invalid: the extension links
+> BiSheng libomp while `torch.set_num_threads(t)` only sets ATen's libgomp ICV, so
+> every row actually ran with the libomp default team (38 workers after affinity).
+> The relative gains in these columns are therefore inflated. The 1t rows in §8.1
+> are valid (ATen's `parallel_for` short-circuits at 1 thread); §8.1's 38t rows are
+> also valid (38 == libomp default). See §15 for the corrected matrix and
+> `docs/degradation-analysis.md` for the per-case analysis.
 
 Method identical to §8 (20 iters × 3 full rounds, node 5 quiet, `HPC_THREADS`
 list via env; `bench_gate.py` now reads `HPC_THREADS`). Speedup vs true aten.
@@ -259,6 +271,26 @@ Interpretation:
   run-to-run spread (medians of rounds that swung 0.8-3.4x); the tight 2-16t cells
   are the reliable signal. 36t is the node-38-core near-full case and can be
   affected by hyperthread/SMT neighbours.
+
+### 8.4 4B gather attribution re-check (T11)
+
+The earlier standalone probe (SVE 4B ~0.75 GB/s vs scalar 3.4 GB/s) motivated the
+"low MLP" story, but it does not reproduce end-to-end. Re-measured with the actual
+kernel on node 5, same random index pattern, 8 and 38 threads (interleaved median):
+
+| src size | threads | SVE 4B gather | scalar loop |
+|---|---|---|---|
+| 8 MB | 8 | 1.85 ms | 1.86 ms |
+| 256 MB | 38 | 7.46 ms | 7.45 ms |
+
+SVE 4B and scalar are equivalent, so the bottleneck is **not** the SVE gather
+instruction's memory-level parallelism. Random element gather fetches a 64 B line
+per output element and uses only 4 B of it (16x amplification; 8x for f64), so the
+cost is set by line traffic and DRAM latency. This also explains why the 8B path is
+faster (same line count, 2x useful bytes) and why scalar fallback cannot help.
+Mitigations must reduce line traffic: small-range bucketing (T4), prefetch/software
+pipelining, or row gather (A>=4). The old probe number is retracted as an
+attribution; it is kept only as historical context.
 
 ## 9. AI4S workload-shaped optimization pass (T0-T4)
 
@@ -323,6 +355,10 @@ int32 fast path), so their high-thread rows are capped lower than the i32 rows.
 
 ## 10. Full multi-thread sweep on the T0-T5 build (1/2/4/8/16/32/36/38 threads)
 
+> **⚠ Retracted by T11 for 2-36t.** As in §8.3, the extension used the libomp
+> default team (38) regardless of the labeled thread count. 1t and 38t are valid;
+> all other columns are inflated. Corrected matrix: §15.
+
 Why §1/§2/§4 only report 1 and 608 threads: those were the **early shared-box
 measurements** on the whole 608-core machine. 608 threads is a worst-case bound
 heavily polluted by 5+ co-tenants (single-run vs median swings up to 3x,
@@ -349,18 +385,18 @@ below is the **current T0-T5 build** re-measured on a quiet node 5
 
 Interpretation:
 
-- **Every row, every thread count is ≥1.06x.** The T5 1-thread fixes plus T0-T4
-  mean the current build no longer has a sub-1x cell in these core scenarios
-  (previous §1/§2 rows like 1D f32 K=10M at 608t = 0.24x, x[:,idx] 608t = 0.38x,
-  P3 608t = 0.89x were all shared-box artifacts of the 608-thread regime).
+- **This table is historical and its 2-36t claim (">=1.06x everywhere") does not
+  survive T11.** After fixing the libomp ICV, the corrected sweep still has a few
+  <1x cells (col x[:,i], non-contiguous mask, int8/uint8 ~0.9x); see §15.3. The
+  earlier claim that the sub-1x rows were "608-thread shared-box artifacts" is
+  wrong for x[:,i]: its 1t penalty was real per-element overhead, not noise.
 - **Low-thread-count wins remain the strongest** (2-4t: 13-66x on RowCopy /
   1D pure), saturating one NUMA node's ~60 GB/s bandwidth with a few cores
   (S1 4t 40x, P2 2t 66x). 8-38t stay comfortably >1x.
-- **The historical §8.2 4B hardware cap does not show up as <1x in this sweep**
-  (1D f32 K=10M is 1.1-16.6x across threads). The relative-vs-aten number is
-  load-sensitive on this shared box; the **probe** (§8.2: SVE 4B gather 0.75
-  GB/s vs scalar 3.4 GB/s at 38 threads) remains the definitive statement of the
-  hardware limit — it does not depend on aten's absolute speed.
+- **The "4B hardware cap does not show up as <1x" claim is also retracted.** The
+  apparent 1.1-16.6x came from the inflated thread labels. The hardware limit is
+  the 64B line amplification, established by the same-build A/B in §8.4, not by
+  the old standalone probe (which is retracted).
 - P3 mask was the weakest row on this build (1-1.9x, flat across threads) — the
   nonzero→scalar two-stage path's serialization (§fallback-analysis M3). This
   row is superseded by T8 mask fusion (§12): 2.2x at 1t and 3.6-5.4x over the
@@ -422,6 +458,9 @@ P3（N=200k C=16 d=0.3 nnz≈60k，pin node 5，interleaved median，
 
 ## 13. T9 小 K 精简路径 + C++ 覆盖（真实 `x[idx]`）
 
+> **注（T11）**：本节是 T9 构建的历史数据；8t 列同样受 libomp 默认 team 影响。
+> T11 两进程复测见 §15.4。
+
 两处改动：入口新增 `small_single_index`（单整数下标、末维 K<=4096、连续、CPU，
 绕过 normalize）；aten 覆盖从 Python `torch.library.impl` 移到 C++
 `TORCH_LIBRARY_IMPL(aten, CPU, m)`，去掉每次调用的解释器往返。
@@ -458,3 +497,93 @@ compiled-fallback 2.57-2.67 ms vs eager 2.01 ms（1.28-1.33x），规模 ≥8M �
 路径输出与 eager 逐元素相等；profiler 中为 `aten::index`（无 `cpp_fused_index_*`）；
 cache 目录后缀为 `hpc_index`。mask 的 fake 因输出长度数据相关不提供（compile
 走 aten fallback，由 Inductor/aten 处理）。
+
+## 15. T11 修正线程矩阵与退化分析
+
+### 15.1 方法学修正（必读）
+
+§8.3/§10 的 2-36t 列不可用：扩展链接 BiSheng libomp，而 `torch.set_num_threads(t)`
+只改 ATen 的 libgomp ICV；扩展的 `#pragma omp parallel` 实际用 libomp 默认
+team（本机 affinity 38）。因此标着 2/4/8/16/32/36t 的 HPC 行实际都是 38 个
+worker，相对 aten 被高估。1t 行有效（ATen 的 `parallel_for` 在 1 线程短路），
+38t 行也有效（恰好等于默认 team）。
+
+修正方式：同进程交替 aten/hpc，`torch.set_num_threads(t)` 加上用 `ctypes`
+对已加载 libomp 调 `omp_set_num_threads(t)`；T11 起内核入口也会自动同步。
+node 5（CPU 190-227），25 iters median，`HPC_INDEX_NO_OVERRIDE=1`。
+
+### 15.2 完整矩阵（30 场景 × 7 线程，aten 时间 / hpc 时间）
+
+| 场景 | 1t | 2t | 4t | 8t | 16t | 32t | 36t |
+|---|---|---|---|---|---|---|---|
+| S1 features[inp_idx] C=64 E=1M | 4.46x | 4.62x | 3.95x | 3.55x | 2.97x | 6.69x | 8.37x |
+| P1 h[src] i64 C=64 E=1M | 4.42x | 4.43x | 3.83x | 4.02x | 3.52x | 6.97x | 5.96x |
+| P2 pos[src] A=3 E=2M | 2.05x | 2.12x | 2.06x | 2.90x | 1.78x | 6.64x | 8.73x |
+| P3 x[mask] nnz=60042 C=16 | 2.23x | 1.82x | 1.53x | 1.34x | 1.87x | 3.76x | 4.20x |
+| S4 x[perm] f64 N=200k | 1.26x | 1.36x | 1.09x | 0.87x | 0.76x | 1.35x | 1.01x |
+| 1D f64 K=2000000 | 1.26x | 1.18x | 1.15x | 1.11x | 1.03x | 1.08x | 1.51x |
+| 1D f64 K=10000000 | 1.17x | 1.06x | 1.03x | 1.06x | 1.03x | 2.01x | 1.95x |
+| 1D f32 K=2000000 | 1.07x | 1.41x | 1.40x | 1.35x | 1.24x | 1.48x | 2.17x |
+| 1D f32 K=10000000 | 1.06x | 1.11x | 1.11x | 1.14x | 1.16x | 2.28x | 3.92x |
+| multi x[i,j] f32 100k | 1.19x | 1.09x | 1.05x | 0.96x | 0.89x | 1.24x | 1.25x |
+| rowcopy A=4 f32 K=200k | 2.41x | 1.71x | 1.52x | 1.35x | 1.23x | 1.96x | 2.10x |
+| 1D pure f32 K=2M (T5) | 1.24x | 1.28x | 1.28x | 1.25x | 1.22x | 1.29x | 3.22x |
+| 1D f32 K=10M idx64 | 1.20x | 1.26x | 1.26x | 1.27x | 1.27x | 2.46x | 4.50x |
+| 1D f64 K=10M idx32 | 1.06x | 1.12x | 1.11x | 1.11x | 1.13x | 2.86x | 2.97x |
+| 1D float16 K=2M | 1.53x | 1.56x | 1.31x | 1.36x | 1.22x | 1.34x | 2.40x |
+| 1D bfloat16 K=2M | 1.35x | 1.35x | 1.48x | 1.35x | 1.26x | 1.43x | 2.05x |
+| 1D int8 K=2M | 0.98x | 0.99x | 1.02x | 0.98x | 0.92x | 2.03x | 1.86x |
+| 1D uint8 K=2M | 1.06x | 1.05x | 0.98x | 0.99x | 0.90x | 2.01x | 1.87x |
+| 1D complex64 K=2M | 0.95x | 1.00x | 1.00x | 0.97x | 0.97x | 1.78x | 2.76x |
+| 1D int32 K=2M | 1.37x | 1.39x | 1.53x | 1.43x | 1.32x | 2.49x | 3.93x |
+| 1D int64 K=2M | 1.26x | 1.12x | 0.87x | 1.22x | 1.12x | 1.57x | 2.36x |
+| rowcopy A=2 f32 K=200k | 1.50x | 1.55x | 1.40x | 1.33x | 1.23x | 1.91x | 3.03x |
+| rowcopy A=3 f32 K=200k | 1.90x | 2.06x | 1.65x | 1.52x | 1.34x | 3.25x | 3.34x |
+| rowcopy A=16 f32 K=200k | 3.58x | 4.65x | 3.92x | 3.13x | 2.34x | 4.15x | 5.80x |
+| noncontig self A=16 stride2 | 1.45x | 1.20x | 1.53x | 1.42x | 1.32x | 1.73x | 3.85x |
+| noncontig idx K=1M | 1.16x | 1.06x | 1.19x | 1.13x | 1.01x | 1.10x | 1.57x |
+| mask 1D nnz=1199436 | 1.20x | 1.04x | 1.25x | 1.30x | 1.30x | 1.93x | 3.76x |
+| mask empty N=1M | 1.69x | 1.07x | 0.74x | 1.15x | 1.01x | 1.08x | 1.12x |
+| mask noncontig nnz=600108 | 0.98x | 0.96x | 0.93x | 0.89x | 0.84x | 1.25x | 1.17x |
+| col x[:,i] C=64 K=64 | 2.02x | 1.88x | 1.69x | 1.43x | 1.12x | 1.55x | 1.87x |
+| 1D f32 K=2M range2048 | 1.22x | 1.16x | 1.09x | 1.02x | 0.87x | 1.41x | 1.46x |
+
+### 15.3 <1.00x 清单与归因
+
+见上表；主要单元与解释：
+
+- `x[:,i]`：**已修复**。T11 的 A==1 预校验紧凑循环把 0.18x/0.40x 提升到
+  1.12-2.02x（1-36t），不再是退化项。
+- `1D int8/uint8`：0.90-0.99x。1B 元素随机读，64B 行只用 1B（64x 放大）；
+  aten 也是标量，0.9-1.0x 即硬件上限，不投入。
+- `mask noncontig`：0.84-0.98x。T8 只支持连续 mask，回退 `nonzero`（串行段 +
+  中间 int64 下标）。扩展 T8 按 stride 读即可修复。
+- `S4 8/16t` 0.87/0.76x、`multi 8/16t` 0.96/0.89x：每线程工作量 <100KB 的
+  小规模强扩展，线程启动/调度 > 收益；32/36t 或 1-4t 均恢复 >1x，不是持续趋势。
+- `1D int64 4t` 0.87x、`range2048 16t` 0.87x、`mask empty 4t` 0.74x：单点
+  抖动；相邻线程 >1.2x，或绝对时间只有几微秒，判为噪声。
+- `S1 1t` 4.46x、`P1 1t` 4.42x、`rowcopy A=4 1t` 2.41x、`rowcopy A=16 1t`
+  3.58x：T11 把 1 线程 A>=4 从 `gather_fused`（标量）改回 raw rowcopy（SVE）
+  的结果；旧代码在 1t 对所有 A>1 都走 fused，丢掉了 SVE 整块拷贝。
+
+### 15.4 小 K 真实路径（两进程，T11）
+
+`bench_smallk_driver.py`（aten/hpc 交替子进程，源 4096 元素；每格中位数）。
+T9 的 `n*A<16384` 串行阈值修复后（2D A=16 K=4096 不再误判串行）：
+
+| 形态 | K | 1t | 8t | 36t | 全线程范围 |
+|---|---|---|---|---|---|
+| 1D A=1 | 0-1024 | 1.35-2.08x | 1.34-2.02x | 1.35-2.03x | 1.34-2.08x |
+| 1D A=1 | 4096 | 0.88x | 0.98x | 1.00x | 0.88-1.00x |
+| 1D A=1 | 8192 | 1.07x | 0.99x | 0.60x | 0.60-1.07x |
+| 1D A=1 | 65536 | 0.96x | 0.88x | 0.64x | 0.64-0.96x |
+| 2D A=16 | 128-1024 | 2.41-3.07x | 1.60-2.41x | 1.02-2.44x | 1.02-3.07x |
+| 2D A=16 | 4096 | 3.51x | 1.78x | 1.03x | 1.03-3.51x |
+| 2D A=16 | 8192 | 3.74x | 1.39x | 0.46x | 0.46-3.74x |
+| 2D A=16 | 65536 | 4.23x | 2.72x | 1.15x | 1.15-4.23x |
+
+> K=0-1024：hpc 6-14µs vs aten 12-19µs，固定开销低，稳定 1.3-2.1x。
+> K>=8192 的 1D 高线程、2D K=8192 的 16-36t 出现 0.46-0.8x：总数据只有
+> 32KB-512KB，每线程几 KB，线程启动/调度成本超过收益（绝对时间仅 40-90µs）。
+> 这是"小规模不该并行"的阈值问题，不是内核退化；下一步按每线程字节数限制
+> 有效线程数（degradation-analysis.md §6.3）。

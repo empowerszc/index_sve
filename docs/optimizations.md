@@ -1,6 +1,6 @@
-# 优化记录：T0-T5 性能优化轮
+# 优化记录：T0-T11 性能优化轮
 
-本文档详细记录针对 AI4S 真实负载的优化工作（T0-T5）。背景：用户实测真实 AI4S
+本文档详细记录针对 AI4S 真实负载的优化工作（T0-T11）。背景：用户实测真实 AI4S
 模型端到端**无提升甚至劣化**后，按优化任务建议（T0-T4）逐项实现，每项单独
 commit、全量测试 + 前后对比；T5 针对回归扫描暴露的 1 线程劣化做定向修复。
 对应性能数据见 `benchmarks/RESULTS.md` §9 与 `performance.md` §4.1。
@@ -18,7 +18,7 @@ commit、全量测试 + 前后对比；T5 针对回归扫描暴露的 1 线程�
 
 这些形态恰好落在旧实现的最差路径：M1 是"单索引 + A 大"但 K 小（2k-20k），旧
 `linearize+gather_index` 的 linearize 解码开销占比高；M3/M4 是 int64 小值域，
-线性化后走 low-MLP 的 SVE gather（4B 指令），单线程更慢。
+线性化后走随机 4B gather（64B 行放大），单线程更慢。
 
 优化总目标：**让新路径 ≥ 旧路径**（`linearize`+SVE 基线），优先 M1+M2 两个最热
 形态，且不改硬件探测（`sve_512_ok`）、不动 S5/S6 通用路径、不做无脑 GRAIN 常量
@@ -108,7 +108,7 @@ broadcast 解码 + 内联检查），再就地标量拷贝，**不物化 idx 数
 ### 3.5 T4 小值域桶化 + int32 直写（4fd733b）
 
 **问题**：M3 `keys[order]` 是 int64 小值域纯 gather（2048 个可能值，E=54k），
-旧实现 0.2x——linearize 的解码 + 4B/8B SVE gather 的 low-MLP 双重拖累。另有
+旧实现 0.2x——linearize 的解码 + 随机 gather 的 cache-line 放大双重拖累。另有
 遗留项：`linearize` 的 int32 分支先建 K×8B int64 tmp 再转换（K=1M 时 24.6ms
 / 27.7ms 全 op，占 89%）。
 
@@ -120,9 +120,9 @@ broadcast 解码 + 内联检查），再就地标量拷贝，**不物化 idx 数
    linearize 后的 idx 求偏移 min/max，值域 ≤2048 时构建 L1/L2 常驻查找表
    （4B 表 8KB / 8B 表 16KB），标量循环 `dst[p] = table[offset - mn]`。
 
-**动机**：小值域时表查的标量随机读命中缓存，优于 920F 低 MLP 的 SVE gather
-指令（RESULTS §8.2：SVE 4B gather 38 线程仅 0.75 GB/s vs 标量 3.4 GB/s）。
-值域 >2048 时返回 false，落回 SVE/scalar（大值域随机 gather 仍是硬件上限）。
+**动机**：小值域时表查的标量随机读命中 L1/L2，避免 64B 行放大，远优于大值域
+随机 gather（T11 复核：大值域 SVE 4B 与标量持平，差异来自访存模式而非指令；
+RESULTS §8.4）。值域 >2048 时返回 false，落回 SVE/scalar。
 
 **实测**：1D f32/f64 K=1M 小值域 8-32 线程 1.2-3.1x（SVE 0.2-0.9x）。单线程
 仍受 linearize 解码限制，但不再比旧路径差。
@@ -210,10 +210,15 @@ for t in tests/test_smoke.py tests/test_normalize.py tests/test_correctness.py \
 - **M1 值域桶化（T2 阶段 2）**：M1 raw rowcopy 路径未对下标做值域分析；若
   keys[order] 等值域小可再桶化。`gather_rowcopy_raw` 已留好接入入口。
 - ~~**P3 mask 多线程**~~：T8 已用单遍 compaction 修复（见 §13），不再列入。
-- **4B 大 K 随机 gather**：920F SVE 4B gather MLP 硬件上限（RESULTS §8.2）；
-  可试软件预取 / 标量多路预取。
+- **4B 大 K 随机 gather**：64B 行放大 + DRAM 延迟（SVE 4B 与标量持平，RESULTS
+  §8.4）；可试软件预取 / 按 cache line 分桶排序。
 
 ## 9. T5：1 线程回归修复（线性化两遍模型 vs aten 单遍）
+
+> **T11 复核修正**：本节 2/8/32t 列同样受 libomp/libgomp 双 ICV 影响（实际用
+> 38 worker），相对值偏大；且 T5-2 的"1 线程 A>1 全走 fused"让 A=64 的 S1/P1
+> 丢掉了 SVE rowcopy（1t 只有 1.06x）。T11 起 1 线程 A>=4 连续改回 raw rowcopy
+> （S1 1t 4.46x、rowcopy A=4 1t 2.41x）。修正矩阵见 RESULTS §15。
 
 ### 背景
 
@@ -223,8 +228,8 @@ for t in tests/test_smoke.py tests/test_normalize.py tests/test_correctness.py \
 
 - linearize 两遍模型固定开销：`linearize` 104ms + `gather` 124ms = 228ms vs
   aten 单遍 169ms；linearize 对 1 线程无并行加速，纯属多余的一遍。
-- 920F SVE gather 单线程 MLP 低（RESULTS §8.2），换 SVE→scalar 无济于事
-  （dispatch_scalar 0.64x 与 SVE 0.71-0.79x 相当）。
+- 单线程随机 gather 的 DRAM 延迟（T11 复核：SVE 4B 与标量持平），换
+  SVE→scalar 无济于事（dispatch_scalar 0.64x 与 SVE 0.71-0.79x 相当）。
 - 融合单遍（`gather_fused`）每元素做 at::Tensor 方法访问（element_size/stride/
   dtype/data_ptr，引用计数 + 虚调用），5M 元素下反而更慢（0.22-0.53x）。
 
@@ -233,8 +238,8 @@ for t in tests/test_smoke.py tests/test_normalize.py tests/test_correctness.py \
 | 项 | 变更 | 代码 | 1 线程效果 |
 |---|---|---|---|
 | T5-1 | 单索引 A==1 大值域 1 线程走 `gather_single_1d`（单遍标量，跳过 linearize） | gather.cpp 新增内核 + op.cpp 路由 | 1D f32 0.75x→**1.07x**、f64 0.71x→**1.24x** |
-| T5-2 | 单索引 A>1 1 线程走 `gather_fused` 单遍 | op.cpp 路由收窄（仅单索引 A>1） | rowcopy A=4 0.87x→**1.39x** |
-| T5-3 | fused/linearize 预提取索引张量属性 + nb==1 全长连续快路径（直读 idx_j[k]） | gather.cpp `gather_fused`、linearize.cpp 两变体 | x[i,j] 0.66x→**1.21x**（linearize 4.84→1.10ms）；rowcopy A=4 1.35x |
+| T5-2 | 单索引短行 A<4 1 线程走 `gather_fused` 单遍（T11 起 A>=4 改 raw rowcopy） | op.cpp 路由 | rowcopy A=4 0.87x→1.39x（T11 2.41x） |
+| T5-3 | fused/linearize 预提取索引张量属性 + nb==1 全长连续快路径（直读 idx_j[k]） | gather.cpp `gather_fused`、linearize.cpp 两变体 | x[i,j] 0.66x→**1.21x**（linearize 4.84→1.10ms）；T11 修正为 1.19x |
 | T5-4 | 修正路由范围 | op.cpp（多索引 A==1 与 mask 保持 linearize+SVE，fused 实测更差） | 避免 blanket fused 误伤（x[i,j] 曾 0.49x、x[:,i] 0.28x） |
 
 ### 路由现状（op.cpp index_impl）
@@ -243,7 +248,7 @@ for t in tests/test_smoke.py tests/test_normalize.py tests/test_correctness.py \
 1. K < 1024                                  → gather_direct
 2. 单索引 && after_contig && A>=4096 && f32/f64 → M1 raw rowcopy
 3. 单索引 && B==1 && A==1                    → T4 raw 桶化
-4. 1 线程 && 单索引 && A>1                   → T3 gather_fused（跳过 linearize）
+4. 1 线程 && 单索引 && A>1                   → A>=4 连续 ? raw rowcopy : T3 gather_fused
 5. A==1 || (after_contig && A>=4 && f32/f64) → linearize + gather_index（含 SVE/桶化）
 6. 其余                                    → T3 gather_fused
 ```
@@ -422,3 +427,50 @@ opt-in 实现（§15）。
   整数/mask compile 数值等价 + profiler + cache 目录；与 `HPC_INDEX_NO_OVERRIDE`
   冲突报错。
 - 全 10 套件 **102/102**；true-aten 对拍 40/40；`HPC_INDEX_NO_OVERRIDE=1` 仍为真 aten。
+
+## 16. T11：线程数方法学修正 + 路由/正确性修复
+
+### 问题
+
+1. **线程数失真**：扩展链接 BiSheng libomp，`torch.set_num_threads(t)` 只改
+   ATen 的 libgomp ICV；2-36t 实际都用 libomp 默认 team（本机 38），旧矩阵的
+   低线程相对值被严重高估。
+2. **1 线程 A>=4 误伤**：T5 的 "1t 单索引 A>1 全走 `gather_fused`" 让 S1/P1
+   （A=64）在 1t 丢掉 SVE rowcopy，只有 1.06x。
+3. **`x[:,i]` 每元素开销**：`gather_direct` 对 A==1 仍做逐元素边界检查 +
+   `col_off` 内层循环。
+4. **2B/1B/complex**：无 SVE 内核却仍走 linearize 两遍。
+5. **非连续 stride 正确性**：`bucket_gather_pure_raw`/`gather_single_1d`/
+   `rowcopy_raw` 平坦读 idx，非连续下标会算错（旧 "1.37x" 是错误路径的假加速）。
+
+### 变更
+
+| 项 | 变更 | 代码 |
+|---|---|---|
+| T11-1 | 入口 `sync_omp_threads()`：`omp_set_num_threads(at::get_num_threads())`，`torch.set_num_threads` 对扩展生效 | op.cpp |
+| T11-2 | `gather_direct` 属性 hoist + A==1 预校验紧凑循环 | gather.cpp |
+| T11-3 | 1t 单索引 A>=4 连续 f32/f64 → raw rowcopy；A<4 → fused | op.cpp |
+| T11-4 | 无 SVE 内核 dtype 在 `fast_1d` 下所有线程走单遍标量 | op.cpp |
+| T11-5 | raw 路径加 `stride0` + 连续性门控；M1/1t raw rowcopy 增加 `indices[0].is_contiguous()` | gather.cpp / op.cpp |
+| T11-6 | `small_single_index` 串行阈值改用 `n*A`（2D A=16 K=4096 不再误判串行） | op.cpp |
+
+### 实测（RESULTS §15）
+
+| 形态 | 修复前 | T11 |
+|---|---|---|
+| S1 1t | 1.06x | **4.46x** |
+| P1 1t | 1.06x | **4.42x** |
+| rowcopy A=4 / A=16 1t | 1.35x / 1.70x | **2.41x / 3.58x** |
+| `x[:,i]` 1t | 0.18→0.40x | **2.02x** |
+| half/bf16 1-36t | 0.5-0.97x | **1.2-2.4x** |
+| 2D A=16 K=4096 32/36t | 0.53-0.55x | **1.03-1.05x** |
+
+仍 <1x：非连续 mask 0.84-0.98x、int8/uint8/complex 0.9-1.0x、小工作量
+（S4 8/16t、小 K 高线程）0.46-0.96x。逐 case 分析见
+`docs/degradation-analysis.md`。
+
+### 验证
+
+- 全 10 套件 **102/102**；两进程 true-aten 对拍 **44/44**（新增 4 个非连续
+  stride 用例）。
+- 线程矩阵 30 场景 × 1/2/4/8/16/32/36；小 K 两进程 8 个 K × 7 线程。

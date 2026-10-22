@@ -7,7 +7,7 @@
 
 ## 1. 项目一句话
 
-为昇腾 920F（aarch64, SVE2 VL=512）实现的 `aten::index.Tensor` CPU 语义替代
+为鲲鹏 920F（aarch64, SVE2 VL=512）实现的 `aten::index.Tensor` CPU 语义替代
 算子。`import index_sve` 后进程中所有 `x[idx]` 自动改走本算子（Dispatcher
 CPU 键覆盖，autograd 不受影响）。构建/运行契约见 `README.md` 与
 `integration.md`。
@@ -29,20 +29,24 @@ CPU 键覆盖，autograd 不受影响）。构建/运行契约见 `README.md` �
 | T8 | mask 单遍融合 compaction（跳过 nonzero） | 0dd7533 | ✅ |
 | T9 | 小 K（≤4096）单整数下标精简路径 + C++ 直接覆盖 aten CPU 内核 | da9a203 | ✅ |
 | T10 | `torch.compile` opt-in（`HPC_INDEX_COMPILE=1`：fake + aten fallback + 独立 cache 目录） | 1cd77ce | ✅ |
+| T11 | 线程矩阵方法学修正（libomp ICV 同步）、`gather_direct` A==1 紧凑循环、2B/1B/complex 单遍、非连续 stride 正确性修复、1t A>=4 恢复 raw rowcopy | 待提交 | ✅ |
 
 ## 3. 路由现状（op.cpp `index_impl`）
 
 ```
 单 mask && 覆盖前 m 维 && 连续 && CPU → gather_mask（单遍压实，T8）
-单整数下标 && 末维 K<=4096 && 连续 && CPU → small_single_index（绕 normalize，T9）
-K < 1024                          → gather_direct（无线性化）
-单索引 && A>=4096 && 连续 && f32/f64 → M1 raw rowcopy（skip-linearize）
-单索引 && B==1 && A==1            → T4 raw 桶化（小值域查表）
-                                     └ 大值域 && 1 线程 → gather_single_1d（单遍标量）
-1 线程 && 单索引 && A>1           → gather_fused（跳过 linearize）
+单整数下标 && 末维 K<=4096 && 连续 && CPU → small_single_index（T9；n*A<16384 串行）
+K < 1024                          → gather_direct（无线性化；A==1 预校验紧凑循环，T11）
+单索引 && A>=4096 && 连续 self/idx && f32/f64 → M1 raw rowcopy（skip-linearize）
+单索引 && B==1 && A==1            → T4 raw 桶化（连续 idx；小值域查表）
+                                     └ 大值域 && (!SVE 内核 || 1t) → gather_single_1d
+1 线程 && 单索引 && A>1           → A>=4 连续 f32/f64 ? raw rowcopy : gather_fused
 A==1 || (连续 && A>=4 && f32/f64) → linearize + gather_index（SVE/桶化/scalar）
 其余（A<4 或非连续小块）          → gather_fused
 ```
+
+> 线程数：T11 起入口 `sync_omp_threads()` 把 libomp team 同步为
+> `at::get_num_threads()`，`torch.set_num_threads(t)` 对扩展生效。
 
 详细说明见 `architecture.md` §1 与 `optimizations.md` §9。
 
@@ -55,34 +59,42 @@ A==1 || (连续 && A>=4 && f32/f64) → linearize + gather_index（SVE/桶化/sc
 - 注意：测试同一进程串行跑，1 线程用例必须 `try/finally` 恢复
   `torch.get_num_threads()`（test_sve.py 内已如此）。
 - **true-aten 值级对拍**（覆盖下测试自洽，须两进程法）：
-  `python tests/verify_against_aten.py --mode both`（40/40，参考写
+  `python tests/verify_against_aten.py --mode both`（44/44，参考写
   `agent_space/`）。详见 semantics.md §6.2。
 
 ## 5. 性能结论（pin node 5，interleaved median）
 
-**1 线程（T5 修复后全部 ≥1.0x）**：
+**1 线程（T11 矩阵）**：
 
-| 形态 | 修复前 | 修复后 |
+| 形态 | 修复前 | T11 |
 |---|---|---|
-| 1D pure f32/f64 K=5M | 0.75x / 0.71x | **1.07x / 1.24x** |
-| x[i,j] 多索引 | 0.66x | **1.21x** |
-| rowcopy A=4 短行 | 0.87x | **1.39x** |
-| mask | ~1.0x | **2.1x**（T8 单遍融合后） |
-| 小 K 单下标 `K≤1023` | 0.5-0.7x | **1.8-2.3x**（T9，真实 `x[idx]`） |
+| S1/P1 rowcopy A=64 | 1.06x（T5 全 fused 误伤） | **4.46x / 4.42x** |
+| rowcopy A=4/16 | 0.87x / — | **2.41x / 3.58x** |
+| 1D pure f32 K=2M | 0.75x | **1.07x**（K=5M 1.24x） |
+| x[i,j] 多索引 | 0.66x | **1.19x** |
+| `x[:,i]` | 0.18x | **2.02x** |
+| mask | ~1.0x | **1.2-2.2x**（T8 单遍融合） |
+| 小 K 单下标 `K≤1023` | 0.5-0.7x | **1.34-2.08x**（T9，真实 `x[idx]`） |
+| 2B/1B/complex | 0.5-0.97x | **0.95-1.53x**（1t；高线程至 2.4x） |
 
-**全线程扫描（T0-T5 构建，RESULTS §10，30 iters interleaved）**：核心场景
-（S1/P1/P2/P3/S4、1D f64/f32、x[i,j]、rowcopy A=4）在 1/2/4/8/16/32/36/38
-全部 8 档线程 **≥1.06x**，多数大幅占优。低线程最强（RowCopy/1D pure 2-4t
-13-66x，单节点内存带宽 ~60 GB/s 用少量核即饱和）。P3 mask 在 T8 前最弱
-（1-1.9x，nonzero 两段式）；T8 单遍融合后 1t 2.1x、2-32t 为新路径旧路径的
-3.6-5.4x、38t 4.6x（RESULTS §12）。复现：`benchmarks/bench_threads.py`
-（`HPC_THREADS=1,2,4,8,16,32,36,38`）。
+**全线程矩阵（T11 修正，RESULTS §15，1/2/4/8/16/32/36，node 5）**：30 个
+场景里绝大多数 ≥1.0x，低线程最强（RowCopy/1D pure 在 2-8t 为 1.3-4.5x；
+单节点内存带宽用少量核即饱和）。仍 <1x 的为：int8/uint8 0.90-0.99x、
+complex 0.95-0.97x、非连续 mask 0.84-0.98x、S4 8/16t 0.87/0.76x、
+`x[i,j]` 8/16t 0.96/0.89x、int64 4t 0.87x、mask empty 4t 0.74x、
+range2048 16t 0.87x（单点抖动/小规模强扩展，均非持续趋势）。逐 case
+微架构分析见 `degradation-analysis.md`。
 
-**硬件上限（不可修，非 bug）**：4B（f32/i32）大 K 随机 pure gather 在 920F 上
-SVE 4B gather 指令 MLP 极低（38t ~0.75 GB/s vs 标量 3.4 GB/s，独立探针）。当前
-构建相对 aten 已无 <1x 格（T0-T5 后），但探针数据仍是硬件限制的确定性陈述
-（`benchmarks/RESULTS.md` §8.2）；T4 桶化在小值域时规避，大值域靠软件预取等
-待未来优化。
+> 旧 RESULTS §8.3/§10 的 2-36t 数据因 libomp/libgomp 两套 ICV 失效（扩展实际
+> 用 38 个 worker），已标注作废；不要再用其中 "≥1.06x" 的结论。
+
+**访存上限（不可修，非 bug）**：4B（f32/i32）大 K 随机 pure gather 受 64B
+cache line 放大（4B 只用 4B/行）+ DRAM 延迟限制。同构建 A/B 实测 SVE 4B 与标量
+持平（8MB 1.85 vs 1.86 ms、256MB 7.46 vs 7.45 ms，8/38t），换指令/回退标量无效，
+**不是 SVE MLP 缺陷**（RESULTS §8.4；早期 0.75 vs 3.4 GB/s 探针归因已撤回）。
+T4 桶化在小值域规避行放大，大值域靠预取/行 gather 等待未来优化。不要据此
+推断"所有场景都 ≥1x"：`x[:,i]`/1B/complex 仍有结构性差距（见
+`degradation-analysis.md`）。
 
 ## 6. 已知边界 / 注意事项
 
@@ -99,16 +111,20 @@ SVE 4B gather 指令 MLP 极低（38t ~0.75 GB/s vs 标量 3.4 GB/s，独立探�
   cache 子目录，运行期回到 dispatcher；与 `HPC_INDEX_NO_OVERRIDE=1` 冲突会报错。
   细节与限制见 `torch-compile.md` §6。
 - 慢形态与"为什么不 fallback"的深度分析见 `fallback-analysis.md`：核心结论是
-  4B（f32/i32）大 K 大值域 pure gather 受 920F SVE 4B gather 指令 MLP 上限
-  （探针 0.75 vs 标量 3.4 GB/s，硬件不可消除）；A<4/非连续/2B-1B 等相对 aten
-  通常 ≥1x 只是吃不到 SVE 加速，mask 经 T8 后 2-8x；fallback 的 Python wrapper 开销 ~45µs/
-  调用对以 RowCopy 小张量为收益主体的本算子是不可接受的全局回归。
+  4B（f32/i32）大 K 大值域 pure gather 受 64B cache line 放大 + DRAM 延迟限制
+  （SVE 4B 与标量持平，非指令 MLP；RESULTS §8.4）；A<4/非连续/2B-1B 多数与 aten
+  持平或略低（0.9-1.0x），`x[:,i]` 在 T11 前 0.4-0.7x、A==1 紧凑循环后 1.1-2.0x；
+mask 经 T8 后 1.3-4.2x；
+  fallback 的 Python wrapper 开销 ~45µs/调用对以 RowCopy 小张量为收益主体的
+  本算子是不可接受的全局回归。
 
 ## 7. 下一步候选（未做）
 
 - M1 值域桶化（T2 阶段 2）：`gather_rowcopy_raw` 未对下标做值域分析，可再桶化。
-- 4B 大 K 大值域 gather：软件预取 / 标量多路预取（硬件 MLP 上限的软件规避）。
-- 端到端 AI4S 模型复测（验证 T0-T5 在真实负载上的整体收益）。
+- 4B 大 K 大值域 gather：软件预取 / 按 cache line 分桶排序（规避行放大；SVE 与
+  标量已持平，换指令无收益）。
+- 端到端 AI4S 模型复测（验证 T0-T11 在真实负载上的整体收益）。
+- 小规模并行的有效线程上限（按每线程字节数），消除 S4/小 K 的 0.46-0.96x。
 - 在真实 AI4S 模型上验证 `HPC_INDEX_COMPILE=1` 的端到端收益与编译时间，再决定
   是否默认开启（当前默认关闭）。
 
@@ -122,8 +138,8 @@ for t in tests/test_smoke.py tests/test_normalize.py tests/test_correctness.py \
 # true-aten 值级对拍（正确性，非性能）
 python tests/verify_against_aten.py --mode both
 
-# 全线程扫描（RESULTS §10，pin node 5 静默节点，30 iters interleaved）
-HPC_INDEX_NO_OVERRIDE=1 HPC_AFFINITY=190-227 HPC_THREADS=1,2,4,8,16,32,36,38 \
+# 全线程矩阵（RESULTS §15，pin node 5 静默节点，25 iters interleaved）
+HPC_INDEX_NO_OVERRIDE=1 HPC_AFFINITY=190-227 HPC_THREADS=1,2,4,8,16,32,36 \
   python benchmarks/bench_threads.py
 
 # 回归扫描（pin node 5 静默节点，避免共享箱噪声）

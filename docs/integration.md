@@ -8,11 +8,14 @@
 `index_sve/index_sve/__init__.py`：
 
 ```python
-from . import _hpc_index            # dlopen 时注册 torch.ops.hpc_index
+from . import _hpc_index            # dlopen 时注册 torch.ops.hpc_index（+ CPU 覆盖）
 from .register_aten import install as _install_aten
 import torch, os
 if os.environ.get("HPC_INDEX_NO_OVERRIDE", "0") != "1":
-    _install_aten()                 # 直接覆盖 aten::index.Tensor（CPU）
+    _install_aten()                 # 兼容旧调用；实际覆盖在 C++ dlopen 时完成
+if os.environ.get("HPC_INDEX_COMPILE", "0") == "1":
+    from .compile_support import enable as _enable_compile
+    _enable_compile()               # opt-in：fake + aten fallback + 独立 cache（T10）
 ```
 
 覆盖实际由 C++ 扩展在 dlopen 时完成（`op.cpp`）：
@@ -40,6 +43,7 @@ mask、N-D 下标）都改走本算子**，无需改调用点。已验证：
 |---|---|---|
 | `HPC_INDEX_NT` | 0 | 非临时 gather/store 开关（`!= "0"` 即开；opt-in，默认关） |
 | `HPC_INDEX_NO_OVERRIDE` | 0 | `=1` 时 import **跳过** aten::index 覆盖（基准/对拍用） |
+| `HPC_INDEX_COMPILE` | 0 | `=1` 时启用 `torch.compile` 支持（fake + aten fallback + 独立 cache 目录，T10；须在 import 前设置） |
 
 `HPC_INDEX_NO_OVERRIDE` 的用途：
 - 只想用 `torch.ops.hpc_index.index` 本体、不改全局 `x[...]` 的部署；
@@ -98,20 +102,22 @@ Warning: Overriding a previously registered kernel for the same operator and the
 针对"本算子性能差于 aten::index 时回退到原生 aten::index"的诉求，做了一轮完整
 调查，结论是**不实现 fallback**。记录理由供日后复读：
 
-- **慢场景**（RESULTS §8/performance §3）：1D f32/i32 大 K（K=10M）纯 gather 在
-  ≥8 线程（0.18-0.7x）、P2 608t（0.38x）。P3 mask 高线程问题已由 T8 单遍融合
-  修复（38t 4.6x）。低线程的
-  RowCopy/PureGather 8B 是本算子的可靠收益（2-4t 20-34x），不受影响。
+- **慢场景**：历史 1D f32/i32 大 K（K=10M）纯 gather 在 ≥8 线程为 0.18-0.7x，
+  那是旧构建/共享箱数据；T11 修正矩阵（RESULTS §15）中 1-16t 为 1.06-1.16x，
+  32/36t 2.3-3.9x（部分来自 aten 在带宽饱和后变慢）。绝对带宽仍受 64B 行放大 +
+  DRAM 延迟限制（§8.4）。P3 mask 高线程已由 T8 单遍融合修复（1.3-4.2x）。
+  RowCopy/8B PureGather 是可靠收益（1t 2.4-4.5x，2-16t 3-4.6x）。`x[:,i]` 在
+  T11 前 1-32t 只有 0.4-0.7x，A==1 紧凑循环后为 1.1-2.0x（1t 2.0x）。
 - **Python-wrapper fallback 不可取**：实测 `torch.library.get_kernel` +
   `with_keyset` + `call_boxed` 能正确回退且 autograd 安全（无递归），但任何
   Python 层包装会给**每次** `x[...]` 调用增加 ~45µs（小 op 13.7µs→63µs，
   S1 4ms 场景仅 +1%）。对以 RowCopy 小/中张量为收益主体的算子，这是全局性
   回归，不符合"常规标准流程"。
-- **C++ 内核内 scalar 回退也追不平**：4B 纯 gather 落 `dispatch_scalar` 后实测
-  0.32-0.55 GB/s（ATen 2.9 GB/s，1D f32 K=10M 32t）——clang `-O3` 会把标量循环
-  自动向量化为同样低 MLP 的 SVE gather 指令（独立探针：auto-vec 0.85 GB/s，
-  `#pragma clang loop vectorize(disable)` 后 0.99 GB/s，仍 < ATen 2.9）。
-  920F 的 `svld1_gather_u32index` 内存级并行度低是硬件上限（kernels.md §2）。
+- **C++ 内核内 scalar 回退也追不平**：同构建 A/B（真实内核、同一随机模式）
+  SVE 4B gather 与标量循环持平（src 8MB 1.85 vs 1.86 ms、256MB 7.46 vs 7.45 ms，
+  8/38t）。瓶颈是 64B cache line 放大（4B 元素 16x 行放大）+ DRAM 延迟，不是
+  SVE 指令 MLP；换标量或换指令都无效（kernels.md §2、RESULTS §8.4）。可行方向
+  是减少行流量（T4 桶化/预取/行 gather）。
 - **维持现状**：override 仅注册 C++ op（每次调用 ~13µs 额外开销，S1 4ms 场景
   <0.5%），慢场景如实记录为硬件/算法边界，不做特殊回退。
 
@@ -119,6 +125,6 @@ Warning: Overriding a previously registered kernel for the same operator and the
 
 `torch.compile` 默认会把 `aten::index` 内联成 Inductor 自己生成的 kernel，运行时
 不再有 dispatcher 调用，**CPU 覆盖不生效**（实测慢 2.6x）。已验证强制 fallback
-可让 compile 重新走回本算子（1.07-1.3x）；机制、缓存/私有 API/FakeTensor 坑与
-opt-in 落地计划见 [torch-compile.md](torch-compile.md)。部署时若模型使用
-`torch.compile`，需注意这一点。
+可让 compile 重新走回本算子（1.07-1.3x）；已实现为 opt-in：import 前设
+`HPC_INDEX_COMPILE=1`（与 `HPC_INDEX_NO_OVERRIDE=1` 冲突会报错）。机制、缓存/
+私有 API/FakeTensor 坑见 [torch-compile.md](torch-compile.md) §6。

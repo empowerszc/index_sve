@@ -1,18 +1,41 @@
-"""多线程扫描：核心场景 × 1/2/4/8/16/32/36/38 线程（interleaved median）。
+"""多线程扫描：核心场景 × 1/2/4/8/16/32/36 线程（interleaved median）。
 
-替代 bench_gate.py 的顺序法：aten/hpc 交错 40 iters，取中位数（共享箱抗噪）。
-场景覆盖模型形态（S1/P1/P2/P3/S4）+ 1D pure（f64/f32）+ T5 修复形态。
+替代 bench_gate.py 的顺序法：aten/hpc 交错 iters，取中位数（共享箱抗噪）。
+覆盖模型形态（S1/P1/P2/P3/S4）、1D pure 4B/8B、mask（1D/2D/空）、小值域桶化、
+rowcopy A=2/3/4、多索引、列索引、非连续、2B/1B/complex（M4）、以及 T8/T9 形态。
+小 K（<16384 元素）用 bench_smallk_real.py 走真实 `x[idx]` 两进程法，避免
+pybind wrapper 开销污染。
 
 用法：
-  HPC_INDEX_NO_OVERRIDE=1 HPC_AFFINITY=190-227 HPC_THREADS=1,2,4,8,16,32,36,38 \
+  HPC_INDEX_NO_OVERRIDE=1 HPC_AFFINITY=190-227 HPC_THREADS=1,2,4,8,16,32,36 \
     python benchmarks/bench_threads.py
 """
-import os, sys, time, torch, statistics
+import ctypes, os, sys, time, torch, statistics
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from index_sve import index as hpc_index
 
-THREADS = [int(t) for t in os.environ.get("HPC_THREADS", "1,2,4,8,16,32,36,38").split(",")]
+# 扩展用 BiSheng clang 编译，ATen 的 invoke_parallel 是 header inline，实际团队
+# 大小由扩展链接的 libomp 决定；torch.set_num_threads 只改 libgomp 的 ICV，
+# 对扩展里的 #pragma omp parallel 无效（实测 2t 仍用 16 个 worker）。必须同时
+# 调 libomp 的 omp_set_num_threads，线程标签才可信。
+_LIBOMP = None
+for _line in open("/proc/self/maps"):
+    if "libomp.so" in _line and ".so" in _line:
+        _path = _line.split()[-1]
+        _LIBOMP = ctypes.CDLL(_path)
+        break
+if _LIBOMP is not None:
+    _LIBOMP.omp_set_num_threads.argtypes = [ctypes.c_int]
+    _LIBOMP.omp_get_max_threads.restype = ctypes.c_int
+
+
+def set_threads(t):
+    torch.set_num_threads(t)
+    if _LIBOMP is not None:
+        _LIBOMP.omp_set_num_threads(t)
+
+THREADS = [int(t) for t in os.environ.get("HPC_THREADS", "1,2,4,8,16,32,36").split(",")]
 ITERS = int(os.environ.get("HPC_ITERS", "40"))
 
 def med_pair(fa, fh, n=ITERS):
@@ -29,7 +52,7 @@ def gbps(nbytes, sec):
 
 def sweep(name, x, idx, aten_fn, bytes_):
     for t in THREADS:
-        torch.set_num_threads(t)
+        set_threads(t)
         ta, th = med_pair(aten_fn, lambda: hpc_index(x, idx))
         print(f"| {name} | {x.dtype} | {t} | {gbps(bytes_, ta):.2f} | {gbps(bytes_, th):.2f} | {ta/th:.2f}x |",
               flush=True)
@@ -97,6 +120,71 @@ def main():
     x = torch.randn(5_000_000, generator=rng)
     i = torch.randint(0, 5_000_000, (2_000_000,), generator=rng)
     sweep("1D pure f32 K=2M (T5)", x, [i], lambda: x[i], 2 * 2_000_000 * 8 + 2_000_000 * 4)
+
+    # --- 4B/8B 下标组合（同 out dtype，验证 linearize/gather 分支） ---
+    x = torch.randn(10_000_000, generator=rng)
+    i = torch.randint(0, 10_000_000, (10_000_000,), generator=rng)
+    sweep("1D f32 K=10M idx64", x, [i], lambda: x[i], 10_000_000 * (8 + 4))
+    x = torch.randn(10_000_000, dtype=torch.float64, generator=rng)
+    i = torch.randint(0, 10_000_000, (10_000_000,), dtype=torch.int32, generator=rng)
+    sweep("1D f64 K=10M idx32", x, [i], lambda: x[i], 10_000_000 * (4 + 8))
+
+    # --- 2B/1B/complex：无 SVE 内核，dispatch_scalar（M4） ---
+    for dt, nbytes in ((torch.float16, 2), (torch.bfloat16, 2),
+                       (torch.int8, 1), (torch.uint8, 1)):
+        x = torch.randn(2_000_000, generator=rng).to(dt)
+        i = torch.randint(0, 2_000_000, (2_000_000,), generator=rng)
+        sweep(f"1D {str(dt).replace('torch.','')} K=2M", x, [i],
+              lambda: x[i], 2_000_000 * (8 + nbytes))
+    x = torch.randn(2_000_000, dtype=torch.complex64, generator=rng)
+    i = torch.randint(0, 2_000_000, (2_000_000,), generator=rng)
+    sweep("1D complex64 K=2M", x, [i], lambda: x[i], 2_000_000 * (8 + 8))
+    for dt, name in ((torch.int32, "int32"), (torch.int64, "int64")):
+        x = torch.randint(0, 1000, (2_000_000,), dtype=dt, generator=rng)
+        i = torch.randint(0, 2_000_000, (2_000_000,), generator=rng)
+        sweep(f"1D {name} K=2M", x, [i], lambda: x[i],
+              2_000_000 * (8 + x.element_size()))
+
+    # --- rowcopy 短行 A=2/3（M3）与大行 A=16 ---
+    for A in (2, 3, 16):
+        x = torch.randn(200_000, A, generator=rng)
+        i = torch.randint(0, 200_000, (200_000,), dtype=torch.int32, generator=rng)
+        sweep(f"rowcopy A={A} f32 K=200k", x, [i], lambda: x[i],
+              200_000 * (4 + A * 4))
+
+    # --- 非连续 self / idx（回退到 fused/scalar） ---
+    base = torch.randn(200_000, 32, generator=rng)
+    x = base[:, ::2]
+    i = torch.randint(0, 200_000, (200_000,), dtype=torch.int32, generator=rng)
+    sweep("noncontig self A=16 stride2", x, [i], lambda: x[i],
+          200_000 * (4 + 16 * 4))
+    x = torch.randn(2_000_000, generator=rng)
+    i = torch.randint(0, 2_000_000, (2_000_000,), generator=rng)[::2]
+    sweep("noncontig idx K=1M", x, [i], lambda: x[i], 1_000_000 * (8 + 4))
+
+    # --- mask：1D / 空 mask / 非连续 mask ---
+    x = torch.randn(4_000_000, generator=rng)
+    m = torch.rand(4_000_000, generator=rng) < 0.3
+    sweep(f"mask 1D nnz={int(m.sum())}", x, [m], lambda: x[m],
+          4_000_000 + int(m.sum()) * 4)
+    m = torch.zeros(1_000_000, dtype=torch.bool)
+    x = torch.randn(1_000_000, generator=rng)
+    sweep("mask empty N=1M", x, [m], lambda: x[m], 1_000_000)
+    x = torch.randn(2_000_000, generator=rng)
+    m = (torch.rand(4_000_000, generator=rng) < 0.3)[::2]
+    sweep(f"mask noncontig nnz={int(m.sum())}", x, [m], lambda: x[m],
+          2_000_000 + int(m.sum()) * 4)
+
+    # --- 列索引 x[:, i]（B>1，A=0 形态） ---
+    x = torch.randn(200_000, 64, generator=rng)
+    i = torch.randint(0, 64, (64,), generator=rng)
+    sweep("col x[:,i] C=64 K=64", x, [None, i], lambda: x[:, i],
+          200_000 * 64 * 4 * 2)
+
+    # --- 小值域桶化（T4）：值域 2048 内 ---
+    x = torch.randn(2_000_000, generator=rng)
+    i = torch.randint(0, 2048, (2_000_000,), generator=rng)
+    sweep("1D f32 K=2M range2048", x, [i], lambda: x[i], 2_000_000 * (8 + 4))
 
 if __name__ == "__main__":
     main()

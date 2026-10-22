@@ -17,8 +17,10 @@ pure_gather_sve_8b_f64 / pure_gather_sve_8b_s64
 - 尾数用 `svwhilelt_b64(i, n)` 半掩码向量。
 - NT 变体：`svldnt1_gather_u64index_f64` + `svstnt1_f64`（HPC_INDEX_NT=1）。
 
-**性能**：920F 上 8B gather 是高效的（实测 4-38 线程稳定 ~5.0 GB/s，而标量
-~3.6 GB/s，见 performance.md）。这是 S4 大随机 gather 与 1D f64 的收益来源。
+**性能**：8B gather 是 1D/大随机 gather 的主要收益来源。T11 定点复测（node 5，
+1D f64 K=2M）hpc 绝对带宽 1/2/4/8/16/32t = 0.61/1.08/2.09/3.91/6.87/6.80 GB/s，
+相对 aten 1.03-1.26x；K=10M 时 32/36t 为 9.1-9.2 GB/s（aten 4.5-4.8 GB/s）。旧文档"4-38 线程稳定 5.0 GB/s"的线程标签不可信，已由
+RESULTS §15 的修正矩阵取代（`torch.set_num_threads` 对扩展生效问题见 §7）。
 
 ## 2. 4B 元素 gather（f32/i32）
 
@@ -32,20 +34,19 @@ pure_gather_sve_4b_f32 / pure_gather_sve_4b_s32
   gather 指令**，gather 本身始终常规 load）。
 - 门控：仅 `idx32`（线性化后 int32 下标）且 dtype∈{f32,i32}。
 
-**⚠ 已知硬件限制（重要）**：920F 的 `svld1_gather_u32index_*` **内存级并行度
-（MLP）极低**。独立探针（OpenMP，38 线程，node 5）：
+**⚠ 已知访存限制（重要，T11 复核）**：4B 随机 gather 的瓶颈是 **64B cache line
+放大 + DRAM 延迟**，不是 SVE 指令的 MLP。同一个真实内核、同一随机模式做 A/B：
 
-| 内核 | 38 线程带宽 |
-|---|---|
-| SVE 4B gather（`svld1_gather_u32index_f32`） | ~0.75 GB/s |
-| 标量 gather 循环 | ~3.4 GB/s |
-| SVE 8B gather（对照） | ~5.0 GB/s |
+| 内核 | src 8MB（8t） | src 256MB（38t） |
+|---|---|---|
+| SVE 4B gather | 1.85 ms | 7.46 ms |
+| 标量循环 | 1.86 ms | 7.45 ms |
 
-因此 **1D f32/i32 大 K（≥10M）随机 pure gather 显著慢于 aten 标量**
-（38 线程实测 hpc ~1.2 GB/s vs aten 6.7 GB/s，0.18x）。这不是实现缺陷，而是
-920F SVE gather 指令的硬件特性：向量宽度无法弥补随机 4B 访问的 MLP 瓶颈。
-f64 8B 路径不受影响。若未来要在 4B 大 K 场景加速，可考虑预取到 L2/软件流水
-深展开，或改走标量+显式多路预取（见 porting.md）。
+两者持平：换标量、改指令都无效。早期独立探针（38t 0.75 vs 3.4 GB/s）没有在
+端到端复现，已撤回归因（RESULTS §8.4）。8B 路径更快是因为同样条数的 line 携带
+2x 有用字节（8B 行放大 8x vs 4B 16x），而非指令 MLP 差异。因此 4B 大 K 大值域
+的可行方向是减少行流量（T4 小值域桶化、预取、行 gather），而不是换指令；
+f64 8B 路径不受影响。
 
 ## 3. 行拷贝 RowCopy（A>1 连续块）
 
@@ -115,9 +116,9 @@ bucket_gather_pure<T, IdxT>（gather_index 内，先于 SVE 分支）
   落到 SVE/scalar。
 - 值域 ≤2048 时构建 L1/L2 常驻查找表（4B 表 8KB / 8B 表 16KB），标量循环
   `dst[p] = table[row_off[r] + idx[k] - mn]`。
-- **动机**：920F 的 SVE 4B gather MLP 低（§2），小值域时表查的标量随机读命中
-  缓存，实测优于 SVE gather。1D f32/f64 K=1M 小值域在 8-32 线程 1.2-3.1x
-  （SVE 0.2-0.9x）。
+- **动机**：小值域时源数据块常驻 L1/L2，标量查表命中缓存；4B SVE gather 仍受
+  64B 行放大限制（§2）。T11 复测 1D f32 K=2M、值域 2048：1-36t 相对 aten
+  0.96-1.34x（1t 1.23x，16t 0.96x 为并行开销/噪声）。
 
 ### 4.3 T4 raw 桶化 `bucket_gather_pure_raw`
 
@@ -134,8 +135,8 @@ bucket_gather_pure_raw<T, IdxT>（op.cpp 短路，单索引 B==1 A==1）
 ### 4.4 T5 1 线程单遍路径 `gather_single_1d` / fused nb==1 快路径（bd21485）
 
 **背景**：回归扫描发现 1 线程多形态劣化（0.6-0.9x），根因是 linearize 两遍模型
-固定开销 + 920F SVE gather 单线程低 MLP（§2），且 fused/linearize 内层循环每次
-访问 at::Tensor 方法（引用计数 + 虚调用）。2+ 线程全部占优。
+固定开销 + SVE gather 单线程在此形态不占优（§2），且 fused/linearize 内层循环
+每次访问 at::Tensor 方法（引用计数 + 虚调用）。2+ 线程多数占优。
 
 ```cpp
 gather_single_1d<T, IdxT>（gather.cpp 新增，op.cpp 短路：1 线程单索引 B==1 A==1 大值域）
@@ -146,15 +147,17 @@ linearize 同样预提取 + nb==1 快路径
 - **T5-1** `gather_single_1d`：单索引 1D 纯 gather，1 线程跳过 linearize 直接
   标量单遍（read idx → 边界检查 → 负索引归一 → `dst[k]=src[v]`）。下标张量属性
   循环外一次提取。1D f32 K=5M 0.75x → 1.07x，f64 0.71x → 1.24x。
-- **T5-2** 1 线程单索引 A>1（rowcopy/scalar 短行）改走 `gather_fused` 单遍：
-  rowcopy A=4 K=200k 0.87x → 1.39x（linearize 原占 80% 开销，跳过即追平）。
+- **T5-2** 1 线程单索引短行（A<4）改走 `gather_fused` 单遍：rowcopy A=4
+  K=200k 0.87x → 1.39x。T11 起 A>=4 连续块改回 raw rowcopy（SVE 整块拷贝）：
+  A=4 1t 2.41x、A=16 1t 3.58x、S1（A=64）1t 4.46x。
 - **T5-3** fused/linearize 预提取索引张量属性 + nb==1 全长连续快路径（跳过
   bfactor 混合进制广播解码，直读 `idx_j[k]`）：x[i,j] 双全长索引 0.66x → 1.21x
+  （T11 修正为 1.19x）
   （linearize 4.84 → 1.10ms）。
 - **路由边界**：多索引 A==1（x[i,j]）在 1 线程**保持 linearize+SVE**；
   blanket "1 线程全 fused" 实测更差（x[i,j] 0.49x、x[:,i] 0.28x），因 fused 解码
   开销在广播/多索引形态超过两遍模型的收益。单 mask 由 T8 `gather_mask` 单遍
-  压实处理（见 §6）。
+  压实处理（见 §9）。
 
 ## 5. 快速路径 `gather_direct`（K<1024）
 
@@ -164,6 +167,10 @@ linearize 同样预提取 + nb==1 快路径
 - N-D 下标按 `broadcast_shape` 混合进制解码（bfactor），**非** `k*stride(0)`
   （A7 修复 —— 若回归成简单 stride 会破坏 N-D 下标语义）。
 - 等价 ATen `Indexer` 的逐元素遍历，故无需线性化临时缓冲。
+- **T11 A==1 快路径**：`A==1 && 单索引 && 全长连续 && after_contiguous` 时先把
+  K 个下标校验/归一化一次到小缓冲，再跑无检查的紧凑循环。`x[:,i]`（B 大、K 小）
+  从 0.18x 提升到 1.1-2.0x（1t 2.0x）；剩余差距见
+  degradation-analysis.md。
 
 ## 6. 预取与 NT 决策（Task 8 结论）
 
@@ -176,8 +183,12 @@ linearize 同样预提取 + nb==1 快路径
 - 所有大路径 `at::parallel_for(0, B*K, adaptive_grain(B*K))`（T0，
   `grain.h`：`max(1, min(n, 65536, n/(nt*8)))`）；`-fopenmp` 必须（否则
   `parallel_for` 串行化，历史根因见 architecture.md §7）。
-- 线程数由 `torch.set_num_threads()` 控制；920F 为 608 核 / 32 NUMA，单节点
-  38 核。共享箱上 608 线程数字噪声大，**以定点核复测为准**（performance.md §8）。
+- 线程数：T11 起内核入口调用 `omp_set_num_threads(at::get_num_threads())`，
+  `torch.set_num_threads(t)` 对扩展生效。扩展链接 BiSheng libomp、ATen 链接
+  libgomp，二者 ICV 独立；此前只设 torch 的线程数时，扩展实际用 libomp 默认
+  team（本机 affinity 38），导致 2-36t 的旧数据标签失效（RESULTS §10/§15）。
+- 鲲鹏 920F：608 核 / 32 NUMA，单节点 38 核。共享箱上 608 线程数字噪声大，
+  **以定点核复测为准**（performance.md §8）。
 
 ## 8. 修改内核时的门槛清单（防回归）
 
@@ -188,7 +199,7 @@ linearize 同样预提取 + nb==1 快路径
 4. N-D 下标在 `gather_direct` 的 bfactor 解码不可丢。
 5. 跑全量测试 + 两进程 true-aten 对拍（semantics.md §6）。
 
-## 6. T8 mask 单遍压实 `gather_mask`（gather.cpp）
+## 9. T8 mask 单遍压实 `gather_mask`（gather.cpp）
 
 ```cpp
 gather_mask(self, mask)  // op.cpp mask_fast_path 调用
@@ -203,10 +214,11 @@ gather_mask(self, mask)  // op.cpp mask_fast_path 调用
   chunk 内 `w` 局部递增，无原子操作。
 - `nnz==0 || A==0` 直接返回空输出；空掩码 8t ~0.15ms。
 
-## 7. T9 小 K 单整数下标精简路径（op.cpp）
+## 10. T9 小 K 单整数下标精简路径（op.cpp）
 
 单整数下标、末维 `K<=4096`、self/idx 连续、CPU 时，`small_single_index` 直接在
 `index_impl` 入口按 idx 平坦顺序取行：`out[p] = self[idx[p]]`，A>=4 用 `memcpy`
-整行拷贝，n<16384 串行（并行任务开销大于收益）。绕过 `normalize_index` 的
+整行拷贝，`n*A<16384` 时串行（并行任务开销大于收益；只看 n 会让 2D A=16
+K=4096 误判为串行，8-36t 掉到 0.55-0.66x，T11 已修）。绕过 `normalize_index` 的
 vector 分配/transpose 分析与 `gather_direct` 的内层 `at::Tensor` 访问。
 `K>4096` 仍走 SVE/桶化主路径。

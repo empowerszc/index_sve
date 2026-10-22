@@ -20,7 +20,7 @@ index_impl(self, indices)
        └─ 大值域 && 1 线程 → gather_single_1d(spec, out); return   # 单遍标量（T5）
   8. use_i32 = self.numel() < 2^31 && dtype ∈ {f32, i32}
   9. idx = at::empty({K}, dtype = use_i32 ? int32 : int64)
- 10. 1 线程 && 单索引 && A>1 → gather_fused(spec, out); return   # 跳过 linearize（T5）
+ 10. 1 线程 && 单索引 && A>1 → A>=4 连续 ? gather_rowcopy_raw : gather_fused（T5/T11）
  11. A==1 || (after_contiguous && A>=4 && f32/f64)
        → linearize(spec, idx) + gather_index(spec, idx, out, g_nt); return
  12. 其余（A<4 或非连续小块）→ gather_fused(spec, out)   # T3 融合单遍，不物化 idx
@@ -29,11 +29,11 @@ index_impl(self, indices)
 静态开关 `g_nt`：`HPC_INDEX_NT` 环境变量（非 "0" 即开），default off，进
 `gather_index`/`gather_rowcopy_raw` 的 `non_temporal` 参数。
 
-优化任务（T0-T5）引入的优先级：**先试不物化 idx 的短路路径**（gather_direct /
+优化任务（T0-T11）引入的优先级：**先试不物化 idx 的短路路径**（gather_direct /
 M1 raw rowcopy / T4 raw 桶化），需要 idx 时再 linearize；T3 fused 只为 A<4 或
 非连续小块服务（A>=4 连续块 linearize+rowcopy 实测更快）；**T5 让 1 线程走
 单遍**（单索引 A==1 大值域 `gather_single_1d`、单索引 A>1 `gather_fused`），
-避开 linearize 两遍模型与 SVE 单线程低 MLP。多索引 A==1 **保持
+避开 linearize 两遍模型与单线程随机访存延迟。多索引 A==1 **保持
 linearize+SVE**（实测 fused 解码更差）；单 mask 在入口走 `mask_fast_path` →
 `gather_mask` 单遍压实（T8），绕过 normalize 的 nonzero。
 
@@ -117,7 +117,8 @@ struct IndexSpec {
 | Scalar | 其余全部 | `dispatch_scalar` |
 
 **注意：`bucket_gather_pure` 在 SVE 分支之前**，因为小值域（值域 ≤2048）时
-L1/L2 常驻查找表的标量随机读优于 920F 低 MLP 的 SVE gather（kernels.md §2）。
+L1/L2 常驻查找表的标量随机读避免了 64B 行放大，远优于大值域随机 gather
+（kernels.md §2；SVE 4B 与标量在大值域持平）。
 值域 >2048 时返回 false，继续走 SVE/scalar。
 
 `gather_index` 之外还有两个**入口级短路**（在 op.cpp，不经过 linearize）：

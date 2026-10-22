@@ -32,6 +32,9 @@ def gen_cases(shape_set):
     cases = []
     def add(name, x, idx):
         cases.append((name, x, [t.clone() if torch.is_tensor(t) and t is not None else t for t in idx]))
+    def add_raw(name, x, idx):
+        # 不 clone：保留 self/index 的 stride，专测非连续 raw 路径（T11）。
+        cases.append((name, x, list(idx)))
 
     if shape_set in ("small", "all"):
         add("1d_small_f32", torch.randn(10, generator=rng), [torch.tensor([1, 3, 0, 3, 9])])
@@ -78,6 +81,14 @@ def gen_cases(shape_set):
         add("mask_large", torch.randn(1_000_000, generator=rng), [torch.rand(1_000_000, generator=rng) < 0.3])
         add("scalar_A3", torch.randn(200000, 3, generator=rng), [torch.randint(0, 200000, (2_000_000,), generator=rng)])
         add("noncontig_after", torch.randn(16, 64, generator=rng).t(), [torch.randint(0, 64, (1024,), generator=rng)])
+        add_raw("noncontig_idx_1d_stride2", torch.randn(20000, generator=rng)[::2],
+                [torch.randint(0, 10000, (4096,), generator=rng)[::2]])
+        add_raw("noncontig_idx_row_A16", torch.randn(20000, 16, generator=rng)[::2],
+                [torch.randint(0, 10000, (2048,), generator=rng)[::2]])
+        add_raw("noncontig_idx_K8192", torch.randn(20000, generator=rng)[::2],
+                [torch.randint(0, 10000, (8192,), generator=rng)[::2]])
+        add_raw("noncontig_idx_col", torch.randn(4096, 64, generator=rng),
+                [None, torch.arange(64)[::2]])
 
     return cases
 
