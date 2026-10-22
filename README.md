@@ -139,8 +139,10 @@ HPC_INDEX_NO_OVERRIDE=1 python your_script.py   # import 不再改 aten::index.T
 - 索引张量必须在 CPU（meta/CUDA 索引抛 aten 同文错误，不再段错误）；`out=`
   变体（`aten::index.Tensor_out`）也已覆盖。详见 semantics.md / optimizations.md §11。
 - **`torch.compile` 下默认不生效**：Inductor 会把 `aten::index` 内联成自己的
-  kernel，绕过 dispatcher 覆盖（实测慢 2.6x）。已验证强制 fallback 可恢复到
-  1.07-1.3x；方案、坑与 opt-in 计划见 `docs/torch-compile.md`（尚未默认启用）。
+  kernel，绕过 dispatcher 覆盖（实测慢 2.6x）。设 `HPC_INDEX_COMPILE=1`（在
+  `import index_sve` 前）可 opt-in：注册 fake、把 lowering 永久设为 fallback、
+  切换独立 inductor cache 子目录，运行期回到 dispatcher。默认关闭；细节与限制见
+  `docs/torch-compile.md` §6。
 - 语义细节、内核细节、移植指南见 `docs/`（目录见 `docs/index.md`；
   "如何劫持 aten::index" 见 `docs/override-mechanism.md`）。
 
@@ -152,9 +154,9 @@ for t in tests/test_smoke.py tests/test_normalize.py tests/test_correctness.py \
          tests/test_errors.py tests/test_sve.py tests/test_model.py; do python $t; done
 ```
 
-全部通过 = 99/99（覆盖激活态；test_correctness 25、test_errors 6、test_model 9、
+全部通过 = 102/102（覆盖激活态；test_correctness 25、test_errors 6、test_model 9、
 test_normalize 9、test_smoke 2、test_sve 25、test_index_out 7、test_mask_fused 9、
-test_smallk 7）。
+test_smallk 7、test_compile_optin 3）。
 覆盖下测试是自洽的（`x[i]` 也走
 本算子），值级真对拍用两进程法（无覆盖进程生成 true-aten 参考，覆盖进程比对）：
 

@@ -6,6 +6,10 @@ import os
 if os.environ.get("HPC_INDEX_NO_OVERRIDE", "0") != "1":
     _install_aten()  # 直接覆盖 aten::index.Tensor（CPU）；HPC_INDEX_NO_OVERRIDE=1 跳过（基准对拍用）
 
+if os.environ.get("HPC_INDEX_COMPILE", "0") == "1":
+    from .compile_support import enable as _enable_compile
+    _enable_compile()  # opt-in：torch.compile fallback + fake + 独立 inductor 缓存
+
 def index(self, indices):
     indices = list(indices)
     return torch.ops.hpc_index.index(self, indices)

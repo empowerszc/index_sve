@@ -223,9 +223,10 @@ at::Tensor index_out_impl(const at::Tensor& self,
 }
 
 TORCH_LIBRARY(hpc_index, m) {
-  m.def("index(Tensor self, Tensor?[] indices) -> Tensor", &index_impl);
-  m.def("index_out(Tensor self, Tensor?[] indices, Tensor(a!) out) -> Tensor(a!)",
-        &index_out_impl);
+  // 只定义 schema，不挂 CompositeImplicitAutograd kernel：否则 PyTorch 拒绝为
+  // 该 op 注册 fake/meta（torch.compile / torch.export 需要，见 compile_support.py）。
+  m.def("index(Tensor self, Tensor?[] indices) -> Tensor");
+  m.def("index_out(Tensor self, Tensor?[] indices, Tensor(a!) out) -> Tensor(a!)");
 }
 TORCH_LIBRARY_IMPL(hpc_index, CPU, m) {
   m.impl("index", &index_impl);

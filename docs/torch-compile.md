@@ -1,4 +1,4 @@
-# torch.compile 与本算子的关系（能力与落地计划）
+# torch.compile 与本算子的关系（能力与 opt-in 落地）
 
 > **一句话结论**：`torch.compile` 默认会把 `aten::index` **内联成 Inductor 自己生成的
 > kernel**，根本不在运行时调用任何 index 内核，所以本算子的 CPU 覆盖**不生效**
@@ -93,9 +93,9 @@ compiled 产物 → aten::index.Tensor → dispatcher → CPU 键
 2. **私有 API**：`torch._inductor.lowering.lowerings` / `force_fallback` 非公开，
    跨 torch 版本需要守卫（参见 `porting.md` 的 2.10 绑定）。
 3. **FakeTensor/meta 缺失**：直接 `torch.compile(lambda a,i: torch.ops.hpc_index.index(a,[i]))`
-   会报 `Dynamo failed to run FX node with fake tensors`。要支持 compile/export 的
-   自定义 op 路线，必须给 `hpc_index::index` / `index_out` 注册
-   `torch.library.register_fake`。即使走 fallback 路线，fake 实现也建议补上。
+   会报 `Dynamo failed to run FX node with fake tensors`。自定义 op 路线必须给
+   `hpc_index::index` / `index_out` 注册 `torch.library.register_fake`（§6 已实现，
+   仅 `HPC_INDEX_COMPILE=1` 时注册；整数下标支持，mask 因输出长度数据相关不覆盖）。
 4. **小 N 固定开销**：compile 调用本身约 0.3ms；K≲100k 时即便修好也不如 eager，
    这类形态建议直接不 compile 或让模型整体编译摊薄。
 
@@ -105,21 +105,35 @@ compiled 产物 → aten::index.Tensor → dispatcher → CPU 键
 |---|---|---|
 | 默认 compile | Inductor 内联，覆盖失效，慢 2.6x | 不可用 |
 | `force_fallback(aten.index.Tensor)` | 运行时回到覆盖，1.07-1.3x | **推荐** |
-| 直接把 `x[i]` 编译成 `torch.ops.hpc_index.index` | FakeTensor 无法执行，编译失败 | 需先补 `register_fake`；且自定义 op 需 autograd 注册 |
+| 直接把 `x[i]` 编译成 `torch.ops.hpc_index.index` | 需先补 `register_fake`（§6 已提供）；且自定义 op 需 autograd 注册 | 未采用（fallback 更简单） |
 | 注册 `aten.index.Tensor` decomposition → 自定义 op | AOT 阶段分解，训练需补 autograd，且 CPU-only 会误伤其他设备 | 不推荐 |
 
-## 6. 落地计划（opt-in，尚未实现）
+## 6. opt-in 落地（已实现，`HPC_INDEX_COMPILE=1`）
 
-新增 `index_sve/compile_support.py`，仅在覆盖生效时、且 `HPC_INDEX_COMPILE=1`
-时启用：
+`index_sve/compile_support.py`，只在覆盖生效且 `HPC_INDEX_COMPILE=1` 时启用：
 
-1. 给 `hpc_index::index` / `index_out` 注册 fake（同时修 `torch.export`/FakeTensor）；
-2. 版本守卫后把 `lowerings[aten.index.Tensor]` 永久设为 fallback；
-3. 覆盖生效时切换到独立的 `torch._inductor.config.cache_dir` 子目录；
-4. 在真实 AI4S 模型上端到端验证正确性、compile 收益与编译时间，再讨论默认开启。
+```bash
+HPC_INDEX_COMPILE=1 python your_model.py
+```
 
-默认保持关闭：monkeypatch 私有 API 有版本风险，且会改变用户的编译缓存行为，
-不适合作为隐式副作用。
+`import index_sve` 时依次执行：
+
+1. `torch.library.register_fake("hpc_index::index"/"index_out")`：整数下标按
+   broadcast 推形状，`index_out` 先 `resize_`；bool/byte mask 输出长度依赖
+   `nonzero`，fake 直接抛 `NotImplementedError`（compile 的 mask 走 `aten::index`
+   fallback，不用这个 fake）。
+2. 版本守卫后 `register_lowering(aten.index.Tensor)(fallback_handler(...))`：
+   永久替换 lowering，运行期回到 dispatcher，命中 CPU 覆盖。
+3. 把 `TORCHINDUCTOR_CACHE_DIR` 指向 `<原 cache_dir>/hpc_index`：缓存 key 不含
+   lowering 注册信息，必须与未打补丁的 artifact 隔离；重复调用幂等。
+
+未开覆盖（`HPC_INDEX_NO_OVERRIDE=1`）时 `HPC_INDEX_COMPILE=1` 直接报错，避免
+"以为启用了、其实 fallback 到原生 aten"的静默混用。默认关闭：monkeypatch 私有
+API 有版本风险，且会改变用户的编译缓存行为，不适合作为隐式副作用。
+
+验证：`tests/test_compile_optin.py`（3 例，子进程隔离）覆盖默认关闭、fake
+形状、整数/掩码两条 compile 路径的数值等价、profiler 里 `aten::index` 命中、
+cache 目录后缀、以及与 `HPC_INDEX_NO_OVERRIDE` 的冲突报错。
 
 ## 7. 复现
 

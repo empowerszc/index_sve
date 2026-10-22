@@ -391,7 +391,8 @@ dispatcher 覆盖。用 `force_fallback(aten.index.Tensor)` 可把它钉回成�
 
 注意：**inductor 磁盘缓存会让 fallback 补丁静默失效**（图哈希不含 lowering
 注册；`cache_key_tag` 只影响 autotune cache）。复现须用独立 `TORCHINDUCTOR_CACHE_DIR`
-并 `force_disable_caches=True`。完整分析、坑与 opt-in 计划见 `docs/torch-compile.md`。
+并 `force_disable_caches=True`。完整分析、坑与 opt-in 落地见 `docs/torch-compile.md`；
+固化实现见 §14。
 
 ## 12. T8 mask 单遍融合（跳过 nonzero）
 
@@ -440,3 +441,20 @@ P3（N=200k C=16 d=0.3 nnz≈60k，pin node 5，interleaved median，
 
 注意：扩展加载时 dispatcher 会打印一次 "Overriding a previously registered
 kernel..."（预期）；`HPC_INDEX_NO_OVERRIDE=1` 须在 import 前设置才能关闭覆盖。
+
+## 14. T10：`torch.compile` opt-in（HPC_INDEX_COMPILE=1）
+
+把 §11 的 spike 固化成 opt-in：`hpc_index::*` 改为 schema-only + CPU kernel 后
+注册 fake（整数下标推形状），再用 `register_lowering(aten.index.Tensor)(
+fallback_handler(...))` 永久钉成运行时调用；Inductor 磁盘缓存切到
+`<base>/hpc_index`，避免命中未打补丁的旧 artifact。`HPC_INDEX_COMPILE=1` 须在
+`import index_sve` 前设置，与 `HPC_INDEX_NO_OVERRIDE=1` 冲突时直接报错。
+
+性能结论沿用 §11 的 force_fallback 测量（机制相同）：f32 K=2M/8t，
+compiled-fallback 2.57-2.67 ms vs eager 2.01 ms（1.28-1.33x），规模 ≥8M 收敛到
+1.07x；compile 固定开销约 0.3 ms，K≲100k 不建议 compile。默认关闭。
+
+正确性（`tests/test_compile_optin.py`，3 例）：整数下标与 mask 两条 compile
+路径输出与 eager 逐元素相等；profiler 中为 `aten::index`（无 `cpp_fused_index_*`）；
+cache 目录后缀为 `hpc_index`。mask 的 fake 因输出长度数据相关不提供（compile
+走 aten fallback，由 Inductor/aten 处理）。

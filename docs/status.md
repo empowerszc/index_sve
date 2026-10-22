@@ -28,6 +28,7 @@ CPU 键覆盖，autograd 不受影响）。构建/运行契约见 `README.md` �
 | T6 | 跨设备索引校验 + `aten::index.Tensor_out` 覆盖 | f791c39 | ✅ |
 | T8 | mask 单遍融合 compaction（跳过 nonzero） | 0dd7533 | ✅ |
 | T9 | 小 K（≤4096）单整数下标精简路径 + C++ 直接覆盖 aten CPU 内核 | da9a203 | ✅ |
+| T10 | `torch.compile` opt-in（`HPC_INDEX_COMPILE=1`：fake + aten fallback + 独立 cache 目录） | （本轮） | ✅ |
 
 ## 3. 路由现状（op.cpp `index_impl`）
 
@@ -47,10 +48,10 @@ A==1 || (连续 && A>=4 && f32/f64) → linearize + gather_index（SVE/桶化/sc
 
 ## 4. 测试
 
-- **99/99 通过**：test_correctness 25、test_errors 6、test_model 9、
+- **102/102 通过**：test_correctness 25、test_errors 6、test_model 9、
   test_normalize 9、test_smoke 2、test_sve 25、test_index_out 7、test_mask_fused 9、
-  test_smallk 7。
-- 复跑：`for t in tests/test_smoke.py tests/test_normalize.py tests/test_correctness.py tests/test_errors.py tests/test_sve.py tests/test_model.py tests/test_index_out.py tests/test_mask_fused.py tests/test_smallk.py; do python $t; done`
+  test_smallk 7、test_compile_optin 3。
+- 复跑：`for t in tests/test_smoke.py tests/test_normalize.py tests/test_correctness.py tests/test_errors.py tests/test_sve.py tests/test_model.py tests/test_index_out.py tests/test_mask_fused.py tests/test_smallk.py tests/test_compile_optin.py; do python $t; done`
 - 注意：测试同一进程串行跑，1 线程用例必须 `try/finally` 恢复
   `torch.get_num_threads()`（test_sve.py 内已如此）。
 - **true-aten 值级对拍**（覆盖下测试自洽，须两进程法）：
@@ -87,13 +88,16 @@ SVE 4B gather 指令 MLP 极低（38t ~0.75 GB/s vs 标量 3.4 GB/s，独立探�
 
 - 覆盖是一次性全局副作用：一个进程只能装一个 Python CPU 覆盖
   `aten::index.Tensor`；`HPC_INDEX_NO_OVERRIDE=1` 可跳过（基准对拍用）。
-- 索引张量必须在 CPU；meta/其它设备索引现在抛 aten 同文错误（T6，此前会
-  SIGSEGV）。`aten::index.Tensor_out` 也已覆盖（`out=` 同等加速）。
+- 索引张量必须在 CPU；直接调用 `hpc_index::*` 时 meta 输入会干净报错（T6 起
+  不再 SIGSEGV；T10 后未开 compile 时为 PT2 "no Meta kernel"，开启后走 fake）。
+  真实 `x[idx]` 的 meta 行为与原生 aten 一致。`aten::index.Tensor_out` 也已覆盖。
 - 扩展链 BiSheng `libomp.so`，`LD_LIBRARY_PATH` 必须含 BiSheng lib，否则
   import 报 `libomp.so: cannot open`（`README.md` 快速开始）。
 - **`torch.compile` 下默认不生效**：Inductor 把 `aten::index` 内联成自己生成的
-  kernel，dispatcher 覆盖被绕开（实测慢 2.6x）。已验证强制 fallback 可恢复
-  （1.07-1.3x），方案、坑与 opt-in 计划见 `torch-compile.md`（尚未落地）。
+  kernel，dispatcher 覆盖被绕开（实测慢 2.6x）。设 `HPC_INDEX_COMPILE=1`（import
+  前）可 opt-in：注册 fake + 把 lowering 永久设为 fallback + 切换独立 inductor
+  cache 子目录，运行期回到 dispatcher；与 `HPC_INDEX_NO_OVERRIDE=1` 冲突会报错。
+  细节与限制见 `torch-compile.md` §6。
 - 慢形态与"为什么不 fallback"的深度分析见 `fallback-analysis.md`：核心结论是
   4B（f32/i32）大 K 大值域 pure gather 受 920F SVE 4B gather 指令 MLP 上限
   （探针 0.75 vs 标量 3.4 GB/s，硬件不可消除）；A<4/非连续/2B-1B 等相对 aten
@@ -105,8 +109,8 @@ SVE 4B gather 指令 MLP 极低（38t ~0.75 GB/s vs 标量 3.4 GB/s，独立探�
 - M1 值域桶化（T2 阶段 2）：`gather_rowcopy_raw` 未对下标做值域分析，可再桶化。
 - 4B 大 K 大值域 gather：软件预取 / 标量多路预取（硬件 MLP 上限的软件规避）。
 - 端到端 AI4S 模型复测（验证 T0-T5 在真实负载上的整体收益）。
-- 落地 `compile_support.py`（opt-in `HPC_INDEX_COMPILE=1`）：`register_fake` +
-  `aten.index` fallback + 独立 inductor cache dir，再在真实模型上验证后决定默认值。
+- 在真实 AI4S 模型上验证 `HPC_INDEX_COMPILE=1` 的端到端收益与编译时间，再决定
+  是否默认开启（当前默认关闭）。
 
 ## 8. 复现 / 复测命令
 

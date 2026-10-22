@@ -62,7 +62,9 @@ def test_too_many_indices():
         raise AssertionError("expected IndexError")
 
 def test_meta_index_does_not_crash():
-    # 索引张量不在 CPU 上时必须抛错，而不是解引用空 data_ptr 段错误。
+    # 索引张量不在 CPU 上时必须干净报错，而不是解引用空 data_ptr 段错误。
+    # T10 起 hpc_index::index 只注册 CPU kernel；meta 输入由 PT2 报
+    # "no Meta kernel"（未开 HPC_INDEX_COMPILE 时），同样是无崩溃的干净错误。
     # 子进程隔离：修复前是 SIGSEGV，不能让整个测试进程挂掉。
     root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     code = (
@@ -71,8 +73,9 @@ def test_meta_index_does_not_crash():
         "i = torch.tensor([0, 1], device='meta')\n"
         "try:\n"
         "    torch.ops.hpc_index.index(x, [i])\n"
-        "except RuntimeError as e:\n"
-        "    assert 'indices should be either on cpu' in str(e), str(e)\n"
+        "except (RuntimeError, NotImplementedError) as e:\n"
+        "    msg = str(e)\n"
+        "    assert ('indices should be either on cpu' in msg) or ('Meta tensors' in msg), msg\n"
         "    raise SystemExit(0)\n"
         "raise SystemExit(3)\n"
     )

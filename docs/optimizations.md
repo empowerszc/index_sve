@@ -282,7 +282,7 @@ mask 1 线程与高线程在 0.97-1.13x 间波动（不同密度 0.05/0.3/0.5）
 
 | 项 | 变更 | 代码 |
 |---|---|---|
-| T6-1 | 入口复刻 `checkIndicesOnCpuOrSelfDevice`：非 CPU 索引抛 aten 同文错误（`indices should be either on cpu or on the same device as the indexed tensor (cpu)`），不再段错误 | normalize.cpp |
+| T6-1 | 入口复刻 `checkIndicesOnCpuOrSelfDevice`：非 CPU 索引抛 aten 同文错误（`indices should be either on cpu or on the same device as the indexed tensor (cpu)`），不再段错误。T10 后 `hpc_index::*` 改为 schema-only + CPU kernel，meta 输入由 PT2 报 "no Meta kernel"（干净错误，不崩溃）；`HPC_INDEX_COMPILE=1` 时注册 fake 后可正常 tracing | normalize.cpp / op.cpp |
 | T6-2 | 抽出 `index_into(self, spec, out)` 核心路由；新增 `index_out_impl` 写入调用方 out（形状不符 `resize_`；非连续 out 先算到临时连续张量再 `copy_`；校验 dtype/device/overlap） | op.cpp |
 | T6-3 | 注册 `hpc_index::index_out` 并覆盖 `aten::index.Tensor_out` CPU key；`HPC_INDEX_NO_OVERRIDE=1` 仍可整体关闭，基准对拍语义不变 | op.cpp / register_aten.py |
 
@@ -299,8 +299,9 @@ mask 1 线程与高线程在 0.97-1.13x 间波动（不同密度 0.05/0.3/0.5）
 `torch.compile` 默认由 Inductor 内联生成 `aten::index` 的 kernel，绕过 dispatcher
 覆盖（实测慢 2.6x）。用 `force_fallback(aten.index.Tensor)` 可让它回落到运行时
 调用、重新命中本算子，实测 2.6x → 1.07-1.3x。含 inductor 缓存、私有 API、
-FakeTensor 等坑与 opt-in 落地计划，见 [torch-compile.md](torch-compile.md)；
-实测数据见 `benchmarks/RESULTS.md` §11。**尚未实现，仅记录可行性结论。**
+FakeTensor 等坑与 opt-in 落地，见 [torch-compile.md](torch-compile.md)；
+实测数据见 `benchmarks/RESULTS.md` §11。已在 T10 以 `HPC_INDEX_COMPILE=1`
+opt-in 实现（§15）。
 
 ## 13. T8：mask 单遍融合（跳过 nonzero）
 
@@ -392,3 +393,32 @@ FakeTensor 等坑与 opt-in 落地计划，见 [torch-compile.md](torch-compile.
   多索引/mask 不命中）。
 - 全 9 套件 **99/99**；true-aten 对拍 40/40；`HPC_INDEX_NO_OVERRIDE=1` 仍为真 aten。
 - 覆盖注册改动后 `out=` / autograd / vmap 行为不变（test_index_out + 全量回归）。
+
+## 15. T10：`torch.compile` opt-in（HPC_INDEX_COMPILE=1）
+
+### 问题
+
+默认 compile 由 Inductor 内联生成第三份实现，完全绕过 CPU 覆盖（慢 2.6x，见 §12）。
+需要一条"显式开启就让 compile 用回本算子"的路径，同时不改变默认行为与用户的
+编译缓存。
+
+### 变更
+
+| 项 | 变更 | 代码 |
+|---|---|---|
+| T10-1 | `hpc_index::index` / `index_out` 改为 schema-only + CPU kernel，允许注册 fake/Meta（CompositeImplicitAutograd 会拒绝） | op.cpp |
+| T10-2 | 新增 `compile_support.py`：`register_fake`（整数下标推形状；mask 数据相关，显式 `NotImplementedError`）、`register_lowering(aten.index.Tensor)(fallback_handler(...))`（带 API 版本守卫）、cache 目录切到 `<base>/hpc_index`（幂等） | compile_support.py |
+| T10-3 | `HPC_INDEX_COMPILE=1` 在 `import index_sve` 时启用；与 `HPC_INDEX_NO_OVERRIDE=1` 冲突直接报错 | `__init__.py` |
+
+### 实测
+
+编译产物不再出现 `cpp_fused_index_*`，profiler 为 `aten::index`，运行时命中 CPU
+覆盖；整数下标与 mask 两条路径的 compile 输出均与 eager 逐元素相等。收益见
+`benchmarks/RESULTS.md` §11（0.3ms 的 compile 固定开销，K≲100k 不建议 compile）。
+
+### 验证
+
+- 新增 `tests/test_compile_optin.py` 3 例（子进程隔离）：默认关闭；fake 推形状 +
+  整数/mask compile 数值等价 + profiler + cache 目录；与 `HPC_INDEX_NO_OVERRIDE`
+  冲突报错。
+- 全 10 套件 **102/102**；true-aten 对拍 40/40；`HPC_INDEX_NO_OVERRIDE=1` 仍为真 aten。
