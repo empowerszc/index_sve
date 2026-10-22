@@ -1,4 +1,4 @@
-import os, sys, torch
+import os, sys, subprocess, torch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from index_sve import index
@@ -60,6 +60,27 @@ def test_too_many_indices():
         assert "too many indices" in str(e)
     else:
         raise AssertionError("expected IndexError")
+
+def test_meta_index_does_not_crash():
+    # 索引张量不在 CPU 上时必须抛错，而不是解引用空 data_ptr 段错误。
+    # 子进程隔离：修复前是 SIGSEGV，不能让整个测试进程挂掉。
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    code = (
+        "import torch, index_sve\n"
+        "x = torch.randn(5)\n"
+        "i = torch.tensor([0, 1], device='meta')\n"
+        "try:\n"
+        "    torch.ops.hpc_index.index(x, [i])\n"
+        "except RuntimeError as e:\n"
+        "    assert 'indices should be either on cpu' in str(e), str(e)\n"
+        "    raise SystemExit(0)\n"
+        "raise SystemExit(3)\n"
+    )
+    env = dict(os.environ, PYTHONPATH=root)
+    p = subprocess.run([sys.executable, "-c", code], capture_output=True, env=env)
+    assert p.returncode == 0, (
+        f"meta index crashed (rc={p.returncode}); stderr tail:\n"
+        f"{p.stderr.decode()[-600:]}")
 
 if __name__ == "__main__":
     sys.path.insert(0, __file__.rsplit("/", 1)[0])

@@ -19,6 +19,7 @@ if os.environ.get("HPC_INDEX_NO_OVERRIDE", "0") != "1":
 
 ```python
 torch.library.impl("aten::index.Tensor", "CPU", torch.ops.hpc_index.index)
+torch.library.impl("aten::index.Tensor_out", "CPU", torch.ops.hpc_index.index_out)
 ```
 
 效果：**`import index_sve` 之后，进程中所有 CPU 张量的高级索引
@@ -79,7 +80,8 @@ and the same dispatch key
   `HPC_INDEX_NO_OVERRIDE` 场景。
 - `importlib.reload(index_sve)` 会再次调用 `install()` 触发同样错误（固有，
   正常流程不应 reload）。
-- `aten::index.Tensor_out` 与 QuantizedCPU 键不受影响。
+- `aten::index.Tensor_out` 也已覆盖（T6）：`out=` 调用同样走本算子；
+  QuantizedCPU 等其它 dispatch key 不受影响。
 
 ## 6. 部署建议
 

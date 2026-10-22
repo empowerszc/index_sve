@@ -23,7 +23,18 @@ void check_index_types(const std::vector<c10::optional<at::Tensor>>& indices) {
   }
 }
 
-// 复刻 IndexingUtils.h expandTensors（ensure_same_device=false 简化：self CPU）
+// 复刻 IndexingUtils.h checkIndicesOnCpuOrSelfDevice。self 恒为 CPU，故索引必须
+// 在 CPU；meta/CUDA 索引的 data_ptr 不可读，若不拦截会直接段错误。
+void check_indices_on_cpu(const std::vector<c10::optional<at::Tensor>>& indices) {
+  for (const auto& t : indices) {
+    if (is_defined(t) && !t->is_cpu()) {
+      TORCH_CHECK(false,
+          "indices should be either on cpu or on the same device as the indexed tensor (cpu)");
+    }
+  }
+}
+
+// 复刻 IndexingUtils.h expandTensors（self CPU + 已校验索引在 CPU）
 std::vector<at::Tensor> expand_tensors(
     const at::Tensor& self,
     const std::vector<c10::optional<at::Tensor>>& indices) {
@@ -116,6 +127,7 @@ IndexSpec normalize_index(const at::Tensor& self,
                           const std::vector<c10::optional<at::Tensor>>& indices) {
   TORCH_CHECK(self.device().is_cpu(), "hpc_index: CPU only");
   check_index_types(indices);
+  check_indices_on_cpu(indices);
 
   std::vector<at::Tensor> expanded = expand_tensors(self, indices);
   try {

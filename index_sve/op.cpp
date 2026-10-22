@@ -2,27 +2,35 @@
 #include "normalize.h"
 #include "linearize.h"
 #include "gather.h"
+#include <ATen/MemoryOverlap.h>
 #include <c10/util/Exception.h>
 #include <cstdlib>
 
-at::Tensor index_impl(const at::Tensor& self,
-                      c10::List<c10::optional<at::Tensor>> indices) {
-  static const bool g_nt = [] {
-    const char* e = getenv("HPC_INDEX_NT");
-    return e != nullptr && std::string(e) != "0";
-  }();
+namespace {
+
+std::vector<c10::optional<at::Tensor>> to_vec(
+    const c10::List<c10::optional<at::Tensor>>& indices) {
   std::vector<c10::optional<at::Tensor>> vec;
   vec.reserve(indices.size());
   for (const auto& t : indices) vec.push_back(t);
-  TORCH_CHECK_INDEX(!vec.empty(), "at least one index must be provided");
-  TORCH_CHECK_INDEX(vec.size() <= (size_t)self.dim(),
-      "too many indices for tensor of dimension ", self.dim(), " (got ", vec.size(), ")");
-  auto spec = normalize_index(self, vec);
-  at::Tensor out = at::empty(spec.out_shape, self.options());
+  return vec;
+}
+
+bool non_temporal_enabled() {
+  static const bool v = [] {
+    const char* e = getenv("HPC_INDEX_NT");
+    return e != nullptr && std::string(e) != "0";
+  }();
+  return v;
+}
+
+// 核心路由：out 已由调用方确定为正确 shape/dtype/device（functional 分配或 out 变体校验）。
+void index_into(const at::Tensor& self, const IndexSpec& spec, at::Tensor& out) {
+  const bool g_nt = non_temporal_enabled();
 
   if (spec.K < 1024) {                 // 小张量快速路径（spec §6 阈值）
     gather_direct(spec, out);
-    return out;
+    return;
   }
 
   // M1 单索引大块 skip-linearize：单索引 + after_contiguous + A 大 + 值域小（S1 最热形态）。
@@ -30,18 +38,18 @@ at::Tensor index_impl(const at::Tensor& self,
   if (spec.indices.size() == 1 && spec.after_contiguous && spec.A >= 4096 &&
       (out.scalar_type() == at::kFloat || out.scalar_type() == at::kDouble)) {
     gather_rowcopy_raw(spec, out, g_nt);
-    return out;
+    return;
   }
 
   // T4 raw 小值域 1D 纯 gather：单索引 + B==1 + A==1（M3 keys[order]、M4 等）直接查表，
   // 完全跳过 linearize 的 broadcast 解码。
   if (spec.indices.size() == 1 && spec.B == 1 && spec.A == 1) {
-    if (gather_bucket_pure_raw(spec, out)) return out;
+    if (gather_bucket_pure_raw(spec, out)) return;
     // 大值域（>2048）时 1 线程走单遍标量（跳过 linearize）：SVE gather 单线程 MLP 低
     // + linearize 两遍开销，实测 1 线程 0.6-0.8x；单遍标量追平 aten。多线程仍走 SVE。
     if (at::get_num_threads() == 1) {
       gather_single_1d(spec, out);
-      return out;
+      return;
     }
   }
 
@@ -60,23 +68,69 @@ at::Tensor index_impl(const at::Tensor& self,
   // 保持 linearize+SVE（fused 解码开销更大，实测更差）。
   if (at::get_num_threads() == 1 && spec.indices.size() == 1 && spec.A > 1) {
     gather_fused(spec, out);
-    return out;
+    return;
   }
   if (spec.A == 1 ||
       (spec.after_contiguous && spec.A >= 4 && sve_rowcopy_dtype)) {
     linearize(spec, idx);
     gather_index(spec, idx, out, g_nt);
-    return out;
+    return;
   }
   gather_fused(spec, out);
+  return;
+}
+
+}  // namespace
+
+at::Tensor index_impl(const at::Tensor& self,
+                      c10::List<c10::optional<at::Tensor>> indices) {
+  auto vec = to_vec(indices);
+  TORCH_CHECK_INDEX(!vec.empty(), "at least one index must be provided");
+  TORCH_CHECK_INDEX(vec.size() <= (size_t)self.dim(),
+      "too many indices for tensor of dimension ", self.dim(), " (got ", vec.size(), ")");
+  auto spec = normalize_index(self, vec);
+  at::Tensor out = at::empty(spec.out_shape, self.options());
+  index_into(self, spec, out);
+  return out;
+}
+
+// aten::index.Tensor_out 的 CPU 实现：写入调用方提供的 out（形状不符时 resize），
+// 非连续 out 计算到临时连续张量后 copy_。校验与 aten 的结构化 out 语义对齐。
+at::Tensor index_out_impl(const at::Tensor& self,
+                          c10::List<c10::optional<at::Tensor>> indices,
+                          at::Tensor& out) {
+  auto vec = to_vec(indices);
+  TORCH_CHECK_INDEX(!vec.empty(), "at least one index must be provided");
+  TORCH_CHECK_INDEX(vec.size() <= (size_t)self.dim(),
+      "too many indices for tensor of dimension ", self.dim(), " (got ", vec.size(), ")");
+  auto spec = normalize_index(self, vec);
+  TORCH_CHECK(self.scalar_type() == out.scalar_type(),
+      "index_out: self (", self.scalar_type(), ") and result (",
+      out.scalar_type(), ") must have the same scalar type");
+  TORCH_CHECK(self.device() == out.device(),
+      "index_out: self and out must be on the same device");
+  if (out.sizes() != spec.out_shape) out.resize_(spec.out_shape);
+  at::assert_no_internal_overlap(out);
+  at::assert_no_overlap(out, self);
+  for (const auto& idx : spec.indices) at::assert_no_overlap(out, idx);
+  if (out.is_contiguous()) {
+    index_into(self, spec, out);
+  } else {
+    at::Tensor tmp = at::empty(spec.out_shape, self.options());
+    index_into(self, spec, tmp);
+    out.copy_(tmp);
+  }
   return out;
 }
 
 TORCH_LIBRARY(hpc_index, m) {
   m.def("index(Tensor self, Tensor?[] indices) -> Tensor", &index_impl);
+  m.def("index_out(Tensor self, Tensor?[] indices, Tensor(a!) out) -> Tensor(a!)",
+        &index_out_impl);
 }
 TORCH_LIBRARY_IMPL(hpc_index, CPU, m) {
   m.impl("index", &index_impl);
+  m.impl("index_out", &index_out_impl);
 }
 
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {

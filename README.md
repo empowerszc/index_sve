@@ -35,8 +35,8 @@ backward 不受影响。
 index_sve/
 ├── setup.py              # BiSheng clang19, -march=armv8-a+sve2 -msve-vector-bits=512 -O3 -fopenmp
 ├── index_sve/
-│   ├── __init__.py       # import 时安装 aten::index.Tensor CPU 覆盖（HPC_INDEX_NO_OVERRIDE=1 可跳过）
-│   ├── register_aten.py  # torch.library.impl("aten::index.Tensor","CPU", torch.ops.hpc_index.index)
+│   ├── __init__.py       # import 时安装 aten::index.Tensor / .Tensor_out CPU 覆盖（HPC_INDEX_NO_OVERRIDE=1 可跳过）
+│   ├── register_aten.py  # torch.library.impl("aten::index.Tensor{,_out}","CPU", ...)
 │   ├── op.cpp            # index_impl 入口 + pybind（debug_spec/linearize_spec/idx_dtype_choice）
 │   ├── normalize.{h,cpp} # normalize_index：mask/broadcast/transpose_to_front，对齐 ATen make_info
 │   ├── linearize.{h,cpp} # 线性化 + 越界检查，int32 保持（直接写 int32）
@@ -135,6 +135,8 @@ HPC_INDEX_NO_OVERRIDE=1 python your_script.py   # import 不再改 aten::index.T
   的固有约束。
 - 覆盖是一次性的全局副作用：任何 import index_sve 的进程都会改掉全局
   `x[...]` 行为。如不希望全局生效，用 `HPC_INDEX_NO_OVERRIDE=1`。
+- 索引张量必须在 CPU（meta/CUDA 索引抛 aten 同文错误，不再段错误）；`out=`
+  变体（`aten::index.Tensor_out`）也已覆盖。详见 semantics.md / optimizations.md §11。
 - 语义细节、内核细节、移植指南见 `docs/`（目录见 `docs/index.md`；
   "如何劫持 aten::index" 见 `docs/override-mechanism.md`）。
 
@@ -146,7 +148,7 @@ for t in tests/test_smoke.py tests/test_normalize.py tests/test_correctness.py \
          tests/test_errors.py tests/test_sve.py tests/test_model.py; do python $t; done
 ```
 
-全部通过 = 75/75（覆盖激活态；test_correctness 25、test_errors 5、test_model 9、
+全部通过 = 83/83（覆盖激活态；test_correctness 25、test_errors 6、test_model 9、
 test_normalize 9、test_smoke 2、test_sve 25）。覆盖下测试是自洽的（`x[i]` 也走
 本算子），值级真对拍用两进程法（无覆盖进程生成 true-aten 参考，覆盖进程比对）：
 

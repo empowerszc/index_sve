@@ -14,6 +14,8 @@
 | byte mask | 同 bool 处理 + deprecation 警告 | 相同 |
 | mask 形状不匹配 | 抛 `The shape of the mask {..} at index {j} does not match ...` | 相同 |
 | size-0 被索引维 | 抛 `index is out of bounds for dimension with size 0` | 相同 |
+| 索引不在 CPU（meta/CUDA） | 抛 `indices should be either on cpu or on the same device as the indexed tensor (cpu)` | 相同（T6 前会 SIGSEGV） |
+| `out=` 变体（`index.Tensor_out`） | 写入调用方 out；形状不符 resize；非连续 out 计算到临时张量再 copy | 相同 |
 
 ## 2. 归一化等价性
 
@@ -62,7 +64,7 @@ u32/u64/f8 等在任何实现下都报错（白名单外）。**无 dtype 回归
 
 ## 6. 正确性验证方法
 
-1. **测试套件**（75/75 通过，覆盖激活态；T5 后 test_sve 25、test_errors 5）：
+1. **测试套件**（83/83 通过，覆盖激活态；T6 后 test_sve 25、test_errors 6、test_index_out 7）：
    - `test_smoke.py` — 基本注册/调用；
    - `test_normalize.py` — spec 字段结构断言（dims_before/dims_after、transpose、
      mask 展开、after_contiguous）；

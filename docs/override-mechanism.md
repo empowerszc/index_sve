@@ -31,6 +31,7 @@ TORCH_LIBRARY_IMPL(hpc_index, CPU, m) {
 
 ```python
 torch.library.impl("aten::index.Tensor", "CPU", torch.ops.hpc_index.index)
+torch.library.impl("aten::index.Tensor_out", "CPU", torch.ops.hpc_index.index_out)
 ```
 
 `torch.library.impl` 的意思是：向 dispatcher 中 **`aten::index.Tensor` 算子** 的
@@ -77,7 +78,7 @@ autograd 完全正常（梯度值/形状/dtype 已与 true-aten 对拍验证，�
 2. **两进程 true-aten 对拍**：无覆盖进程（`HPC_INDEX_NO_OVERRIDE=1`）生成参考，
    覆盖进程比较——覆盖激活后 `x[i]` 已走本算子，**同一进程内无法再对拍**
    （semantics.md §6.2 的"覆盖下对拍陷阱"）。
-3. **全量测试**：75/75 在覆盖激活态通过（含 backward、错误消息逐字、
+3. **全量测试**：83/83 在覆盖激活态通过（含 backward、错误消息逐字、
    K<1024/K>=1024、N-D 下标等）。
 
 ## 6. 为什么是 `aten::index.Tensor` 而不是别的

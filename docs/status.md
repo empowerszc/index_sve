@@ -42,9 +42,9 @@ A==1 || (连续 && A>=4 && f32/f64) → linearize + gather_index（SVE/桶化/sc
 
 ## 4. 测试
 
-- **75/75 通过**：test_correctness 25、test_errors 5、test_model 9、
-  test_normalize 9、test_smoke 2、test_sve 25。
-- 复跑：`for t in tests/test_smoke.py tests/test_normalize.py tests/test_correctness.py tests/test_errors.py tests/test_sve.py tests/test_model.py; do python $t; done`
+- **83/83 通过**：test_correctness 25、test_errors 6、test_model 9、
+  test_normalize 9、test_smoke 2、test_sve 25、test_index_out 7。
+- 复跑：`for t in tests/test_smoke.py tests/test_normalize.py tests/test_correctness.py tests/test_errors.py tests/test_sve.py tests/test_model.py tests/test_index_out.py; do python $t; done`
 - 注意：测试同一进程串行跑，1 线程用例必须 `try/finally` 恢复
   `torch.get_num_threads()`（test_sve.py 内已如此）。
 - **true-aten 值级对拍**（覆盖下测试自洽，须两进程法）：
@@ -79,6 +79,8 @@ SVE 4B gather 指令 MLP 极低（38t ~0.75 GB/s vs 标量 3.4 GB/s，独立探�
 
 - 覆盖是一次性全局副作用：一个进程只能装一个 Python CPU 覆盖
   `aten::index.Tensor`；`HPC_INDEX_NO_OVERRIDE=1` 可跳过（基准对拍用）。
+- 索引张量必须在 CPU；meta/其它设备索引现在抛 aten 同文错误（T6，此前会
+  SIGSEGV）。`aten::index.Tensor_out` 也已覆盖（`out=` 同等加速）。
 - 扩展链 BiSheng `libomp.so`，`LD_LIBRARY_PATH` 必须含 BiSheng lib，否则
   import 报 `libomp.so: cannot open`（`README.md` 快速开始）。
 - 慢形态与"为什么不 fallback"的深度分析见 `fallback-analysis.md`：核心结论是

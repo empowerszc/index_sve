@@ -8,3 +8,4 @@ import torch
 
 def install() -> None:
     torch.library.impl("aten::index.Tensor", "CPU", torch.ops.hpc_index.index)
+    torch.library.impl("aten::index.Tensor_out", "CPU", torch.ops.hpc_index.index_out)

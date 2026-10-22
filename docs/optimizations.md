@@ -263,3 +263,31 @@ mask 1 线程与高线程在 0.97-1.13x 间波动（不同密度 0.05/0.3/0.5）
 
 全 6 套件 **75/75 通过**（新增 6 个：多索引全长/广播标量/非连续、1 线程 rowcopy
 短行、1 线程大值域纯 gather、linearize 快/慢路径一致性）。
+
+## 11. T6：跨设备索引校验 + `aten::index.Tensor_out` 覆盖（正确性/覆盖）
+
+### 问题
+
+- **跨设备索引段错误**：索引张量不在 CPU（如 `device='meta'`）时 `data_ptr()`
+  返回空指针，内核解引用直接 SIGSEGV（实测 core dump）。`normalize.cpp` 早期
+  简化掉了 aten 的 `checkIndicesOnCpuOrSelfDevice`。
+- **`out=` 变体未加速**：`aten::index.Tensor_out` 是独立 structured op，直接调
+  `index_stub`，不经过 `aten::index.Tensor`。只覆盖 functional 时 `out=` 调用
+  100% 走真 aten（实测 rowcopy A=64 K=200k：真 aten ≈5.7ms vs 本算子 ≈0.58ms，
+  约 10x 收益丢失）。
+
+### 变更
+
+| 项 | 变更 | 代码 |
+|---|---|---|
+| T6-1 | 入口复刻 `checkIndicesOnCpuOrSelfDevice`：非 CPU 索引抛 aten 同文错误（`indices should be either on cpu or on the same device as the indexed tensor (cpu)`），不再段错误 | normalize.cpp |
+| T6-2 | 抽出 `index_into(self, spec, out)` 核心路由；新增 `index_out_impl` 写入调用方 out（形状不符 `resize_`；非连续 out 先算到临时连续张量再 `copy_`；校验 dtype/device/overlap） | op.cpp |
+| T6-3 | 注册 `hpc_index::index_out` 并覆盖 `aten::index.Tensor_out` CPU key；`HPC_INDEX_NO_OVERRIDE=1` 仍可整体关闭，基准对拍语义不变 | op.cpp / register_aten.py |
+
+### 验证
+
+- 新增 `tests/test_index_out.py` 7 个用例（pure / rowcopy / mask / multi-index /
+  非连续 out / dtype 不匹配 / profiler 断言内核名 `hpc_index::index_out`）；
+  `test_errors.py` 增加 meta 索引子进程不崩溃用例（修复前 rc=-11）。
+- 全 7 套件 **83/83 通过**；true-aten 值级对拍 40/40；autograd / vmap / jvp /
+  index_put / setitem 行为不变；`HPC_INDEX_NO_OVERRIDE=1` 下 out= 仍为真 aten。
