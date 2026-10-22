@@ -10,32 +10,39 @@ index_impl(self, indices)
   1. TORCH_CHECK_INDEX(!vec.empty(), "at least one index must be provided")
   2. TORCH_CHECK_INDEX(vec.size() <= self.dim(),
        "too many indices for tensor of dimension {d} (got {n})")
-  3. spec = normalize_index(self, vec)        # → IndexSpec
-  4. out = at::empty(spec.out_shape, self.options())
-  5. if spec.K < 1024: gather_direct(spec, out); return
-  6. M1: 单索引 && after_contiguous && A>=4096 && f32/f64
-       → gather_rowcopy_raw(spec, out, g_nt); return    # 跳过 linearize（T2）
-  7. T4 raw: 单索引 && B==1 && A==1
-       → gather_bucket_pure_raw(spec, out)              # 小值域查表，返回 true 即返回
-       └─ 大值域 && 1 线程 → gather_single_1d(spec, out); return   # 单遍标量（T5）
-  8. use_i32 = self.numel() < 2^31 && dtype ∈ {f32, i32}
-  9. idx = at::empty({K}, dtype = use_i32 ? int32 : int64)
- 10. 1 线程 && 单索引 && A>1 → A>=4 连续 ? gather_rowcopy_raw : gather_fused（T5/T11）
- 11. A==1 || (after_contiguous && A>=4 && f32/f64)
-       → linearize(spec, idx) + gather_index(spec, idx, out, g_nt); return
- 12. 其余（A<4 或非连续小块）→ gather_fused(spec, out)   # T3 融合单遍，不物化 idx
+  3. sync_omp_threads()                     # libomp team = at::get_num_threads()（T11）
+  4. mask_fast_path(self, vec, out)         # 单 mask 连续：gather_mask 单遍压实（T8）
+  5. small_single_index(self, vec, out)     # 单整数下标 && K<=4096：绕过 normalize（T9）
+  6. spec = normalize_index(self, vec)      # → IndexSpec
+  7. out = at::empty(spec.out_shape, self.options())
+  8. index_into(self, spec, out)：
+       a. K < 1024 → gather_direct
+            └ A==1 单索引全长连续 → 预校验紧凑循环（T11）
+       b. M1: 单索引 && 连续 idx && after_contiguous && A>=4096 && f32/f64
+            → gather_rowcopy_raw（跳过 linearize，T2）
+       c. T4 raw: 单索引 && B==1 && A==1 && 连续 idx
+            → gather_bucket_pure_raw（小值域查表）
+            └ 无 SVE 内核 dtype 或 1 线程 → gather_single_1d（单遍标量，T5/T11）
+       d. 1 线程 && 单索引 && A>1
+            → A>=4 连续 ? gather_rowcopy_raw : gather_fused（T5/T11）
+       e. A==1 || (after_contiguous && A>=4 && f32/f64)
+            → linearize + gather_index（SVE/桶化/scalar）
+       f. 其余（A<4 或非连续小块）→ gather_fused（T3，不物化 idx）
 ```
+
+`index_out_impl` 不经过 mask/small 快路径（需支持任意 `out` 布局），校验后同样
+调用 `index_into`；非连续 `out` 先算到连续临时张量再 `copy_`。
 
 静态开关 `g_nt`：`HPC_INDEX_NT` 环境变量（非 "0" 即开），default off，进
 `gather_index`/`gather_rowcopy_raw` 的 `non_temporal` 参数。
 
 优化任务（T0-T11）引入的优先级：**先试不物化 idx 的短路路径**（gather_direct /
 M1 raw rowcopy / T4 raw 桶化），需要 idx 时再 linearize；T3 fused 只为 A<4 或
-非连续小块服务（A>=4 连续块 linearize+rowcopy 实测更快）；**T5 让 1 线程走
-单遍**（单索引 A==1 大值域 `gather_single_1d`、单索引 A>1 `gather_fused`），
-避开 linearize 两遍模型与单线程随机访存延迟。多索引 A==1 **保持
-linearize+SVE**（实测 fused 解码更差）；单 mask 在入口走 `mask_fast_path` →
-`gather_mask` 单遍压实（T8），绕过 normalize 的 nonzero。
+非连续小块服务；**T5 让 1 线程走单遍**（单索引 A==1 大值域
+`gather_single_1d`、A<4 短行 `gather_fused`），避开 linearize 两遍模型；T11
+又把 1 线程 A>=4 连续块改回 raw rowcopy（SVE 整块拷贝）。多索引 A==1
+**保持 linearize+SVE**（fused 解码更差）；单 mask 在入口走 `mask_fast_path` →
+`gather_mask` 单遍压实（T8）。
 
 ## 2. `IndexSpec` 数据布局（normalize.h）
 
@@ -48,7 +55,7 @@ struct IndexSpec {
   std::vector<int64_t> indexed_sizes;     // 各被索引维大小
   std::vector<int64_t> indexed_strides;   // transposed_self 上各维 stride
   int64_t B;                    // dims_before 元素数（未索引维前缀乘积）
-  int64_t K;                    // 被索引维大小的乘积（indexed_sizes 积）
+  int64_t K;                    // 下标张量 broadcast 形状的元素数（replacement_shape 积）
   int64_t A;                    // dims_after 元素数（后缀乘积）
   std::vector<int64_t> out_shape;
   std::vector<int64_t> row_off;  // 行首偏移（元素单位，transposed 坐标）

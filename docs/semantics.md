@@ -81,7 +81,7 @@ u32/u64/f8 等在任何实现下都报错（白名单外）。**无 dtype 回归
    - 值级真对拍必须用**两进程法**：无覆盖进程（`HPC_INDEX_NO_OVERRIDE=1`）生成
      true-aten 参考 `.pt`，覆盖进程比对。现成工具：`tests/verify_against_aten.py`
      （`--mode both` 自动跑两进程，small/large/all 三套 shape 矩阵，含 K>=1024、
-     桶化、M1 raw、T5 单遍、多索引、mask、广播等 40 用例，参考写到 git-ignored
+     桶化、M1 raw、T5 单遍、多索引、mask、广播、非连续 stride 等 44 用例，参考写到 git-ignored
      `agent_space/`）。
    - **`None` 占位语义**：传入 op 的索引列表里 `None` 是"跳过维"占位
      （`aten::index(x,[None,i])` 语义 == `x[:, i]`，shape (8,3)），**不是** Python

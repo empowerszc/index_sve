@@ -40,9 +40,10 @@ aten::index.Tensor ──► index_impl(self, indices)
         │                 ├─ K < 1024 ? gather_direct()      (快速路径，无线性化；A==1 预校验紧凑循环)
         │                 ├─ M1 ? gather_rowcopy_raw()       (单索引 A>=4096 skip-linearize)
         │                 ├─ T4 ? gather_bucket_pure_raw()   (单索引 B==1 A==1 小值域查表)
-        │                 │        └─ 大值域 && 1 线程 ? gather_single_1d()  (单遍标量)
+        │                 │        └─ 无 SVE 内核 dtype 或 1 线程 ? gather_single_1d()  (单遍标量)
         │                 ├─ 1 线程 && 单索引 && A>1 ? A>=4 连续 ? raw rowcopy : fused
-        │                 └─ linearize() + gather_index()
+        │                 └─ A==1 || (连续 && A>=4 && f32/f64) ? linearize() + gather_index()
+        │                    (否则 fused)
         │                                              │
         │                 ┌───────┬───────┬─────┬──────┴──────────┐
         │                 ▼       ▼       ▼     ▼               ▼

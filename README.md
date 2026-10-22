@@ -92,7 +92,7 @@ HPC_INDEX_NO_OVERRIDE=1 python your_script.py   # import 不再改 aten::index.T
 
 ## 基准结论（摘要）
 
-鲲鹏 920F，node 5（38 核），T11 构建，aten/hpc 同进程交替中位数。完整 30 场景
+鲲鹏 920F，node 5（38 核），T11 构建，aten/hpc 同进程交替中位数。完整 31 场景
 × 7 线程矩阵见 `benchmarks/RESULTS.md` §15，逐 case 分析见
 `docs/degradation-analysis.md`。
 
@@ -110,7 +110,7 @@ HPC_INDEX_NO_OVERRIDE=1 python your_script.py   # import 不再改 aten::index.T
 
 - **RowCopy 是主要收益**（1t 2.4-4.5x，2-16t 3-4.6x）：SVE `ld1/st1` 整块拷贝，
   正中 spconv 规则表 / 图消息路径。
-- **小 K `x[idx]`**（K≤1024，两进程真实路径）1t **1.34-2.08x**；K=4096 约 0.9x；
+- **小 K `x[idx]`**（K≤1024，两进程真实路径）**1.31-2.03x**；K=4096 约 0.9x；
   K≥8192 的高线程受"每线程字节数太小"影响 0.6-0.9x（绝对时间仅几十 µs）。
 - **仍 <1x 的场景**：非连续 mask 0.84-0.98x（T8 只支持连续 mask）、
   int8/uint8/complex 0.9-1.0x（64B 行放大，aten 同为标量）、S4 8/16t
@@ -157,5 +157,5 @@ test_smallk 7、test_compile_optin 3）。
 本算子），值级真对拍用两进程法（无覆盖进程生成 true-aten 参考，覆盖进程比对）：
 
 ```bash
-python tests/verify_against_aten.py --mode both    # 40/40，参考写 agent_space/（git-ignored）
+python tests/verify_against_aten.py --mode both    # 44/44，参考写 agent_space/（git-ignored）
 ```

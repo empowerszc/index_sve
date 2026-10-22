@@ -38,7 +38,7 @@ workload 优化轮 T0-T4**、**§10 T0-T5 全线程扫描 1-38t（2-36t 已作�
 | 1D f32 K=10M | 1.06x | 3.92x |
 
 T11 起 `torch.set_num_threads` 对扩展生效；旧 §8.3/§10 的 2-36t 数据因
-libomp/libgomp 双 ICV 作废。小 K 单下标 `x[idx]`（K≤1023）真实路径 1.34-2.08x，
+libomp/libgomp 双 ICV 作废。小 K 单下标 `x[idx]`（K≤1023）真实路径 1.31-2.03x，
 K=4096 约 0.9x，K≥8192 高线程 0.6-0.9x（RESULTS §15.4）。
 
 RowCopy 附加数据（node 4 全矩阵定点）：`x[:,idx]` B=256 K=100k **3.48x**、
@@ -48,7 +48,7 @@ RowCopy 附加数据（node 4 全矩阵定点）：`x[:,idx]` B=256 K=100k **3.4
 ### 3.1 线程数扫描（1/2/4/8/16/32/36，node 5，T11 修正）
 
 > **旧表作废**：本节与 RESULTS §10 的 2-36t 数据曾受 libomp/libgomp 双 ICV 影响
-> （扩展实际用 38 个 worker），相对值被高估。下表是 T11 修正后的矩阵（30 场景
+> （扩展实际用 38 个 worker），相对值被高估。下表是 T11 修正后的矩阵（31 场景
 > 完整版见 RESULTS §15，逐 case 分析见 degradation-analysis.md）。
 
 | 场景 | 1t | 2t | 4t | 8t | 16t | 32t | 36t |
@@ -104,8 +104,8 @@ rowcopy 阈值 A>=4、M1 skip-linearize、T3 融合单遍、T4 小值域桶化�
 回归扫描（`benchmarks/bench_regression.py`）发现 1 线程多形态 0.6-0.9x（根因：
 linearize 两遍模型 + 单线程随机访存延迟 + 内层循环 at::Tensor 方法开销）。
 T5 用单遍标量（`gather_single_1d` / 1 线程短行 fused）+ fused/linearize 的 nb==1
-全长连续快路径修复，全部 ≥1.0x；2+ 线程本就全面占优。mask 1 线程保持 ~1.0x
-噪声级，不做 fallback。完整数据见 `optimizations.md` §9 实测表。
+全长连续快路径修复，表中形态回到 ≥1.07x；T11 矩阵中这些形态 2t 也 ≥1.09x
+（旧 2-36t 标签不可信）。mask 1 线程 1.2-2.2x（T8），不做 fallback。完整数据见 `optimizations.md` §9 实测表。
 
 ## 5. 与设计文档 §8 的对照
 

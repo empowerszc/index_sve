@@ -104,10 +104,11 @@ aten 行确实只用 t 个 → **相对加速比被严重高估**。这也是旧
 
 `benchmarks/bench_threads.py`：
 
-- 同一进程内交替执行 aten 与 hpc：`HPC_INDEX_NO_OVERRIDE=1` 时纯 aten；
-  默认走 hpc 覆盖。
+- 同一进程内交替执行 aten 与 hpc：`HPC_INDEX_NO_OVERRIDE=1` 时 `x[i]` 是真
+  aten，hpc 用 `index_sve.index`（pybind）直调同一内核；小 K 的 pybind 开销由
+  §3.3 的两进程真实 `x[idx]` 补测。
 - 每格 25 次中位数，预热 5 次；固定 node 5；`HPC_THREADS=1,2,4,8,16,32,36`。
-- 30 个场景覆盖：S1/P1/P2/P3 模型形态、S4、1D f32/f64（含 idx32/idx64）、
+- 31 个场景覆盖：S1/P1/P2/P3 模型形态、S4、1D f32/f64（含 idx32/idx64）、
   2B/1B/complex、A=2/3/4/16 rowcopy、非连续 self/idx、mask 三种、`x[:,i]`、
   小值域 range2048。
 
@@ -119,9 +120,11 @@ K≤1024 时单次调用只有几微秒，同进程的 pybind 包装（Python �
 
 ### 3.4 perf
 
-`perf stat/record`（`perf_event_paranoid=-1`）在 node 5 上跑同一 case，
-用 import-only 进程做基线扣除启动噪声；关注 cycles、instructions、IPC、
-L1d/L2/LLC miss、dTLB miss、stalled-cycles。
+`perf stat/record`（`perf_event_paranoid=-1`）在 node 5 上跑同一 case；计数
+包含 Python/torch 启动（约 10-12 CPU·s），因此只做同 case 的 hpc vs aten
+相对比较，不看绝对 cycles。关注指令数、IPC、frontend stalls、LLC miss。
+`perf stat -D` 的单内核延迟窗口在本机不稳定（部分事件 `<not counted>`），
+未用于本文结论。
 
 ### 3.5 噪声与判读
 
@@ -136,8 +139,8 @@ L1d/L2/LLC miss、dTLB miss、stalled-cycles。
 
 ## 4. 全量线程矩阵（T11）
 
-> 下表是 `bench_threads.py` 的原始中位数，单位是 "aten 时间 / hpc 时间"，
-> 越大越好。`col` 行在 A==1 紧凑循环合入后还会改善（见 §6.1）。
+> 下表是 `bench_threads.py` 每格 25 次交替测量的中位数比值（aten 时间 /
+> hpc 时间），越大越好；`col` 行已是 A==1 紧凑循环合入后的结果。
 
 | 场景 | 1t | 2t | 4t | 8t | 16t | 32t | 36t |
 |---|---|---|---|---|---|---|---|
@@ -204,7 +207,8 @@ element_size/dtype`（引用计数 + 间接调用），1t 315ms（0.18x）。`pe
 
 **修复 1**：属性循环外提取 + 增量推进 `r/k` → 1t 144ms（0.40x）。
 
-**修复 2（T11）**：`A==1 + 单索引 + 全长连续` 时，先把 K 个下标校验/归一化
+**修复 2（T11）**：`A==1 + 单索引 + 全长连续`（`K<1024`，走 `gather_direct`）时，
+先把 K 个下标校验/归一化
 一次到小缓冲，再跑无检查的紧凑循环 `dst[p] = src[row_off[r] + v[k]]`，等价
 aten `index_select` 的内层。K=64，预处理可忽略。结果：
 
@@ -213,8 +217,8 @@ aten `index_select` 的内层。K=64，预处理可忽略。结果：
 | 相对 aten | 2.02x | 1.88x | 1.69x | 1.43x | 1.12x | 1.55x | 1.87x |
 | hpc 绝对时间 | 28.1ms | 15.0ms | 8.5ms | 5.3ms | 3.6ms | 2.9ms | 3.2ms |
 
-**并行扩展**：hpc 28.1→5.3ms（1→8t，5.3x，效率 67%）；aten 56.5→4.1ms
-（7.5x）。到 16t 后 aten 接近饱和而 hpc 继续小幅提升，相对比值在 1.1-1.9x
+**并行扩展**：hpc 28.1→5.3ms（1→8t，5.3x，效率 67%）；aten 56.5→7.5ms
+（1→8t，7.5x），16t 时 aten 4.1ms、hpc 3.6ms 已接近饱和，相对比值在 1.1-1.9x
 之间波动。**结论**：已不再是退化项；继续优化只能争取高线程的 10-20%，优先级低。
 
 ### 5.2 2B/1B/complex：从 0.5-0.9x 到 1.2-2.4x
@@ -270,15 +274,15 @@ T8 `gather_mask` 要求 mask 与 self 都连续；非连续 mask 回退到
 - `nonzero` 的输出长度依赖数据，内部有串行段/前缀和，Amdahl 限制了高线程
   收益（16t 0.84x）。
 
-连续 mask 的 T8 路径是 1.24-2.53x。**优化方向**：让 T8 直接按 mask 的 stride
+连续 mask 的 T8 路径是 1.20-3.76x。**优化方向**：让 T8 直接按 mask 的 stride
 读（两遍都不用物化连续 mask），即可覆盖 `mask[::2]` 这类常见形态。
 
 ### 5.6 其余 <1x 单元：噪声/微秒级
 
-- **空 mask 4t 0.78x**：空 mask 直接返回，耗时几微秒；4t 的 aten 值本身在
+- **空 mask 4t 0.74x**：空 mask 直接返回，耗时几微秒；4t 的 aten 值本身在
   1.97-0.79 GB/s 间跳，比值无意义。
-- **range2048 16t 0.96x**：1t 1.23x、32t 1.26x，16t 是并行任务粒度的抖动。
-- **uint8/complex 的 0.95-0.98x**：与 int8 同因，属于"持平"。
+- **range2048 16t 0.87x**：1t 1.22x、32t 1.41x，16t 是并行任务粒度的抖动。
+- **uint8/complex 1-16t 0.90-1.00x**：与 int8 同因，属于"持平"。
 
 ### 5.7 非连续下标：一个被"性能"掩盖的正确性 bug
 
@@ -377,14 +381,13 @@ linearize 通用路径。修复后 1.01-1.57x（正确结果），并补了两�
 
 ## 8. 优化优先级
 
-1. **非连续 mask 的 T8 扩展**（0.85-0.98x → 预期 1.2x+）：两遍都按 stride 读，
-   去掉 nonzero 中间量。工作量中等，收益明确。
-2. **小规模并行阈值**（S4/multi/小 K 的 0.46-0.96x）：按"每线程字节数"限制
+1. **小规模并行阈值**（S4/multi/小 K 的 0.46-0.96x）：按"每线程字节数"限制
    线程（例如每线程 ≥64KB），而不是只按元素数切 grain。改动小，能消除大部分
    负扩展；这是当前最值得做的项。
-3. **非连续 mask**（0.84-0.98x）：见第 1 项，两者可以一起做。
-4. **`x[:,i]`**：已修到 1.1-2.0x，剩余高线程 10-20% 收益，优先级低。
-5. **1B/complex 不再投入**：行放大是硬限制，aten 同样是标量。
+2. **非连续 mask 的 T8 扩展**（0.84-0.98x → 预期 1.2x+）：两遍都按 stride 读，
+   去掉 nonzero 中间量。工作量中等，收益明确。
+3. **`x[:,i]`**：已修到 1.1-2.0x，剩余高线程 10-20% 收益，优先级低。
+4. **1B/complex 不再投入**：行放大是硬限制，aten 同样是标量。
 
 ---
 
@@ -396,7 +399,7 @@ conda activate torch210_env
 source /home/envs/HPCKit_26.1.RC1/HPCKit/latest/setvars.sh
 export LD_LIBRARY_PATH=<torch_lib>:<bisheng_lib>:$LD_LIBRARY_PATH
 
-# 主矩阵（30 场景 × 7 线程，约 10 分钟）
+# 主矩阵（31 场景 × 7 线程，约 10 分钟）
 HPC_INDEX_NO_OVERRIDE=1 HPC_AFFINITY=190-227 \
   HPC_THREADS=1,2,4,8,16,32,36 HPC_ITERS=25 \
   python benchmarks/bench_threads.py
@@ -405,9 +408,11 @@ HPC_INDEX_NO_OVERRIDE=1 HPC_AFFINITY=190-227 \
 HPC_AFFINITY=190-227 HPC_THREADS=1,2,4,8,16,32,36 \
   HPC_REPS=2 HPC_ITERS=150 python benchmarks/bench_smallk_driver.py
 
-# 单个 case 的 perf（示例：col，1t）
+# 单个 case 的 perf（示例：col 1t；aten 侧要加 HPC_INDEX_NO_OVERRIDE=1）
 perf stat -e cycles,instructions,cache-misses,LLC-load-misses,dTLB-load-misses \
-  python agent_space/perf_one.py col 1 5
+  env MODE=hpc python benchmarks/perf_one.py col 1 5
+perf stat -e cycles,instructions,cache-misses,LLC-load-misses,dTLB-load-misses \
+  env MODE=aten HPC_INDEX_NO_OVERRIDE=1 python benchmarks/perf_one.py col 1 5
 ```
 
 ---

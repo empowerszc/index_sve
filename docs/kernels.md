@@ -167,7 +167,8 @@ linearize 同样预提取 + nb==1 快路径
 - N-D 下标按 `broadcast_shape` 混合进制解码（bfactor），**非** `k*stride(0)`
   （A7 修复 —— 若回归成简单 stride 会破坏 N-D 下标语义）。
 - 等价 ATen `Indexer` 的逐元素遍历，故无需线性化临时缓冲。
-- **T11 A==1 快路径**：`A==1 && 单索引 && 全长连续 && after_contiguous` 时先把
+- **T11 A==1 快路径**（`gather_direct` 入口，`K<1024`）：`A==1 && 单索引 &&
+  全长连续 && after_contiguous` 时先把
   K 个下标校验/归一化一次到小缓冲，再跑无检查的紧凑循环。`x[:,i]`（B 大、K 小）
   从 0.18x 提升到 1.1-2.0x（1t 2.0x）；剩余差距见
   degradation-analysis.md。

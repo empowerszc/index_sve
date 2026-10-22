@@ -252,13 +252,12 @@ list via env; `bench_gate.py` now reads `HPC_THREADS`). Speedup vs true aten.
 | 1D f32 K=2M | **10.6x** | 2.8x | 1.5x | 4.1x | 1.8x | 2.6x |
 | 1D f32 K=10M | 1.7x | 1.2x | 0.7x | 0.3x | 0.2x | 0.2x |
 
-Interpretation:
+Interpretation (historical; the columns above are retracted, see §15 for the
+corrected scaling — e.g. S1 2t is 4.62x, not 33.7x):
 
 - **Low-thread-count wins are the strongest.** RowCopy (S1/P1/P2) at 2-4 threads
-  saturates a single NUMA node's memory bandwidth (~60 GB/s) — 2 threads suffice,
-  giving 20-34x because aten's scalar gather is latency-bound and needs ~30+
-  threads to reach the same bandwidth. This is a *scaling* advantage, not just a
-  per-element one: the op reaches peak throughput with a fraction of the cores.
+  saturates a single NUMA node's memory bandwidth (~60 GB/s) — the labels say
+  20-34x, but that is inflated; the corrected S1/P1 2t is 4.4-4.6x.
 - **8B PureGather also shines at low threads** (S4 2t 20.7x, 1D f64 2t 6.8-10.5x):
   the SVE gather + prefetch hides latency that a 2-thread scalar loop cannot.
 - **f32 K=10M confirms the 4B hardware limit across the sweep**: 2t 1.7x is the
@@ -390,9 +389,9 @@ Interpretation:
   <1x cells (col x[:,i], non-contiguous mask, int8/uint8 ~0.9x); see §15.3. The
   earlier claim that the sub-1x rows were "608-thread shared-box artifacts" is
   wrong for x[:,i]: its 1t penalty was real per-element overhead, not noise.
-- **Low-thread-count wins remain the strongest** (2-4t: 13-66x on RowCopy /
-  1D pure), saturating one NUMA node's ~60 GB/s bandwidth with a few cores
-  (S1 4t 40x, P2 2t 66x). 8-38t stay comfortably >1x.
+- **Low-thread-count wins are the strongest, but the magnitudes above are
+  inflated.** Corrected (§15): S1 2t 4.62x, P2 2t 2.12x, 1D pure 2t 1.28x;
+  no 13-66x anywhere.
 - **The "4B hardware cap does not show up as <1x" claim is also retracted.** The
   apparent 1.1-16.6x came from the inflated thread labels. The hardware limit is
   the 64B line amplification, established by the same-build A/B in §8.4, not by
@@ -512,7 +511,7 @@ worker，相对 aten 被高估。1t 行有效（ATen 的 `parallel_for` 在 1 �
 对已加载 libomp 调 `omp_set_num_threads(t)`；T11 起内核入口也会自动同步。
 node 5（CPU 190-227），25 iters median，`HPC_INDEX_NO_OVERRIDE=1`。
 
-### 15.2 完整矩阵（30 场景 × 7 线程，aten 时间 / hpc 时间）
+### 15.2 完整矩阵（31 场景 × 7 线程，比值 = aten 时间 / hpc 时间，越大越好）
 
 | 场景 | 1t | 2t | 4t | 8t | 16t | 32t | 36t |
 |---|---|---|---|---|---|---|---|
@@ -573,16 +572,16 @@ T9 的 `n*A<16384` 串行阈值修复后（2D A=16 K=4096 不再误判串行）�
 
 | 形态 | K | 1t | 8t | 36t | 全线程范围 |
 |---|---|---|---|---|---|
-| 1D A=1 | 0-1024 | 1.35-2.08x | 1.34-2.02x | 1.35-2.03x | 1.34-2.08x |
+| 1D A=1 | 0-1024 | 1.31-1.95x | 1.35-2.03x | 1.34-2.03x | 1.31-2.03x |
 | 1D A=1 | 4096 | 0.88x | 0.98x | 1.00x | 0.88-1.00x |
 | 1D A=1 | 8192 | 1.07x | 0.99x | 0.60x | 0.60-1.07x |
 | 1D A=1 | 65536 | 0.96x | 0.88x | 0.64x | 0.64-0.96x |
-| 2D A=16 | 128-1024 | 2.41-3.07x | 1.60-2.41x | 1.02-2.44x | 1.02-3.07x |
+| 2D A=16 | 128-1024 | 2.35-3.02x | 1.60-2.42x | 1.02-2.40x | 1.02-3.02x |
 | 2D A=16 | 4096 | 3.51x | 1.78x | 1.03x | 1.03-3.51x |
 | 2D A=16 | 8192 | 3.74x | 1.39x | 0.46x | 0.46-3.74x |
 | 2D A=16 | 65536 | 4.23x | 2.72x | 1.15x | 1.15-4.23x |
 
-> K=0-1024：hpc 6-14µs vs aten 12-19µs，固定开销低，稳定 1.3-2.1x。
+> K=0-1024：hpc 6-14µs vs aten 12-19µs，固定开销低，稳定 1.3-2.0x。
 > K>=8192 的 1D 高线程、2D K=8192 的 16-36t 出现 0.46-0.8x：总数据只有
 > 32KB-512KB，每线程几 KB，线程启动/调度成本超过收益（绝对时间仅 40-90µs）。
 > 这是"小规模不该并行"的阈值问题，不是内核退化；下一步按每线程字节数限制
