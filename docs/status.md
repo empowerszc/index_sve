@@ -29,7 +29,7 @@ CPU 键覆盖，autograd 不受影响）。构建/运行契约见 `README.md` �
 | T8 | mask 单遍融合 compaction（跳过 nonzero） | 0dd7533 | ✅ |
 | T9 | 小 K（≤4096）单整数下标精简路径 + C++ 直接覆盖 aten CPU 内核 | da9a203 | ✅ |
 | T10 | `torch.compile` opt-in（`HPC_INDEX_COMPILE=1`：fake + aten fallback + 独立 cache 目录） | 1cd77ce | ✅ |
-| T11 | 线程矩阵方法学修正（libomp ICV 同步）、`gather_direct` A==1 紧凑循环、2B/1B/complex 单遍、非连续 stride 正确性修复、1t A>=4 恢复 raw rowcopy | 待提交 | ✅ |
+| T11 | 线程矩阵方法学修正（libomp ICV 同步）、`gather_direct` A==1 紧凑循环、2B/1B/complex 单遍、非连续 stride 正确性修复、1t A>=4 恢复 raw rowcopy | fc26cf8 | ✅ |
 
 ## 3. 路由现状（op.cpp `index_impl`）
 
