@@ -27,7 +27,7 @@ CPU 键覆盖，autograd 不受影响）。构建/运行契约见 `README.md` �
 | T5 | 1 线程回归修复（单遍标量 + nb==1 快路径） | bd21485 | ✅ |
 | T6 | 跨设备索引校验 + `aten::index.Tensor_out` 覆盖 | f791c39 | ✅ |
 | T8 | mask 单遍融合 compaction（跳过 nonzero） | 0dd7533 | ✅ |
-| T9 | 小 K（≤4096）单整数下标精简路径 + C++ 直接覆盖 aten CPU 内核 | 本轮 | ✅ |
+| T9 | 小 K（≤4096）单整数下标精简路径 + C++ 直接覆盖 aten CPU 内核 | da9a203 | ✅ |
 
 ## 3. 路由现状（op.cpp `index_impl`）
 
