@@ -4,12 +4,18 @@
 模型端到端**无提升甚至劣化**后，按优化任务建议（T0-T4）逐项实现，每项单独
 commit、全量测试 + 前后对比；T5 针对回归扫描暴露的 1 线程劣化做定向修复。
 T6-T11 依次修复 index_out/autograd、mask 单遍、小 K 路径、compile opt-in、
-线程数方法学；对应性能数据见 `benchmarks/RESULTS.md` §9、§15 与
+线程数方法学；对应性能数据见 `benchmarks/RESULTS.md` §3.8、§2 与
 `performance.md` §3-§4。
+
+> **怎么读**：§1-§3 是“为什么改”；§2 是一页 commit 索引；§4 是最终路由优先级
+> （改代码前先看）；§5 是汇总数字；§6-§7 是验证与复测；§9 起按轮次（T5-T11）
+> 记录问题、改动、实测。**历史性能表（T0-T10）中 2-36t 的标签不可用**：旧扩展
+> 用 libomp 默认 team，`torch.set_num_threads` 改的是 libgomp（详见
+> `degradation-analysis.md` §3.1）；只有 1t/38t 与 T11 之后的数据有效。
 
 ## 1. 背景与目标
 
-`index_sve` 覆盖 `aten::index.Tensor` 后，原有基准（RESULTS §1-§8）显示 RowCopy
+`index_sve` 覆盖 `aten::index.Tensor` 后，原有基准（RESULTS §3.1-§3.7）显示 RowCopy
 / 8B gather 形态有 2-4x 收益，但真实 AI4S 模型端到端收益为负。原因是：基准里的
 合成形态（大 C 连续行、8B 纯 gather）不是模型里的热路径；模型实际命中：
 - **M1** `weight.view(K,C,o)[ki]`（最热，14 模型累计 27270ms）；
@@ -38,6 +44,12 @@ T6-T11 依次修复 index_out/autograd、mask 单遍、小 K 路径、compile op
 | T4+ | raw 桶化 + 无锁归约 | `bucket_gather_pure_raw`（op.cpp 短路，单索引 B==1 A==1）；min/max 归约改 per-chunk 数组 | 10921c1 |
 | T4++ | OOB 越界检查 | `bucket_gather_pure_raw` 缺小 src + 大 OOB 的边界检查（dom≤2048 曾静默错误）；补 `TORCH_CHECK_INDEX` | 31687d4 |
 | T5 | 1 线程回归修复 | `gather_single_1d`（单遍标量）+ fused/linearize nb==1 全长连续快路径 + 索引属性预提取；op.cpp 1 线程路由 | bd21485 |
+| T6 | 跨设备校验 + `Tensor_out` 覆盖 | normalize/gather 校验索引与 self 同设备；`TORCH_LIBRARY_IMPL(aten, CPU)` 注册 out 变体 | f791c39 |
+| T7 | compile fallback 实验 | 未落地（结论并入了 T10） | — |
+| T8 | mask 单遍压实 | `gather_mask`：计数 → 前缀和 → 直接压实，跳过 `nonzero()` | 0dd7533 |
+| T9 | 小 K 精简路径 + C++ 覆盖 | `small_single_index`（单整数下标、K<=4096）；C++ `TORCH_LIBRARY_IMPL` 替代 Python 注册 | da9a203 |
+| T10 | `torch.compile` opt-in | schema-only + fake + `register_lowering` 钉回运行时；独立 cache 目录；`HPC_INDEX_COMPILE=1` | 1cd77ce |
+| T11 | 线程数同步 + 路由/正确性修复 | `sync_omp_threads()`；`gather_direct` A==1 紧凑循环；2B/1B/complex 单遍；1t A>=4 raw rowcopy；非连续 stride 修复 | fc26cf8 |
 
 ## 3. 逐项详解
 
@@ -124,7 +136,7 @@ broadcast 解码 + 内联检查），再就地标量拷贝，**不物化 idx 数
 
 **动机**：小值域时表查的标量随机读命中 L1/L2，避免 64B 行放大，远优于大值域
 随机 gather（T11 复核：大值域 SVE 4B 与标量持平，差异来自访存模式而非指令；
-RESULTS §8.4）。值域 >2048 时返回 false，落回 SVE/scalar。
+RESULTS §3.7）。值域 >2048 时返回 false，落回 SVE/scalar。
 
 **实测**：1D f32/f64 K=1M 小值域 8-32 线程 1.2-3.1x（SVE 0.2-0.9x）。单线程
 仍受 linearize 解码限制，但不再比旧路径差。
@@ -164,7 +176,12 @@ index_impl
 优先级逻辑：**先试不物化 idx 的短路路径**（direct / raw rowcopy / raw 桶化），
 需要 idx 时才 linearize；fused 只服务 A<4 或非连续小块。
 
-## 5. 性能结果汇总（pin node 5，interleaved median，RESULTS §9.3）
+## 5. 性能结果汇总（pin node 5，interleaved median，RESULTS §3.8）
+
+> **历史数据警告**：下表 8t/32t 列产生于 T8 之前，扩展内 `at::parallel_for`
+> 经 libomp 默认 team 运行，线程标签无效（真实 38 worker）；只有 1t 与 38t
+> 可信。P3 的 8t/32t 也受影响。T11 修正后的 31 场景矩阵见 RESULTS §2，
+> 逐案解释见 `degradation-analysis.md` §4-§5。
 
 | 形态 | 1t | 8t | 32t | 优化前 |
 |---|---|---|---|---|
@@ -176,7 +193,7 @@ index_impl
 | M3 keys[order] E=54k i64 | 1.4x | 0.6-1.3x | **8.0x** | **0.2x** |
 | M3 keys[order] E=54k i32 | 2.6x | 1.3-2.2x | **11.6x** | **0.2x** |
 | M4 feat[inverse] E=20k | 3.6x | 3.8x | **4.8x** | ~1x |
-| P3 x[mask] C=16 (T8) | **2.1x** | **8.0x** | **7.2x** | 1.1-1.5x |
+| P3 x[mask] C=16 (T8，8t/32t 标签失效) | **2.1x** | ~~8.0x~~ | ~~7.2x~~ | 1.1-1.5x |
 
 注：8t/32t 共享箱噪声大（aten 单格曾摆动 104→426us）；可靠数字是交错
 aten/hpc 的 median。4B f32 K=10M 大值域随机 gather 仍是硬件上限（1t 0.7x、
@@ -184,11 +201,10 @@ aten/hpc 的 median。4B f32 K=10M 大值域随机 gather 仍是硬件上限（1
 
 ## 6. 验证
 
-- 全 6 个测试套件 **75/75 通过**（T5 后：test_correctness 25、test_errors 5、
-  test_model 9、test_normalize 9、test_smoke 2、test_sve 25）。
+- 当前全 10 个测试套件 **102/102 通过**（T5 时点为 6 套件 75/75）。
 - 正确性对拍：两进程法（无覆盖进程生成 true-aten 参考，覆盖进程比对），
-  工具 `tests/verify_against_aten.py --mode both`（40/40），含 K>=1024、桶化、
-  M1 raw、T5 单遍、多索引、mask 用例。
+  工具 `tests/verify_against_aten.py --mode both`（**44/44**），含 K>=1024、
+  桶化、M1 raw、T5 单遍、多索引、mask、非连续 stride 用例。
 - 桶化路径正确性由 test_correctness 的小值域用例覆盖（`randint(0,64/100,...)`）。
 
 ## 7. 复测
@@ -211,7 +227,7 @@ for t in tests/test_smoke.py tests/test_normalize.py tests/test_correctness.py \
 
 - **M1 值域桶化（T2 阶段 2）**：M1 raw rowcopy 路径未对下标做值域分析；若
   keys[order] 等值域小可再桶化。`gather_rowcopy_raw` 已留好接入入口。
-- ~~**P3 mask 多线程**~~：T8 已用单遍 compaction 修复（见 §13），不再列入。
+- ~~**P3 mask 多线程**~~：T8 已用单遍 compaction 修复（见 §12），不再列入。
 - **4B 大 K 随机 gather**：64B 行放大 + DRAM 延迟（SVE 4B 与标量持平，RESULTS
   §8.4）；可试软件预取 / 按 cache line 分桶排序。
 
@@ -220,7 +236,7 @@ for t in tests/test_smoke.py tests/test_normalize.py tests/test_correctness.py \
 > **T11 复核修正**：本节 2/8/32t 列同样受 libomp/libgomp 双 ICV 影响（实际用
 > 38 worker），相对值偏大；且 T5-2 的"1 线程 A>1 全走 fused"让 A=64 的 S1/P1
 > 丢掉了 SVE rowcopy（1t 只有 1.06x）。T11 起 1 线程 A>=4 连续改回 raw rowcopy
-> （S1 1t 4.46x、rowcopy A=4 1t 2.41x）。修正矩阵见 RESULTS §15。
+> （S1 1t 4.46x、rowcopy A=4 1t 2.41x）。修正矩阵见 RESULTS §2。
 
 ### 背景
 
@@ -270,10 +286,11 @@ mask 1 线程与高线程在 0.97-1.13x 间波动（不同密度 0.05/0.3/0.5）
 
 ### 验证
 
-全 6 套件 **75/75 通过**（新增 6 个：多索引全长/广播标量/非连续、1 线程 rowcopy
-短行、1 线程大值域纯 gather、linearize 快/慢路径一致性）。
+T5 时点 6 套件 **75/75 通过**（新增 6 个：多索引全长/广播标量/非连续、1 线程
+rowcopy 短行、1 线程大值域纯 gather、linearize 快/慢路径一致性）；当前为
+10 套件 **102/102**。
 
-## 11. T6：跨设备索引校验 + `aten::index.Tensor_out` 覆盖（正确性/覆盖）
+## 10. T6：跨设备索引校验 + `aten::index.Tensor_out` 覆盖（正确性/覆盖）
 
 ### 问题
 
@@ -298,19 +315,20 @@ mask 1 线程与高线程在 0.97-1.13x 间波动（不同密度 0.05/0.3/0.5）
 - 新增 `tests/test_index_out.py` 7 个用例（pure / rowcopy / mask / multi-index /
   非连续 out / dtype 不匹配 / profiler 断言内核名 `hpc_index::index_out`）；
   `test_errors.py` 增加 meta 索引子进程不崩溃用例（修复前 rc=-11）。
-- 全 7 套件 **83/83 通过**；true-aten 值级对拍 40/40；autograd / vmap / jvp /
+- T6 时点 7 套件 **83/83**；true-aten 值级对拍当时 40/40（当前 44/44）；
+  autograd / vmap / jvp /
   index_put / setitem 行为不变；`HPC_INDEX_NO_OVERRIDE=1` 下 out= 仍为真 aten。
 
-## 12. T7（实验，未落地）：`torch.compile` fallback
+## 11. T7（实验，未落地）：`torch.compile` fallback
 
 `torch.compile` 默认由 Inductor 内联生成 `aten::index` 的 kernel，绕过 dispatcher
 覆盖（实测慢 2.6x）。用 `force_fallback(aten.index.Tensor)` 可让它回落到运行时
 调用、重新命中本算子，实测 2.6x → 1.07-1.3x。含 inductor 缓存、私有 API、
 FakeTensor 等坑与 opt-in 落地，见 [torch-compile.md](torch-compile.md)；
 实测数据见 `benchmarks/RESULTS.md` §11。已在 T10 以 `HPC_INDEX_COMPILE=1`
-opt-in 实现（§15）。
+opt-in 实现（§14）。
 
-## 13. T8：mask 单遍融合（跳过 nonzero）
+## 12. T8：mask 单遍融合（跳过 nonzero）
 
 ### 问题
 
@@ -352,7 +370,7 @@ opt-in 实现（§15）。
   `mask.nonzero()` + `index_select`（未被覆盖）。
 - 全 8 套件 **92/92**；`mask_fused_count()` 调试计数断言融合路径确实命中。
 
-## 14. T9：小 K 单整数下标精简路径 + C++ 直接覆盖
+## 13. T9：小 K 单整数下标精简路径 + C++ 直接覆盖
 
 ### 问题
 
@@ -398,14 +416,15 @@ opt-in 实现（§15）。
 - 新增 `tests/test_smallk.py` 7 用例：1D/2D/N-D/0-dim/空下标、f32/f64/int64、
   1/8 线程、非连续 self/idx 回退、越界错误逐字、路由计数（K<=4096 命中、
   多索引/mask 不命中）。
-- 全 9 套件 **99/99**；true-aten 对拍 40/40；`HPC_INDEX_NO_OVERRIDE=1` 仍为真 aten。
+- T9 时点 9 套件 **99/99**；true-aten 对拍当时 40/40（当前 44/44）；
+  `HPC_INDEX_NO_OVERRIDE=1` 仍为真 aten。
 - 覆盖注册改动后 `out=` / autograd / vmap 行为不变（test_index_out + 全量回归）。
 
-## 15. T10：`torch.compile` opt-in（HPC_INDEX_COMPILE=1）
+## 14. T10：`torch.compile` opt-in（HPC_INDEX_COMPILE=1）
 
 ### 问题
 
-默认 compile 由 Inductor 内联生成第三份实现，完全绕过 CPU 覆盖（慢 2.6x，见 §12）。
+默认 compile 由 Inductor 内联生成第三份实现，完全绕过 CPU 覆盖（慢 2.6x，见 §11）。
 需要一条"显式开启就让 compile 用回本算子"的路径，同时不改变默认行为与用户的
 编译缓存。
 
@@ -428,9 +447,9 @@ opt-in 实现（§15）。
 - 新增 `tests/test_compile_optin.py` 3 例（子进程隔离）：默认关闭；fake 推形状 +
   整数/mask compile 数值等价 + profiler + cache 目录；与 `HPC_INDEX_NO_OVERRIDE`
   冲突报错。
-- 全 10 套件 **102/102**；true-aten 对拍 40/40；`HPC_INDEX_NO_OVERRIDE=1` 仍为真 aten。
+- 10 套件 **102/102**；true-aten 对拍 **44/44**；`HPC_INDEX_NO_OVERRIDE=1` 仍为真 aten。
 
-## 16. T11：线程数方法学修正 + 路由/正确性修复
+## 15. T11：线程数方法学修正 + 路由/正确性修复
 
 ### 问题
 
@@ -456,7 +475,7 @@ opt-in 实现（§15）。
 | T11-5 | raw 路径加 `stride0` + 连续性门控；M1/1t raw rowcopy 增加 `indices[0].is_contiguous()` | gather.cpp / op.cpp |
 | T11-6 | `small_single_index` 串行阈值改用 `n*A`（2D A=16 K=4096 不再误判串行） | op.cpp |
 
-### 实测（RESULTS §15）
+### 实测（RESULTS §2）
 
 | 形态 | 修复前 | T11 |
 |---|---|---|

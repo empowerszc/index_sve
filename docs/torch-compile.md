@@ -8,6 +8,11 @@
 
 本文记录 2026-10 的 spike 结论（torch 2.10.0+cpu，pin node 5，8 线程）。
 
+> **名词**：**Dynamo** 抓 Python 字节码生成 FX 图；**Inductor** 把 FX 图编译成
+> C++/Triton 内核；**lowering** 是“某个 aten op 在 Inductor 里怎么生成代码”的
+> 规则；**FakeTensor** 是只有形状/dtype、没有数据的张量，用于编译期推形状；
+> **cache key** 决定磁盘缓存命中，改了 lowering 却不改 key 就会命中旧产物。
+
 ## 1. 到底有几份实现
 
 `x[i]` 在不同执行方式下，实际跑的代码是**三份不同的实现**：

@@ -6,6 +6,29 @@
 无需修改任何调用点。语义与 torch 2.10 的 ATen 参考实现逐字节对齐，autograd
 backward 不受影响。
 
+## 先读：术语与结果口径（30 秒）
+
+| 名词 | 一句话解释 |
+|---|---|
+| **高级索引** | 用张量当下标取值，如 `x[i]`、`x[:, i]`、`x[i, j]`、`x[mask]`；底层都是 `aten::index.Tensor` |
+| **RowCopy** | 一次取一整行/一段连续内存（`A>=4`），用 SVE 的 `ld1/st1` 整块搬，最快 |
+| **PureGather** | 一次只取一个元素（`A==1`），随机地址，受 64B cache line 放大限制 |
+| **linearize** | 把“第几行、第几列”换算成一维元素偏移，并做越界/负数检查 |
+| **SVE / VL** | ARM 可伸缩向量指令 / 向量长度；本机 VL=512-bit（16×f32 或 8×f64） |
+| **cache line（缓存行）** | CPU 和内存搬数据的最小单位，64B；随机取 4B 也要搬 64B |
+| **ICV** | OpenMP 的“线程数”配置；libomp 和 libgomp 各有一份，互不相通 |
+| **ratio（加速比）** | 本文统一用 `aten 时间 / 本算子时间`；**>1 表示比 torch 快** |
+
+**结果怎么读**：`1.26x` = 快 26%，`0.87x` = 慢 13%。高线程（32/36t）的比值有时
+很高，一部分原因是 aten 在带宽饱和后自己变慢，所以文档同时给出绝对 GB/s；
+判断真实收益要看“低/中线程比值 + 绝对带宽”，而不是只看最大比值。
+
+**建议阅读路线**：
+- 只想用：本节 → [快速开始](#快速开始) → [已知限制](#已知限制--注意事项)。
+- 想看性能：`benchmarks/RESULTS.md` §2 → `docs/degradation-analysis.md`。
+- 想改内核：`docs/kernels.md` → `docs/architecture.md` → `docs/optimizations.md`。
+- 想集成/排障：`docs/integration.md` → `docs/override-mechanism.md` → `docs/status.md`。
+
 ## 设计要点
 
 - 三段流水线：**归一化 normalize**（对齐 ATen `make_info`，保留 int32 下标）→
@@ -48,7 +71,7 @@ index_sve/
 │   │                     # bench_t1.py/bench_t2.py/bench_ai4s.py（优化轮专项）、bench_regression.py（回归扫描）
 │   │                     # bench_threads.py（全线程矩阵 1-36t）
 │   │                     # bench_smallk_real.py / bench_smallk_driver.py（小 K 两进程对拍）
-│   └── RESULTS.md        # 完整基准报告（§1-§14 历史；§15 T11 修正线程矩阵）
+│   └── RESULTS.md        # 完整基准报告（§2 T11 权威矩阵；§3 历史轮次）
 └── docs/                 # 本系列文档
 ```
 
@@ -93,7 +116,7 @@ HPC_INDEX_NO_OVERRIDE=1 python your_script.py   # import 不再改 aten::index.T
 ## 基准结论（摘要）
 
 鲲鹏 920F，node 5（38 核），T11 构建，aten/hpc 同进程交替中位数。完整 31 场景
-× 7 线程矩阵见 `benchmarks/RESULTS.md` §15，逐 case 分析见
+× 7 线程矩阵见 `benchmarks/RESULTS.md` §2，逐 case 分析见
 `docs/degradation-analysis.md`。
 
 | 场景 | 1 线程 | 36 线程 |
@@ -108,19 +131,21 @@ HPC_INDEX_NO_OVERRIDE=1 python your_script.py   # import 不再改 aten::index.T
 | 1D f32/f64 K=2M | 1.07x / 1.26x | 2.17x / 1.51x |
 | half / bf16 | 1.53x / 1.35x | 2.40x / 2.05x |
 
-- **RowCopy 是主要收益**（1t 2.4-4.5x，2-16t 3-4.6x）：SVE `ld1/st1` 整块拷贝，
-  正中 spconv 规则表 / 图消息路径。
+- **RowCopy 是主要收益**：S1/P1 2-8t 3.5-4.6x；A=4/A=16 块 1t 2.4x/3.6x
+  （36t 2.1x/5.8x，高线程含 aten 退化放大）。SVE `ld1/st1` 整块拷贝，正中
+  spconv 规则表 / 图消息路径。
 - **小 K `x[idx]`**（K≤1024，两进程真实路径）**1.31-2.03x**；K=4096 约 0.9x；
   K≥8192 的高线程受"每线程字节数太小"影响 0.6-0.9x（绝对时间仅几十 µs）。
 - **仍 <1x 的场景**：非连续 mask 0.84-0.98x（T8 只支持连续 mask）、
-  int8/uint8/complex 0.9-1.0x（64B 行放大，aten 同为标量）、S4 8/16t
+  int8/uint8 低/中线程 0.90-1.06x、complex 0.95-1.00x（64B 行放大，aten 同为
+  标量；高线程 complex 的 2.7x 是 aten 退化放大）、S4 8/16t
   0.87/0.76x 与小 K 高线程（小规模强扩展），均已在 degradation-analysis.md 定位。
 - **4B 大 K 随机 pure gather 的硬限制**：64B cache line 放大 + DRAM 延迟；
   同构建 A/B 实测 SVE 4B 与标量持平（8MB 1.85 vs 1.86 ms、256MB 7.46 vs
-  7.45 ms），**不是 SVE 指令 MLP 缺陷**（RESULTS §8.4；早期 0.75 vs 3.4 GB/s
+  7.45 ms），**不是 SVE 指令 MLP 缺陷**（RESULTS §3.7；早期 0.75 vs 3.4 GB/s
   探针归因已撤回）。小值域由 T4 桶化规避行放大；f64 8B 路径不受影响。
 - **线程数**：T11 起 `torch.set_num_threads(t)` 对扩展生效（入口同步 libomp
-  ICV）。旧 RESULTS §8.3/§10 的 2-36t 数据因两套 OpenMP 运行时失效，已作废。
+  ICV）。旧 RESULTS §3.6.1/§3.9 的 2-36t 数据因两套 OpenMP 运行时失效，已作废。
 - 共享 608 线程箱噪声大：608 列只作参考，**以 node 5 定点矩阵为准**。
 
 ## 已知限制 / 注意事项
@@ -131,7 +156,7 @@ HPC_INDEX_NO_OVERRIDE=1 python your_script.py   # import 不再改 aten::index.T
 - 覆盖是一次性的全局副作用：任何 import index_sve 的进程都会改掉全局
   `x[...]` 行为。如不希望全局生效，用 `HPC_INDEX_NO_OVERRIDE=1`。
 - 索引张量必须在 CPU（meta/CUDA 索引抛 aten 同文错误，不再段错误）；`out=`
-  变体（`aten::index.Tensor_out`）也已覆盖。详见 semantics.md / optimizations.md §11。
+  变体（`aten::index.Tensor_out`）也已覆盖。详见 semantics.md / optimizations.md §10。
 - **`torch.compile` 下默认不生效**：Inductor 会把 `aten::index` 内联成自己的
   kernel，绕过 dispatcher 覆盖（实测慢 2.6x）。设 `HPC_INDEX_COMPILE=1`（在
   `import index_sve` 前）可 opt-in：注册 fake、把 lowering 永久设为 fallback、

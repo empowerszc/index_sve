@@ -3,6 +3,20 @@
 `index_sve` 实现 `aten::index.Tensor` 语义的高性能 CPU 算子，三段流水线：
 **归一化 → 线性化 → gather**。本文档走读控制流与数据布局。
 
+> **一句话**：先把用户下标“翻译”成统一描述（normalize），再决定能不能省掉
+> 线性化，最后按 A/K 选 RowCopy/PureGather/标量把数据搬出去。
+>
+> **名词**：**B** = 索引前面还有多少行（广播出的行数）；**K** = 索引张量的
+> 元素个数；**A** = 每次索引对应 self 上连续元素的个数（`after` 维的积）；
+> **row_off/col_off** = 行偏移与行内列偏移；**after_contiguous** = 被索引维
+> 之后的所有维是否连续；**mask** = bool 索引；**linearize** = 多维下标 →
+> 一维元素偏移。
+>
+> **为什么有两遍**：linearize 要先把所有偏移算成数组，gather 才能并行地按
+> 偏移取数；小 K 时这两遍的固定成本大于收益，所以有 `gather_direct`（K<1024）
+> 和 `small_single_index`（单整数下标）直接跳过。T5/T11 的 1 线程优化本质是
+> 把“两遍”合成“一遍”。
+
 ## 1. 入口 `index_impl`（op.cpp）
 
 ```
@@ -160,10 +174,14 @@ N-D 整数下标用 bfactor 按 `broadcast_shape` 解码元素坐标（A7 修复
 - 除 `gather_direct` 外的所有内核走 `at::parallel_for(0, B*K, adaptive_grain(B*K))`，
   grain 由 `grain.h` 的自适应公式给出：`max(1, min(n, 65536, n/(nt*8)))`（T0）。
   小 K 也能占满所有线程，大 K 不因 grain 过大退化。
-- **`-fopenmp` 是硬依赖**：`at::parallel_for` 底层是 `at::parallel_for_impl`，
-  无 `_OPENMP` 时 `p-7 for loop in different threads` 实际是串行（历史根因：
-  曾导致 B==1 大 K 从预期加速变成 0.02-0.3x）。setup.py 已加 `-fopenmp`。
-- 线程数由调用方控制：`torch.set_num_threads()`。
+- **`-fopenmp` 是硬依赖**：`at::parallel_for` 在扩展里是头文件内联模板，无
+  `_OPENMP` 时循环实际串行（历史根因：曾导致 B==1 大 K 从预期加速变成
+  0.02-0.3x）。setup.py 已加 `-fopenmp`。
+- 线程数由调用方控制：`torch.set_num_threads()`。但扩展的 `parallel_for` 由
+  BiSheng **libomp** 执行，ATen 用 **libgomp**；T11 起 `index_impl` /
+  `index_out_impl` 入口调用 `sync_omp_threads()` 把 libomp team 同步为
+  `at::get_num_threads()`，否则用户设的线程数对扩展无效（旧线程数据失真的
+  根因，见 `degradation-analysis.md` §3.1）。
 
 ## 8. 关键调用图
 

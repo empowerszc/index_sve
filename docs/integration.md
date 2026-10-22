@@ -3,6 +3,24 @@
 本文档说明本算子如何接入 torch 运行时、环境要求，以及集成时要注意的全局
 副作用。
 
+> **TL;DR**：`import index_sve` 即默认接管所有 CPU `aten::index.Tensor`；
+> 不想被接管就设 `HPC_INDEX_NO_OVERRIDE=1`（必须在 import 前）。`torch.compile`
+> 默认绕过所有运行时内核，要 opt-in 设 `HPC_INDEX_COMPILE=1`。两个变量互斥。
+>
+> **名词**：**dispatch key** = 调度器选内核的键（CPU/CUDA/Autograd...）；
+> **dlopen / 扩展加载** = `import` C++ 扩展时执行静态注册；**boxed fallback**
+> = 用通用 `IValue` 参数包转调内核的慢路径；**ICV** = OpenMP 线程数配置，
+> libomp 与 libgomp 各一份（T11 已同步）。
+
+## 0. 30 秒检查清单
+
+1. 只需 `import index_sve`；确认日志里出现一次预期告警（见 §4）。
+2. 多线程程序不要只调 `torch.set_num_threads` 就假设扩展已跟随——T11 起
+   `index_impl` 会主动同步 `at::get_num_threads()`；直接用 `torch.ops.hpc_index.*`
+   时也会同步。
+3. 用 `torch.compile` 时先决定：要 compile 的图优化，还是要本算子覆盖
+   （二选一，见 §8 与 `torch-compile.md`）。
+
 ## 1. 默认覆盖 aten::index.Tensor（A6）
 
 `index_sve/index_sve/__init__.py`：
@@ -103,7 +121,7 @@ Warning: Overriding a previously registered kernel for the same operator and the
 调查，结论是**不实现 fallback**。记录理由供日后复读：
 
 - **慢场景**：历史 1D f32/i32 大 K（K=10M）纯 gather 在 ≥8 线程为 0.18-0.7x，
-  那是旧构建/共享箱数据；T11 修正矩阵（RESULTS §15）中 1-16t 为 1.06-1.16x，
+  那是旧构建/共享箱数据；T11 修正矩阵（RESULTS §2）中 1-16t 为 1.06-1.16x，
   32/36t 2.3-3.9x（部分来自 aten 在带宽饱和后变慢）。绝对带宽仍受 64B 行放大 +
   DRAM 延迟限制（§8.4）。P3 mask 高线程已由 T8 单遍融合修复（1.3-4.2x）。
   RowCopy/8B PureGather 是可靠收益（1t 2.4-4.5x，2-16t 3-4.6x）。`x[:,i]` 在
@@ -116,7 +134,7 @@ Warning: Overriding a previously registered kernel for the same operator and the
 - **C++ 内核内 scalar 回退也追不平**：同构建 A/B（真实内核、同一随机模式）
   SVE 4B gather 与标量循环持平（src 8MB 1.85 vs 1.86 ms、256MB 7.46 vs 7.45 ms，
   8/38t）。瓶颈是 64B cache line 放大（4B 元素 16x 行放大）+ DRAM 延迟，不是
-  SVE 指令 MLP；换标量或换指令都无效（kernels.md §2、RESULTS §8.4）。可行方向
+  SVE 指令 MLP；换标量或换指令都无效（kernels.md §2、RESULTS §3.7）。可行方向
   是减少行流量（T4 桶化/预取/行 gather）。
 - **维持现状**：override 仅注册 C++ op（每次调用 ~13µs 额外开销，S1 4ms 场景
   <0.5%），慢场景如实记录为硬件/算法边界，不做特殊回退。

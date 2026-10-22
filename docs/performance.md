@@ -1,9 +1,17 @@
 # 性能基准
 
-完整报告见 `benchmarks/RESULTS.md`（§1 原始矩阵、§2 全矩阵 6 轮中位数、§3 NT
-diff、§4 聚焦门禁、§5 结论、§6 备注、§7 集成、**§8 定点复测**、**§9 AI4S
-workload 优化轮 T0-T4**、**§10 T0-T5 全线程扫描 1-38t（2-36t 已作废）**、**§15 T11 修正矩阵**）。本文档是方法论与
-结论摘要；T5（1 线程回归修复）见 `optimizations.md` §9。
+完整报告见 `benchmarks/RESULTS.md`：**§2 T11 权威矩阵**（31 场景 × 7 线程
++ 小 K 两进程），§3 历史轮次（§3.1-§3.5 早期 1/608 线程与定点复测、§3.7 4B
+归因复核、§3.8 AI4S T0-T4、§3.9 T0-T5 全线程（已作废）、§3.10-§3.13
+compile/mask/小K/opt-in）。本文档是方法论与结论摘要；T5（1 线程回归修复）见
+`optimizations.md` §9。
+
+> **先读结论（T11）**：RowCopy（整行/整块取数）是主要收益，1t 2.4-4.5x；
+> 1D 8B 纯 gather 1.0-1.5x；4B 1D 纯 gather 1-16t 约 1.1x、高线程靠 aten
+> 退化才显得更高；小张量/小 K 不要开满线程。完整 31 场景矩阵见 RESULTS §2。
+>
+> **术语**：`1t/8t/36t` = 线程数；`ratio = aten 时间 / hpc 时间`，>1 为更快；
+> GB/s 是“索引 + 读 + 写”的有效字节带宽；S1/P1... 是模型形态代号（见 §3）。
 
 ## 1. 环境
 
@@ -21,7 +29,8 @@ workload 优化轮 T0-T4**、**§10 T0-T5 全线程扫描 1-38t（2-36t 已作�
   `bench_gate.py` 3 轮中位数（min/med/max）。
 - 带宽口径：bytes = idx 读 + 数据进/出（见 RESULTS.md 表头）。
 - **共享箱噪声处理**：608 线程数字受其他用户支配，单次 run 与中位数差可达
-  ~3x。**可靠数字 = 1 线程 + 定点核复测（§8）**。
+  ~3x。**可靠数字 = node 5 定点交替矩阵（RESULTS §2）+ 1 线程定点**；旧
+  §8.3/§10 的 2-36t 标签因双 OpenMP ICV 失效，勿再引用。
 
 ## 3. 模型场景结论（T11 矩阵，node 5，25 iters 中位数）
 
@@ -39,7 +48,7 @@ workload 优化轮 T0-T4**、**§10 T0-T5 全线程扫描 1-38t（2-36t 已作�
 
 T11 起 `torch.set_num_threads` 对扩展生效；旧 §8.3/§10 的 2-36t 数据因
 libomp/libgomp 双 ICV 作废。小 K 单下标 `x[idx]`（K≤1023）真实路径 1.31-2.03x，
-K=4096 约 0.9x，K≥8192 高线程 0.6-0.9x（RESULTS §15.4）。
+K=4096 约 0.9x，K≥8192 高线程 0.6-0.9x（RESULTS §2.3）。
 
 RowCopy 附加数据（node 4 全矩阵定点）：`x[:,idx]` B=256 K=100k **3.48x**、
 `x[idx,:]` C=32 E=1M **3.50x**（1 线程）。608 全核定点（node 4）S4 可达 5.6x
@@ -47,9 +56,9 @@ RowCopy 附加数据（node 4 全矩阵定点）：`x[:,idx]` B=256 K=100k **3.4
 
 ### 3.1 线程数扫描（1/2/4/8/16/32/36，node 5，T11 修正）
 
-> **旧表作废**：本节与 RESULTS §10 的 2-36t 数据曾受 libomp/libgomp 双 ICV 影响
+> **旧表作废**：本节与 RESULTS §3.9 的 2-36t 数据曾受 libomp/libgomp 双 ICV 影响
 > （扩展实际用 38 个 worker），相对值被高估。下表是 T11 修正后的矩阵（31 场景
-> 完整版见 RESULTS §15，逐 case 分析见 degradation-analysis.md）。
+> 完整版见 RESULTS §2，逐 case 分析见 degradation-analysis.md）。
 
 | 场景 | 1t | 2t | 4t | 8t | 16t | 32t | 36t |
 |---|---|---|---|---|---|---|---|
@@ -79,10 +88,10 @@ RowCopy 附加数据（node 4 全矩阵定点）：`x[:,idx]` B=256 K=100k **3.4
 - **8B PureGather（S4）**：608 线程 5.6x；1D f64 小 K 1.6-1.8x（B==1 K 分块 +
   `-fopenmp` 修复，Task 8 前 0.02-0.3x）。
 - **不收益**：1D f32/i32 大 K 随机 gather（64B 行放大 + DRAM 延迟；SVE 4B 与
-  标量持平，见 kernels.md §2 / RESULTS §8.4）；x[i,j] 随机二维 gather
+  标量持平，见 kernels.md §2 / RESULTS §3.7）；x[i,j] 随机二维 gather
   （0.72-0.85x）。P3 mask 已由 T8 单遍融合修复（2-8x）。
 
-### 4.1 AI4S workload 优化轮（T0-T4，见 RESULTS §9）
+### 4.1 AI4S workload 优化轮（T0-T4，见 RESULTS §3.8）
 
 真实 AI4S 模型端到端无提升甚至劣化后，按优化任务文档实现 T0-T4（自适应粒度、
 rowcopy 阈值 A>=4、M1 skip-linearize、T3 融合单遍、T4 小值域桶化），并用
@@ -105,7 +114,9 @@ rowcopy 阈值 A>=4、M1 skip-linearize、T3 融合单遍、T4 小值域桶化�
 linearize 两遍模型 + 单线程随机访存延迟 + 内层循环 at::Tensor 方法开销）。
 T5 用单遍标量（`gather_single_1d` / 1 线程短行 fused）+ fused/linearize 的 nb==1
 全长连续快路径修复，表中形态回到 ≥1.07x；T11 矩阵中这些形态 2t 也 ≥1.09x
-（旧 2-36t 标签不可信）。mask 1 线程 1.2-2.2x（T8），不做 fallback。完整数据见 `optimizations.md` §9 实测表。
+（旧 2-36t 标签不可信）。mask 在 T11 矩阵中：连续 P3 1 线程 2.23x、非连续
+0.84-0.98x（T8 只融合连续 mask），不做 fallback。完整数据见 `optimizations.md`
+§9 实测表与 RESULTS §2。
 
 ## 5. 与设计文档 §8 的对照
 

@@ -8,9 +8,20 @@ aten::index），受限于什么**。这是"回退到 aten"类问题（integrati
 > 读者：想理解本项目性能边界的人 / agent。结论摘要可直接看 §1 与 §4；§3 是
 > 逐场景深度分析。
 
+> **TL;DR**：慢场景分四类——(M1) 64B 行放大 + DRAM 延迟、(M2) linearize 两遍
+> 固定开销、(M3) 串行/低并行阶段、(M4) 没有 SVE 内核只能标量。**都不适合用
+> “回退 aten”修**：aten 同样受 M1 限制，而 Python 包装层每次调用还要 ~45µs，
+> 小算子会被这笔固定开销吃掉（§4）。正确做法是针对性内核优化（T5/T9/T11）
+> 或接受硬件上限。
+>
+> **名词**：**fallback（回退）** = 放弃本算子、转调 aten；**cache line** = CPU
+> 搬数据的最小单位（64B）；**MLP** = memory-level parallelism，能同时在途的
+> 访存数；**wrapper** = Python 层调用包装；**dispatch_scalar** = 本算子内部
+> 的标量兜底内核；**linearize** = 下标→一维偏移的换算/检查过程。
+
 ## 1. 总览：四个根本机制
 
-所有慢形态都可归因于以下三个机制之一（或叠加）：
+所有慢形态都可归因于以下四个机制之一（或叠加）：
 
 | 机制 | 本质 | 影响的形态 | 能否软件修复 |
 |---|---|---|---|
@@ -85,7 +96,7 @@ src 地址随机。内存系统按 64B cache line 搬运，一个 4B 元素只�
   8/38 线程下 src=8MB 为 **1.85 vs 1.86 ms**，src=256MB 为
   **7.46 vs 7.45 ms**——两者持平。换指令或回退标量都不能改善。
 - **早期独立探针的 0.75 vs 3.4 GB/s 不能端到端复现**（工作集/预取状态与真实
-  内核不同），已撤回作为归因依据；RESULTS §8.4 记录了复核。
+  内核不同），已撤回作为归因依据；RESULTS §3.7 记录了复核。
 - 8B 路径（f64/i64）更快，是因为同样条数的 cache line 携带 2x 有用字节
   （行放大减半），并非 8B gather 的 MLP 更高。
 
@@ -96,7 +107,7 @@ src 地址随机。内存系统按 64B cache line 搬运，一个 4B 元素只�
   改成"按行 gather"（A≥4 连续块，一次 line 拉多个有用字节）。回退 aten 或
   内核内标量均无收益（A/B 已持平），还受 §4.2 全局开销制约。
 
-**实测**（T11 修正矩阵，node 5，interleaved median；RESULTS §15）：
+**实测**（T11 修正矩阵，node 5，interleaved median；RESULTS §2）：
 
 | 线程 | 1t | 2t | 4t | 8t | 16t | 32t | 36t |
 |---|---|---|---|---|---|---|---|
@@ -257,7 +268,7 @@ integration.md §7 有完整调查；此处给出机制层面的简明理由：
 ## 6. 复现命令
 
 ```bash
-# 4B 大 K 大值域（SVE/标量 A/B 在 RESULTS §8.4；相对比值受共享箱噪声影响）
+# 4B 大 K 大值域（SVE/标量 A/B 在 RESULTS §3.7；相对比值受共享箱噪声影响）
 HPC_INDEX_NO_OVERRIDE=1 HPC_AFFINITY=<quiet_node> python benchmarks/bench_gate.py
 
 # 回归扫描（1/8/32 线程，pin node 5 静默节点）
@@ -269,5 +280,5 @@ python tests/verify_against_aten.py --mode both
 ```
 
 > 共享箱噪声：相对速度跨轮波动可达 3x（performance.md §2）。1 线程数字最稳；
-> 高线程以多轮中位数为准；硬件限制以同构建 A/B 为准（RESULTS §8.4；
+> 高线程以多轮中位数为准；硬件限制以同构建 A/B 为准（RESULTS §3.7；
 > 旧独立探针 §8.2 已撤回归因）。

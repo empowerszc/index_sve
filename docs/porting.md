@@ -3,6 +3,14 @@
 本算子面向鲲鹏 920F（Kunpeng 920F, aarch64, SVE2, VL=512-bit）编写。本文档列出移植到
 其他平台/配置时的检查点。
 
+> **先理解的四个词**：**SVE** 是 ARM 的可伸缩向量扩展；**VL** 是向量长度
+> （512-bit = 16×f32）；**gather** 是按地址向量取元素；**RowCopy** 是一次搬
+> 一段连续元素。移植的核心就是确认目标机“有 SVE、VL 多大、随机 gather 快不快”。
+>
+> **移植三步**：改编译参数 → 跑 `tests/` + `verify_against_aten.py`（正确性）
+> → 用 `benchmarks/bench_threads.py` 在**空载节点**重测（性能）。不要直接复用
+> 鲲鹏上的绝对时间。
+
 ## 1. 其他 VL（如 128/256/1024）
 
 - 编译参数 `-msve-vector-bits=512` 改为目标 VL；所有内核已用 `svcntd()/svcntw()`
@@ -56,15 +64,24 @@
 4. `tests/test_errors.py`（逐字错误格式）；
 5. `tests/test_sve.py`（SVE 分支门控 + 值正确性 + NT 路径）；
 6. `tests/test_model.py`（模型场景）；
-7. 两进程 true-aten 对拍（semantics.md §6，含 K>=1024 用例）。
+7. `tests/test_index_out.py`（`out=` 变体）；
+8. `tests/test_mask_fused.py`（mask 单遍）；
+9. `tests/test_smallk.py`（小 K 精简路径）；
+10. `tests/test_compile_optin.py`（`HPC_INDEX_COMPILE=1`）；
+11. 两进程 true-aten 对拍（semantics.md §6，含 K>=1024 与非连续 stride 用例）。
 
 全部通过 = 102/102（覆盖激活态）。
 
 ## 6. 已知可优化项（后续工作）
 
-- ~~**P3 mask 多线程**~~：T8 已用单遍 compaction 修复（RESULTS §12）。
+- ~~**P3 mask 多线程**~~：T8 已用单遍 compaction 修复（RESULTS §3.11）。
 - **4B 大 K 随机 gather**：受 64B 行放大/DRAM 延迟限制（SVE 与标量持平）；
   可试预取加深/软件流水，或按 cache line 分桶排序（kernels.md §2）。
+- **dtype 白名单 gap**：barebones `uint16/uint32/uint64`、float8 系列、complex32
+  目前抛 `NotImplementedError`（ATen 支持）；需要扩展 dispatch 宏并补回归，
+  见 semantics.md §4。
+- **小规模并行阈值**：每线程工作量 <64KB 时高线程为负扩展（如 2D K=8192
+  0.46-0.83x）；可按“每线程 ≥64KB”限制有效线程数，见 degradation §6.3。
 - **M1 值域桶化（T2 阶段 2，未做）**：M1 大块路径当前是 skip-linearize 直接
   rowcopy，未对下标做值域分析（keys[order] 等若值域小可再桶化）。文档见
   优化任务建议 T2 阶段 2；`gather_rowcopy_raw` 已为后续接入留好入口。

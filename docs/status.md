@@ -5,6 +5,16 @@
 
 > 更新规则：每轮实质变更后更新本文（测试数、commit 号、性能结论、路由）。
 
+> **30 秒现状**：T11 构建完成，10 套件 102/102、真 aten 对拍 44/44；31 场景
+> × 7 线程矩阵已重测。主要收益是 RowCopy/整块取数（1t 2.4-4.5x）；1D 8B
+> gather 1.0-1.5x；4B 随机 gather 约 1.1x；仍 <1x 的是非连续 mask、int8/uint8
+> 和“每线程工作量过小”的高线程单元。
+>
+> **本文怎么用**：这是“快照”，不追求完整推导；数字以 `benchmarks/RESULTS.md`
+> §2 为准，原因分析看 `degradation-analysis.md`，路由看 §3 与
+> `architecture.md`。发现文档间冲突时，优先级：RESULTS §2 > degradation >
+> performance > 本文。
+
 ## 1. 项目一句话
 
 为鲲鹏 920F（aarch64, SVE2 VL=512）实现的 `aten::index.Tensor` CPU 语义替代
@@ -73,11 +83,11 @@ A==1 || (连续 && A>=4 && f32/f64) → linearize + gather_index（SVE/桶化/sc
 | 1D pure f32 K=2M | 0.75x | **1.07x**（K=5M 1.24x） |
 | x[i,j] 多索引 | 0.66x | **1.19x** |
 | `x[:,i]` | 0.18x | **2.02x** |
-| mask | ~1.0x | **1.2-2.2x**（T8 单遍融合） |
+| mask（P3 连续） | ~1.0x | **2.23x**（T8 单遍融合；非连续 0.84-0.98x） |
 | 小 K 单下标 `K≤1024` | 0.5-0.7x | **1.31-2.03x**（T9/T11，真实 `x[idx]`） |
 | 2B/1B/complex | 0.5-0.97x | **0.95-1.53x**（1t；高线程至 2.4x） |
 
-**全线程矩阵（T11 修正，RESULTS §15，1/2/4/8/16/32/36，node 5）**：31 个
+**全线程矩阵（T11 修正，RESULTS §2，1/2/4/8/16/32/36，node 5）**：31 个
 场景里绝大多数 ≥1.0x，低线程最强（RowCopy/1D pure 在 2-8t 为 1.3-4.5x；
 单节点内存带宽用少量核即饱和）。仍 <1x 的为：int8/uint8 0.90-0.99x、
 complex 0.95-0.97x、非连续 mask 0.84-0.98x、S4 8/16t 0.87/0.76x、
@@ -85,13 +95,13 @@ complex 0.95-0.97x、非连续 mask 0.84-0.98x、S4 8/16t 0.87/0.76x、
 range2048 16t 0.87x（单点抖动/小规模强扩展，均非持续趋势）。逐 case
 微架构分析见 `degradation-analysis.md`。
 
-> 旧 RESULTS §8.3/§10 的 2-36t 数据因 libomp/libgomp 两套 ICV 失效（扩展实际
+> 旧 RESULTS §3.6.1/§3.9 的 2-36t 数据因 libomp/libgomp 两套 ICV 失效（扩展实际
 > 用 38 个 worker），已标注作废；不要再用其中 "≥1.06x" 的结论。
 
 **访存上限（不可修，非 bug）**：4B（f32/i32）大 K 随机 pure gather 受 64B
 cache line 放大（4B 只用 4B/行）+ DRAM 延迟限制。同构建 A/B 实测 SVE 4B 与标量
 持平（8MB 1.85 vs 1.86 ms、256MB 7.46 vs 7.45 ms，8/38t），换指令/回退标量无效，
-**不是 SVE MLP 缺陷**（RESULTS §8.4；早期 0.75 vs 3.4 GB/s 探针归因已撤回）。
+**不是 SVE MLP 缺陷**（RESULTS §3.7；早期 0.75 vs 3.4 GB/s 探针归因已撤回）。
 T4 桶化在小值域规避行放大，大值域靠预取/行 gather 等待未来优化。不要据此
 推断"所有场景都 ≥1x"：`x[:,i]`/1B/complex 仍有结构性差距（见
 `degradation-analysis.md`）。
@@ -112,7 +122,7 @@ T4 桶化在小值域规避行放大，大值域靠预取/行 gather 等待未�
   细节与限制见 `torch-compile.md` §6。
 - 慢形态与"为什么不 fallback"的深度分析见 `fallback-analysis.md`：核心结论是
   4B（f32/i32）大 K 大值域 pure gather 受 64B cache line 放大 + DRAM 延迟限制
-  （SVE 4B 与标量持平，非指令 MLP；RESULTS §8.4）；A<4/非连续/2B-1B 多数与 aten
+  （SVE 4B 与标量持平，非指令 MLP；RESULTS §3.7）；A<4/非连续/2B-1B 多数与 aten
   持平或略低（0.9-1.0x），`x[:,i]` 在 T11 前 0.4-0.7x、A==1 紧凑循环后 1.1-2.0x；
 mask 经 T8 后 1.3-4.2x；
   fallback 的 Python wrapper 开销 ~45µs/调用对以 RowCopy 小张量为收益主体的
@@ -142,7 +152,7 @@ for t in tests/test_smoke.py tests/test_normalize.py tests/test_correctness.py \
 # true-aten 值级对拍（正确性，非性能）
 python tests/verify_against_aten.py --mode both
 
-# 全线程矩阵（RESULTS §15，pin node 5 静默节点，25 iters interleaved）
+# 全线程矩阵（RESULTS §2，pin node 5 静默节点，25 iters interleaved）
 HPC_INDEX_NO_OVERRIDE=1 HPC_AFFINITY=190-227 HPC_THREADS=1,2,4,8,16,32,36 \
   python benchmarks/bench_threads.py
 

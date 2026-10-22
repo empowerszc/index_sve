@@ -5,6 +5,13 @@ CPU 张量的高级索引调用（`x[idx]`、`x[:, i]`、`x[i, j]`、bool mask�
 下标）都自动改走本算子，无需修改任何调用点。本文档讲清楚这背后的 PyTorch
 **Dispatcher（调度器）**机制、边界与验证方法。
 
+> **读前须知**：本文假设你知道“算子（operator）”和“内核（kernel）”的区别。
+> PyTorch 里一个算子可以有多份内核，Dispatcher 根据 **dispatch key**（CPU、
+> CUDA、Autograd、Conjugate...）选一份执行。**schema** 是算子的参数/返回值
+> 声明；**boxed** 调用是把参数打包成 `IValue` 的通用入口（便于跨语言/回退）；
+> **autograd key** 在普通 CPU key 之前，负责记录反向图。理解这四点就能读懂
+> 全文。
+
 ## 1. 一句话原理
 
 `aten::index.Tensor` 在 dispatcher 里有一个按 **dispatch key**（CPU、CUDA、

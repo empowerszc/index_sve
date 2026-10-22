@@ -26,6 +26,24 @@
 | [reference/aten_index_primer.md](reference/aten_index_primer.md) | **通俗导读**：`x[idx]` 从 Python 到 C++ 的完整思维模型（两层架构、Tensor 数据模型、视图/拷贝、六站旅程、慢的三个根因） | 懂 C++ 但不熟 PyTorch 内部机制的读者 |
 | [reference/aten_index_aarch64_analysis.md](reference/aten_index_aarch64_analysis.md) | **深度分析**：基于 PyTorch 源码行号的 `aten::index` 全链路、性能画像、通用/SVE512/SME 优化清单、spconv 与 AI4S 实战案例、术语表 | 需要查证源码细节、规划移植/优化的读者 |
 
+## 推荐阅读路径
+
+- **第一次接触，只想跑起来**：仓库 `README.md` 的“术语与结果口径”+“快速开始”
+  → [semantics.md](semantics.md) §1-§4（行为边界）→ [status.md](status.md) §3-§4。
+- **评估性能/做选型**：[performance.md](performance.md) §3 → `benchmarks/RESULTS.md`
+  §2 → [degradation-analysis.md](degradation-analysis.md)（先看 §0 结论与 §5 逐案）。
+- **要改内核/调优**：[kernels.md](kernels.md) → [architecture.md](architecture.md)
+  → [optimizations.md](optimizations.md) §4 路由 → [degradation-analysis.md](degradation-analysis.md)
+  §7 微架构证据 → [fallback-analysis.md](fallback-analysis.md)。
+- **集成 / 排障 / 与 compile 共存**：[integration.md](integration.md)
+  → [override-mechanism.md](override-mechanism.md) → [torch-compile.md](torch-compile.md)。
+- **移植到别的 CPU/torch**：[porting.md](porting.md) → [kernels.md](kernels.md) §1-§3。
+
+> **数字口径**：性能结论以 `benchmarks/RESULTS.md` §2（31 场景 × 1/2/4/8/16/32/36t）
+> 与 [degradation-analysis.md](degradation-analysis.md) 为准。§2 之前任何标着
+> 2-36t 的旧数据都受“libomp/libgomp 双 ICV”影响（详见 degradation §3.1），
+> 只保留 1t/38t 或作为历史记录。
+
 ## 速览
 
 ```
@@ -63,5 +81,5 @@ aten::index.Tensor ──► index_impl(self, indices)
 
 - `status.md` 每轮实质变更后更新（测试数、commit、性能结论、路由）。
 - 归因类结论（尤其 4B gather）以**同构建 A/B** 为准；旧的独立探针数字只作历史
-  背景，不得再作为因果依据（见 `fallback-analysis.md` §3.1、RESULTS §8.4）。
+  背景，不得再作为因果依据（见 `fallback-analysis.md` §3.1、RESULTS §3.7）。
 - `reference/` 为背景资料，不承诺与当前实现逐行同步；实现细节以其他文档/源码为准。

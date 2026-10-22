@@ -4,6 +4,30 @@
 `-msve-vector-bits=512` 编译（VL=512-bit，`svcntb()==64`），运行时用
 `sve_512_ok()` 门控。
 
+> **一句话**：内核选择只由三个量决定——**A**（每次访问连续元素数）、**K**
+> （索引元素数）、**B**（索引广播出的前导行数）。A 大走 RowCopy，A==1 走
+> PureGather，K 小走 `gather_direct`/`small_single_index`。
+>
+> **名词**：**SVE** = ARM 可伸缩向量扩展；**VL** = 向量长度（512-bit）；
+> **gather** = 按地址向量取元素（随机）；**rowcopy** = 用 `ld1/st1` 搬连续
+> 一段；**prefetch（预取）** = 提前把 cache line 拉进缓存掩盖延迟；**NT**
+> = non-temporal，绕过缓存直接写内存（适合只写一次的大块）；**bucket（桶化）**
+> = 值域小（≤2048）时先建“值→行”查表，把随机 gather 变成顺序查表；
+> **linearize** = 多维下标换一维偏移。
+
+### 内核选择速查
+
+| 条件 | 走哪个 | 为什么 |
+|---|---|---|
+| K<1024 且单整数下标/简单 1D | `gather_direct`（A==1 紧凑循环） | 省掉 linearize 的分配与一遍遍历 |
+| A>=4 且 after 维连续 | `gather_rowcopy_raw` / RowCopy | 连续块摊薄 64B 行放大 |
+| 2<=A<4 | `gather_fused`（T11 1t）/ 标量 | 块太短，SVE 收益被开销吃掉 |
+| A==1、8B 元素 | SVE `svld1_gather_u64index` | 8 个元素一条指令，带宽受限 |
+| A==1、4B 元素 | SVE `svld1_gather_u32index` | 4B 只用 1/16 行，受行放大限制 |
+| 值域 ≤2048 | `bucket_gather_pure(_raw)` | 查表替代随机地址 |
+| 2B/1B/complex/非连续 after | 标量单遍（T11 起） | 无 SVE 内核，避免两遍 |
+| bool mask | `gather_mask` 单遍压实 | 跳过 `nonzero()` 物化 |
+
 ## 1. 8B 元素 gather（f64/i64）
 
 ```cpp
@@ -20,7 +44,7 @@ pure_gather_sve_8b_f64 / pure_gather_sve_8b_s64
 **性能**：8B gather 是 1D/大随机 gather 的主要收益来源。T11 定点复测（node 5，
 1D f64 K=2M）hpc 绝对带宽 1/2/4/8/16/32t = 0.61/1.08/2.09/3.91/6.87/6.80 GB/s，
 相对 aten 1.03-1.26x；K=10M 时 32/36t 为 9.1-9.2 GB/s（aten 4.5-4.8 GB/s）。旧文档"4-38 线程稳定 5.0 GB/s"的线程标签不可信，已由
-RESULTS §15 的修正矩阵取代（`torch.set_num_threads` 对扩展生效问题见 §7）。
+RESULTS §2 的修正矩阵取代（`torch.set_num_threads` 对扩展生效问题见 §7）。
 
 ## 2. 4B 元素 gather（f32/i32）
 
@@ -43,7 +67,7 @@ pure_gather_sve_4b_f32 / pure_gather_sve_4b_s32
 | 标量循环 | 1.86 ms | 7.45 ms |
 
 两者持平：换标量、改指令都无效。早期独立探针（38t 0.75 vs 3.4 GB/s）没有在
-端到端复现，已撤回归因（RESULTS §8.4）。8B 路径更快是因为同样条数的 line 携带
+端到端复现，已撤回归因（RESULTS §3.7）。8B 路径更快是因为同样条数的 line 携带
 2x 有用字节（8B 行放大 8x vs 4B 16x），而非指令 MLP 差异。因此 4B 大 K 大值域
 的可行方向是减少行流量（T4 小值域桶化、预取、行 gather），而不是换指令；
 f64 8B 路径不受影响。
@@ -187,7 +211,7 @@ linearize 同样预提取 + nb==1 快路径
 - 线程数：T11 起内核入口调用 `omp_set_num_threads(at::get_num_threads())`，
   `torch.set_num_threads(t)` 对扩展生效。扩展链接 BiSheng libomp、ATen 链接
   libgomp，二者 ICV 独立；此前只设 torch 的线程数时，扩展实际用 libomp 默认
-  team（本机 affinity 38），导致 2-36t 的旧数据标签失效（RESULTS §10/§15）。
+  team（本机 affinity 38），导致 2-36t 的旧数据标签失效（RESULTS §3.6.1/§3.9）。
 - 鲲鹏 920F：608 核 / 32 NUMA，单节点 38 核。共享箱上 608 线程数字噪声大，
   **以定点核复测为准**（performance.md §8）。
 

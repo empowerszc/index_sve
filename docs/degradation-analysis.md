@@ -8,7 +8,32 @@
 
 适用构建：T11（`gather_direct` 去掉逐元素 `at::Tensor` 调用、2B/1B/complex
 改单遍标量、非连续下标 stride 修复、A==1 紧凑循环、OpenMP 线程数同步）。
-原始矩阵见 `benchmarks/RESULTS.md` §15；复现脚本见文末。
+原始矩阵见 `benchmarks/RESULTS.md` §2；复现脚本见文末。
+
+## TL;DR（30 秒版）
+
+- **T11 之后没有系统性退化**：31 个场景里大多数 ≥1.0x；最强的是 RowCopy
+  （S1/P1 1t 4.4x，A=4/16 块 1t 2.4-3.6x）。
+- **已修**：`x[:,i]` 从 0.18x→2.0x；1 线程 A>=4 从 fused 改回 raw rowcopy；
+  2B/1B/complex 单遍；非连续下标 stride 正确性。
+- **仍 <1x**：非连续 mask（0.84-0.98x）、complex（1-16t 0.95-1.00x）、
+  int8/uint8 基本持平（1-16t 0.90-1.06x），以及“每线程工作量太小”的 S4/小 K
+  高线程（0.46-0.96x）。它们都有明确的结构性原因，不是随机回归。
+- **4B 大 K 随机 gather 的上限**是 64B 行放大 + DRAM 延迟（SVE 与标量持平），
+  换指令没用；小值域靠桶化规避。
+
+### 本文表格怎么读
+
+- 所有“倍率”都是 **aten 时间 / hpc 时间**：`1.26x` = 快 26%，`0.87x` = 慢 13%。
+- `1t/2t/.../36t` 是**线程数**，不是 CPU 型号；本机 pin 在 node 5 的 38 核上。
+- **不要只看最大倍率**：32/36t 时 aten 自己可能变慢，倍率会被放大；本文同时
+  给出 hpc 的绝对 GB/s 和“强扩展效率”（加速比 ÷ 线程数）来拆开这两件事。
+- 表中“S1/P1/P2/P3/S4”是 5 个模型形态的代号，具体形状见 §3.2 或
+  `benchmarks/bench_threads.py`。
+
+**给使用者的建议**：模型里以“整行/整块取数”为主（spconv、图消息、embedding
+查表）时收益最大；纯 1D 随机单元素 gather 只略快于 aten，4B 大 K 大值域不要
+期待加速；小张量（每线程 <64-256KB）不要开满线程。
 
 ---
 
@@ -41,6 +66,12 @@
 | **L1d / L2 / LLC** | 一级数据缓存 / 二级缓存 / 末级缓存 | L1 命中 ~4 周期，L2 ~12-20，DRAM ~200-400；决定 gather 的成本 |
 | **DRAM 延迟 / 带宽** | 内存往返时间 / 每秒可搬字节 | 随机 gather 通常先被延迟卡住，线程多了才被带宽卡住 |
 | **MLP（memory-level parallelism）** | 同时处于飞行中的内存请求数 | MLP 高才能用并发掩盖延迟；但本机 4B gather 的瓶颈是行放大，不是 MLP |
+| **RowCopy（行拷贝）** | 一次访问搬一整段连续元素（A>=4），用 `ld1/st1` | 一个 cache line 里的有用字节多，随机性被“整行”摊薄，是最快的形态 |
+| **PureGather（纯 gather）** | 一次只取一个元素（A==1），地址随机 | 每个元素都可能拉一条 64B line，受行放大限制 |
+| **A / B / K** | A=每次访问的连续元素数；B=索引广播的前导行数；K=索引张量的元素数 | 三者决定走 RowCopy（A 大）、纯 gather（A=1）还是小 K 快路径（K<1024） |
+| **linearize（线性化）** | 把多维下标换算成一维元素偏移并做检查 | 一遍额外遍历；T2/T5/T9/T11 的优化大多是“跳过或合并这一遍” |
+| **ICV** | OpenMP 的线程数配置副本；libomp/libgomp 各一份 | 这是旧线程数据失真的根源，见 §3.1 |
+| **加速比 / 强扩展效率** | 加速比 = 1t 时间 / Nt 时间；效率 = 加速比 ÷ N | 效率 <100% 说明并行有开销或带宽饱和 |
 | **NUMA** | 非统一内存访问；每个节点有自己的内存 | 跨节点访问延迟/带宽更差；本文固定在一个节点（38 核） |
 | **SVE / SVE2 / VL** | ARM 可伸缩向量扩展 / 向量长度 | 本机 VL=512-bit：16×f32 或 8×f64 个 lane |
 | **gather** | 按向量下标收集元素 | `svld1_gather_u32index_f32` 等；硬件逐 lane 发请求 |
@@ -84,11 +115,13 @@
 PyTorch 用 **libgomp**，扩展用 BiSheng **libomp**，两者各自维护线程数 ICV：
 
 - `torch.set_num_threads(t)` → 只改 libgomp 的 ICV（影响 ATen 自己的算子）。
-- 扩展里的 `#pragma omp parallel` 由 libomp 执行 → 默认 team = 进程可见 CPU 数
-  （本机 affinity 到 38 核时就是 38）。
+- 扩展里调用的 `at::parallel_for` 是**头文件内联模板**，其 OpenMP 实现随扩展
+  一起编译，因此由 libomp 执行 → 默认 team = 进程可见 CPU 数（本机 affinity
+  到 38 核时就是 38）。注意扩展源码里没有手写 `#pragma omp`，坑正来自这个
+  内联模板。
 
 因此在 T11 之前，标着 "2t/4t/8t..." 的 HPC 行实际都用了 38 个 worker，而
-aten 行确实只用 t 个 → **相对加速比被严重高估**。这也是旧 RESULTS §8.3/§10
+aten 行确实只用 t 个 → **相对加速比被严重高估**。这也是旧 RESULTS §3.6.1/§3.9
 "每个线程都 ≥1.06x" 的来源。
 
 修正：
@@ -421,6 +454,6 @@ perf stat -e cycles,instructions,cache-misses,LLC-load-misses,dTLB-load-misses \
 
 - 归因/回退决策：`fallback-analysis.md`
 - 内核实现与门槛：`kernels.md`
-- 原始矩阵与历史数据：`benchmarks/RESULTS.md` §15（§8.3/§10 已标注作废）
+- 原始矩阵与历史数据：`benchmarks/RESULTS.md` §2（§8.3/§10 已标注作废）
 - 集成/覆盖机制：`integration.md`、`override-mechanism.md`
 - 语义与测试：`semantics.md`
