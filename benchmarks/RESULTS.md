@@ -418,3 +418,25 @@ P3（N=200k C=16 d=0.3 nnz≈60k，pin node 5，interleaved median，
 波动大，hpc 0.66-0.77ms 稳定。
 
 `index.Tensor_out` + mask 未接融合路径（out 变体罕见），仍走原 nonzero 路径。
+
+## 13. T9 小 K 精简路径 + C++ 覆盖（真实 `x[idx]`）
+
+两处改动：入口新增 `small_single_index`（单整数下标、末维 K<=4096、连续、CPU，
+绕过 normalize）；aten 覆盖从 Python `torch.library.impl` 移到 C++
+`TORCH_LIBRARY_IMPL(aten, CPU, m)`，去掉每次调用的解释器往返。
+
+真实 `x[idx]`（pin node 5，两进程交替 3 次取中位；shared 箱 aten 绝对值波动大）：
+
+| 形态 | 1t/8t |
+|---|---|
+| 1D A=1 K=0 / 1 / 64 | 2.3x / 2.2x / 2.2x |
+| 1D A=1 K=512 / 1023 / 1024 | 2.0x / 1.8x / 1.6x |
+| 2D A=16 K=128 / 1023 / 1024 | 2.4x / 2.4-2.7x / 1.4x |
+
+`K=1024` 断崖修复（8t，源 1M，随机大值域）：0.37x→1.64x；`K=2048`
+0.47x→1.38x；`K=4096` 0.55x→0.99x。`K=8192..16384` 仍走原路径（0.9-1.2x），
+`K=65536` 3x。C++ 注册自身：真实 `x[idx]` K=0 27.5→11.9us、K=1023
+36.9→24.4us（同脚本前后对比）。
+
+注意：扩展加载时 dispatcher 会打印一次 "Overriding a previously registered
+kernel..."（预期）；`HPC_INDEX_NO_OVERRIDE=1` 须在 import 前设置才能关闭覆盖。

@@ -29,7 +29,7 @@
 - 本实现基于 torch 2.10.0+cpu 的公开 API：
   - `at::expand_outplace`（ATen/ExpandUtils.h）—— 大版本更替可能移名；
   - dispatcher typed call `findSchemaOrThrow("hpc_index::index","").typed<...>`；
-  - `torch.library.impl("aten::index.Tensor","CPU", ...)` 覆盖签名（2.10 的
+  - `TORCH_LIBRARY_IMPL(aten, CPU, m)` 覆盖签名（注意 C++ 签名须与 schema 一致；2.10 的
     signature 为 `qualname, type, func`）。
 - **`Tensor.index()` 陷阱**：2.10 起 `Tensor.index(positions, dims)` 是
   first-class-dims API，不再等价 `aten::index`。测试/文档一律用 `x[...]`，勿
@@ -58,7 +58,7 @@
 6. `tests/test_model.py`（模型场景）；
 7. 两进程 true-aten 对拍（semantics.md §6，含 K>=1024 用例）。
 
-全部通过 = 92/92（覆盖激活态）。
+全部通过 = 99/99（覆盖激活态）。
 
 ## 6. 已知可优化项（后续工作）
 

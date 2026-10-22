@@ -15,17 +15,23 @@ if os.environ.get("HPC_INDEX_NO_OVERRIDE", "0") != "1":
     _install_aten()                 # 直接覆盖 aten::index.Tensor（CPU）
 ```
 
-`register_aten.install()`：
+覆盖实际由 C++ 扩展在 dlopen 时完成（`op.cpp`）：
 
-```python
-torch.library.impl("aten::index.Tensor", "CPU", torch.ops.hpc_index.index)
-torch.library.impl("aten::index.Tensor_out", "CPU", torch.ops.hpc_index.index_out)
+```cpp
+TORCH_LIBRARY_IMPL(aten, CPU, m) {
+  const char* e = getenv("HPC_INDEX_NO_OVERRIDE");
+  if (e == nullptr || std::string(e) != "1") {
+    m.impl("index.Tensor", &index_impl);
+    m.impl("index.Tensor_out", &index_out_aten);
+  }
+}
 ```
 
-效果：**`import index_sve` 之后，进程中所有 CPU 张量的高级索引
-（`x[idx]`、`x[:, i]`、`x[i, j]`、bool mask、N-D 下标）都改走本算子**，无需改
-调用点。已验证：
-- dispatcher dump 证实 CPU key 从 `RegisterCPU_1.cpp` 移至 Python 覆盖；
+`register_aten.install()` 现为空实现（兼容旧调用）。直接 C++ 注册避免了 Python
+覆盖层每调用的解释器往返（小 K 实测 ~10-20us）。效果：**`import index_sve`
+之后，进程中所有 CPU 张量的高级索引（`x[idx]`、`x[:, i]`、`x[i, j]`、bool
+mask、N-D 下标）都改走本算子**，无需改调用点。已验证：
+- dispatcher dump 证实 CPU key 指向扩展注册的 C++ kernel；
 - 覆盖后 autograd backward 正常（`IndexBackward` 独立注册，不受 CPU kernel 影响）。
 
 ## 2. 环境变量
@@ -56,30 +62,27 @@ LD_LIBRARY_PATH=<torch_lib>:<bisheng_lib>:$LD_LIBRARY_PATH
 缺 `<bisheng_lib>` 时：`import index_sve` 报
 `libomp.so: cannot open shared object file`（dlopen 失败）。
 
-## 4. 一次性 UserWarning（正常，勿压制）
+## 4. 一次性告警（正常，勿压制）
 
-首次 import 会从 `torch.library.impl` 触发：
+首次 import（dlopen `_hpc_index`）时 dispatcher 打印一次：
 
 ```
-UserWarning: Overriding a previously registered kernel for the same operator
-and the same dispatch key
+Warning: Overriding a previously registered kernel for the same operator and the same dispatch key
   operator: aten::index.Tensor(Tensor self, Tensor?[] indices) -> Tensor
   dispatch key: CPU
+  previous kernel: registered at .../BatchRulesScatterOps.cpp
+       new kernel: registered at index_sve/op.cpp
 ```
 
-**预期且无害**，故意不压制（用户应知晓全局覆盖已生效）。`_hpc_index` 内的
-`torch.ops.hpc_index` 注册没有此类警告。
+**预期且无害**，故意不压制（用户应知晓全局覆盖已生效）。
 
 ## 5. 全局副作用与限制
 
 - **覆盖是进程级全局的**：任何 import index_sve 的进程，其 `x[...]` 全部改道。
   这是设计目标（零改动接入），但部署时需明确告知所有调用方。
-- **单覆盖限制**：torch 2.10 不允许同进程第二个 Python CPU kernel 注册到
-  `aten::index.Tensor`（`RuntimeError: already a kernel registered from python`）。
-  这是默认覆盖设计的固有约束；需要第二个实现请改注册名或用
-  `HPC_INDEX_NO_OVERRIDE` 场景。
-- `importlib.reload(index_sve)` 会再次调用 `install()` 触发同样错误（固有，
-  正常流程不应 reload）。
+- **重复注册**：C++ 同 key 重复注册会替换旧 kernel 并再打印一次告警；
+  `importlib.reload(index_sve)` 不会破坏覆盖。
+- `HPC_INDEX_NO_OVERRIDE=1` 在 dlopen 前设置时，C++ 注册整体跳过。
 - `aten::index.Tensor_out` 也已覆盖（T6）：`out=` 调用同样走本算子；
   QuantizedCPU 等其它 dispatch key 不受影响。
 

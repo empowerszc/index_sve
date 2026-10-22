@@ -36,7 +36,7 @@ index_sve/
 ├── setup.py              # BiSheng clang19, -march=armv8-a+sve2 -msve-vector-bits=512 -O3 -fopenmp
 ├── index_sve/
 │   ├── __init__.py       # import 时安装 aten::index.Tensor / .Tensor_out CPU 覆盖（HPC_INDEX_NO_OVERRIDE=1 可跳过）
-│   ├── register_aten.py  # torch.library.impl("aten::index.Tensor{,_out}","CPU", ...)
+│   ├── register_aten.py  # 兼容层；实际覆盖由 op.cpp 的 TORCH_LIBRARY_IMPL(aten,CPU) 完成
 │   ├── op.cpp            # index_impl 入口 + pybind（debug_spec/linearize_spec/idx_dtype_choice）
 │   ├── normalize.{h,cpp} # normalize_index：mask/broadcast/transpose_to_front，对齐 ATen make_info
 │   ├── linearize.{h,cpp} # 线性化 + 越界检查，int32 保持（直接写 int32）
@@ -152,8 +152,9 @@ for t in tests/test_smoke.py tests/test_normalize.py tests/test_correctness.py \
          tests/test_errors.py tests/test_sve.py tests/test_model.py; do python $t; done
 ```
 
-全部通过 = 92/92（覆盖激活态；test_correctness 25、test_errors 6、test_model 9、
-test_normalize 9、test_smoke 2、test_sve 25、test_index_out 7、test_mask_fused 9）。
+全部通过 = 99/99（覆盖激活态；test_correctness 25、test_errors 6、test_model 9、
+test_normalize 9、test_smoke 2、test_sve 25、test_index_out 7、test_mask_fused 9、
+test_smallk 7）。
 覆盖下测试是自洽的（`x[i]` 也走
 本算子），值级真对拍用两进程法（无覆盖进程生成 true-aten 参考，覆盖进程比对）：
 

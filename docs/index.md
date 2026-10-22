@@ -23,7 +23,7 @@
 ```
 import index_sve
         │
-        ▼  (torch.library.impl 覆盖 CPU 键)
+        ▼  (TORCH_LIBRARY_IMPL(aten, CPU) 覆盖 CPU 键)
 aten::index.Tensor ──► index_impl(self, indices)
         │                 │
         │                 ├─ normalize_index()     对齐 ATen make_info

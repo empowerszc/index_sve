@@ -2,9 +2,11 @@
 #include "normalize.h"
 #include "linearize.h"
 #include "gather.h"
+#include "grain.h"
 #include <ATen/MemoryOverlap.h>
 #include <c10/util/Exception.h>
 #include <atomic>
+#include <cstring>
 #include <cstdlib>
 
 namespace {
@@ -114,16 +116,77 @@ bool mask_fast_path(const at::Tensor& self,
   return true;
 }
 
+std::atomic<uint64_t> g_small_single{0};
+
+// 单整数下标 + 末维 K<=4096：直接按 idx 平坦顺序取行，绕过 normalize 的向量分配/
+// transpose 分析，也避开 gather_direct 内层对 at::Tensor 方法的重复访问。
+bool small_single_index(const at::Tensor& self,
+                        const std::vector<c10::optional<at::Tensor>>& vec,
+                        at::Tensor& out) {
+  if (vec.size() != 1 || !vec[0].has_value() || !vec[0]->defined()) return false;
+  const at::Tensor& idx = *vec[0];
+  const auto st = idx.scalar_type();
+  if (st != at::kLong && st != at::kInt) return false;
+  if (!self.is_cpu() || !idx.is_cpu()) return false;
+  const int64_t K = idx.dim() == 0 ? 1 : idx.size(-1);
+  if (K > 4096) return false;
+  if (!self.is_contiguous() || !idx.is_contiguous()) return false;
+
+  int64_t A = 1;
+  for (const auto d : c10::irange(1, self.dim())) A *= self.size(d);
+  std::vector<int64_t> out_shape(idx.sizes().begin(), idx.sizes().end());
+  out_shape.reserve(out_shape.size() + self.dim() - 1);
+  for (const auto d : c10::irange(1, self.dim())) out_shape.push_back(self.size(d));
+  out = at::empty(out_shape, self.options());
+  g_small_single.fetch_add(1, std::memory_order_relaxed);
+
+  const int64_t n = idx.numel();
+  if (n == 0) return true;
+  const int64_t size0 = self.size(0);
+  const bool idx_long = (st == at::kLong);
+  const void* ip = idx.data_ptr();
+  AT_DISPATCH_ALL_TYPES_AND_COMPLEX_AND3(at::kHalf, at::kBFloat16, at::kBool,
+      out.scalar_type(), "hpc_index_small_single", [&] {
+    const scalar_t* src = static_cast<const scalar_t*>(self.data_ptr());
+    scalar_t* dst = static_cast<scalar_t*>(out.data_ptr());
+    auto run = [&](int64_t lo, int64_t hi) {
+      for (int64_t p = lo; p < hi; ++p) {
+        int64_t v = idx_long ? static_cast<const int64_t*>(ip)[p]
+                             : static_cast<const int32_t*>(ip)[p];
+        TORCH_CHECK_INDEX(v >= -size0 && v < size0,
+            "index ", v, " is out of bounds for dimension 0 with size ", size0);
+        if (v < 0) v += size0;
+        if (A == 0) continue;
+        const scalar_t* sp = src + v * A;
+        scalar_t* dp = dst + p * A;
+        if (A >= 4) {
+          std::memcpy(dp, sp, A * sizeof(scalar_t));
+        } else {
+          for (const auto c : c10::irange(A)) dp[c] = sp[c];
+        }
+      }
+    };
+    // 小 K 下 parallel_for 的任务开销超过收益，n<16384 时串行。
+    if (n >= 16384) {
+      at::parallel_for(0, n, adaptive_grain(n), run);
+    } else {
+      run(0, n);
+    }
+  });
+  return true;
+}
+
 }  // namespace
 
 at::Tensor index_impl(const at::Tensor& self,
-                      c10::List<c10::optional<at::Tensor>> indices) {
+                      const c10::List<c10::optional<at::Tensor>>& indices) {
   auto vec = to_vec(indices);
   TORCH_CHECK_INDEX(!vec.empty(), "at least one index must be provided");
   TORCH_CHECK_INDEX(vec.size() <= (size_t)self.dim(),
       "too many indices for tensor of dimension ", self.dim(), " (got ", vec.size(), ")");
   at::Tensor out;
   if (mask_fast_path(self, vec, out)) return out;
+  if (small_single_index(self, vec, out)) return out;
   auto spec = normalize_index(self, vec);
   out = at::empty(spec.out_shape, self.options());
   index_into(self, spec, out);
@@ -133,7 +196,7 @@ at::Tensor index_impl(const at::Tensor& self,
 // aten::index.Tensor_out 的 CPU 实现：写入调用方提供的 out（形状不符时 resize），
 // 非连续 out 计算到临时连续张量后 copy_。校验与 aten 的结构化 out 语义对齐。
 at::Tensor index_out_impl(const at::Tensor& self,
-                          c10::List<c10::optional<at::Tensor>> indices,
+                          const c10::List<c10::optional<at::Tensor>>& indices,
                           at::Tensor& out) {
   auto vec = to_vec(indices);
   TORCH_CHECK_INDEX(!vec.empty(), "at least one index must be provided");
@@ -169,6 +232,25 @@ TORCH_LIBRARY_IMPL(hpc_index, CPU, m) {
   m.impl("index_out", &index_out_impl);
 }
 
+// 直接从 C++ 覆盖 aten 的 CPU 内核：Python 侧 torch.library.impl 每个调用多一次
+// Python 解释器往返（实测小 K 固定开销 ~10-20us），此处注册后 x[idx] 直达本内核。
+namespace {
+at::Tensor& index_out_aten(const at::Tensor& self,
+                           const c10::List<c10::optional<at::Tensor>>& indices,
+                           at::Tensor& out) {
+  index_out_impl(self, indices, out);
+  return out;
+}
+}  // namespace
+
+TORCH_LIBRARY_IMPL(aten, CPU, m) {
+  const char* e = getenv("HPC_INDEX_NO_OVERRIDE");
+  if (e == nullptr || std::string(e) != "1") {
+    m.impl("index.Tensor", &index_impl);
+    m.impl("index.Tensor_out", &index_out_aten);
+  }
+}
+
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def("index", [](const at::Tensor& self,
                     std::vector<c10::optional<at::Tensor>> indices) {
@@ -193,6 +275,9 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   });
   m.def("mask_fused_count", []() {
     return g_mask_fused.load(std::memory_order_relaxed);
+  });
+  m.def("small_single_count", []() {
+    return g_small_single.load(std::memory_order_relaxed);
   });
   m.def("idx_dtype_choice", [](int64_t numel, const std::string& dtype) {
     // 镜像 index_impl 的 use_i32 判定（仅供测试验证 f32 溢出回退逻辑）

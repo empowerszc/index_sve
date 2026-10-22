@@ -1,11 +1,11 @@
-"""把 torch.ops.hpc_index.index 注册为 aten::index.Tensor 的 CPU 实现。
-
-import index_sve 时自动调用 install()：此后 x[idx]、x[:, i] 等所有 CPU 张量的
-高级索引调用都走本自定义算子（SVE512 gather + 线性化）。无需改任何调用点。
+"""兼容层：aten::index.Tensor 的 CPU 覆盖已改由 C++ 扩展加载时完成
+（op.cpp 的 TORCH_LIBRARY_IMPL(aten, CPU, ...)），避免 Python 覆盖层每调用一次的
+解释器往返。install() 保留为空实现，供旧代码/文档调用。
 """
 import torch
 
 
 def install() -> None:
-    torch.library.impl("aten::index.Tensor", "CPU", torch.ops.hpc_index.index)
-    torch.library.impl("aten::index.Tensor_out", "CPU", torch.ops.hpc_index.index_out)
+    # 覆盖已由 C++ 扩展在加载时通过 TORCH_LIBRARY_IMPL(aten, CPU) 完成；Python 侧
+    # 注册会多一层解释器往返（小 K 每调用 ~10-20us）。保留函数以兼容旧调用。
+    return None

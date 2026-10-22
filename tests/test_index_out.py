@@ -49,7 +49,8 @@ def test_index_out_noncontiguous_out():
 
 
 def test_index_out_uses_hpc_kernel():
-    # out= 变体必须真正落到本算子（profiler 内核名），而不是原生 aten::index。
+    # out= 变体由 C++ TORCH_LIBRARY_IMPL(aten, CPU) 直接覆盖：profiler 只应看到
+    # aten::index，不应再有 Python 覆盖层的 hpc_index::index_out 嵌套事件。
     x = torch.randn(2_000_000)
     i = torch.randint(0, 2_000_000, (2_000_000,))
     out = torch.empty(2_000_000)
@@ -57,7 +58,16 @@ def test_index_out_uses_hpc_kernel():
             activities=[torch.profiler.ProfilerActivity.CPU]) as p:
         torch.ops.aten.index.Tensor_out(x, [i], out=out)
     keys = [e.key for e in p.key_averages()]
-    assert any("hpc_index::index_out" in k for k in keys), keys
+    assert any(k.startswith("aten::index") for k in keys), keys
+    assert not any("hpc_index::index_out" in k for k in keys), keys
+    # 自定义错误信息只在本次算子实现中出现（原生 aten 报 cast 错误）
+    try:
+        torch.ops.aten.index.Tensor_out(
+            x, [i], out=torch.empty(1, dtype=torch.float64))
+    except RuntimeError as e:
+        assert "index_out: self" in str(e), str(e)
+    else:
+        raise AssertionError("expected RuntimeError")
 
 
 def test_index_out_dtype_mismatch():

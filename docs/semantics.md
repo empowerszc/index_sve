@@ -64,7 +64,7 @@ u32/u64/f8 等在任何实现下都报错（白名单外）。**无 dtype 回归
 
 ## 6. 正确性验证方法
 
-1. **测试套件**（92/92 通过，覆盖激活态；T6 后 test_index_out 7，T8 后 test_mask_fused 9）：
+1. **测试套件**（99/99 通过，覆盖激活态；T6 后 test_index_out 7、T8 后 test_mask_fused 9、T9 后 test_smallk 7）：
    - `test_smoke.py` — 基本注册/调用；
    - `test_normalize.py` — spec 字段结构断言（dims_before/dims_after、transpose、
      mask 展开、after_contiguous）；

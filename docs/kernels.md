@@ -202,3 +202,11 @@ gather_mask(self, mask)  // op.cpp mask_fast_path 调用
   `out[w*A]`；f32/f64 且 `A>=4` 用 `copy_contig_sve`，其余 dtype/短行标量拷贝。
   chunk 内 `w` 局部递增，无原子操作。
 - `nnz==0 || A==0` 直接返回空输出；空掩码 8t ~0.15ms。
+
+## 7. T9 小 K 单整数下标精简路径（op.cpp）
+
+单整数下标、末维 `K<=4096`、self/idx 连续、CPU 时，`small_single_index` 直接在
+`index_impl` 入口按 idx 平坦顺序取行：`out[p] = self[idx[p]]`，A>=4 用 `memcpy`
+整行拷贝，n<16384 串行（并行任务开销大于收益）。绕过 `normalize_index` 的
+vector 分配/transpose 分析与 `gather_direct` 的内层 `at::Tensor` 访问。
+`K>4096` 仍走 SVE/桶化主路径。

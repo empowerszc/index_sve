@@ -150,6 +150,7 @@ linearize=1.24ms / full=1.69ms）。对 **B==1 单索引 1D 纯 gather**（M3/M4
 ```
 index_impl
   0. 单 mask && 覆盖前 m 维 && mask/self 连续 && CPU → gather_mask（单遍 compaction，T8）
+  0b. 单整数下标 && 末维 K<=4096 && mask/self 连续 && CPU → small_single_index（绕 normalize，T9）
   1. K < 1024                     → gather_direct（无 linearize）
   2. 单索引 && after_contig && A>=4096 && f32/f64   → M1 raw rowcopy（skip-linearize）
   3. 单索引 && B==1 && A==1       → T4 raw 桶化（skip-linearize）
@@ -342,3 +343,52 @@ FakeTensor 等坑与 opt-in 落地计划，见 [torch-compile.md](torch-compile.
   f32/f64/int64、1/2/4/8 线程、非连续 self/mask 回退；参考值用
   `mask.nonzero()` + `index_select`（未被覆盖）。
 - 全 8 套件 **92/92**；`mask_fused_count()` 调试计数断言融合路径确实命中。
+
+## 14. T9：小 K 单整数下标精简路径 + C++ 直接覆盖
+
+### 问题
+
+- `x[idx]`（单整数下标、末维 K 小）固定开销高：旧路径先 `to_vec` + `normalize_index`
+  （多次 vector 分配/transpose 分析），再 `gather_direct` 内层反复调用 `at::Tensor`
+  方法。1D `K=1023` 1t 51.6us vs aten 24.7us（0.48x）。
+- 真实调用还多一层 **Python 覆盖**：`register_aten.py` 用
+  `torch.library.impl` 注册，`x[idx]` 每次往返一次 Python 解释器（~10-20us），
+  小 K 被完全吃掉。
+- `K=1024` 存在断崖：`K<=1023` 走 `gather_direct`，`K>=1024` 落入
+  `gather_bucket_pure_raw` + `linearize` + `gather_bucket_pure` 的多次并行扫描
+  （即使值域过大最终仍走 SVE），固定 ~120us；`K=1024` 8t 仅 0.37x。
+
+### 变更
+
+| 项 | 变更 | 代码 |
+|---|---|---|
+| T9-1 | 新增 `small_single_index`：单整数下标 + 末维 `K<=4096` + self/idx 连续 + CPU 时，直接按 idx 平坦顺序取行；绕过 `normalize_index`，A>=4 用 `memcpy`，n<16384 串行避免并行任务开销 | op.cpp |
+| T9-2 | 覆盖注册从 Python `torch.library.impl` 移到 C++ `TORCH_LIBRARY_IMPL(aten, CPU, m)`；签名对齐 schema（`const List&`、out 返回 `Tensor&`）；`register_aten.install()` 变空实现 | op.cpp / register_aten.py |
+| T9-3 | 阈值覆盖 `K=1024..4096`，消除断崖；`K>4096` 仍走原路径（SVE/桶化在更大 K 更优） | op.cpp |
+
+### 实测（真实 `x[idx]`，pin node 5，3 次交替进程中位数）
+
+| 形态 | 1t/8t（T9 后） |
+|---|---|
+| 1D A=1 K=0 | **2.3x** vs aten |
+| 1D A=1 K=1 | **2.2x** |
+| 1D A=1 K=64 | **2.2x** |
+| 1D A=1 K=512 | **2.0x** |
+| 1D A=1 K=1023 | **1.8x** |
+| 1D A=1 K=1024 | **1.6x** |
+| 2D A=16 K=128 | **2.4x** |
+| 2D A=16 K=1023 | **2.4-2.7x** |
+| 2D A=16 K=1024 | **1.4x** |
+
+断崖修复（8t，源 1M，idx 随机大值域）：`K=1024` 0.37x→**1.64x**、`K=2048`
+0.47x→**1.38x**、`K=4096` 0.55x→**0.99x**；`K=8192..16384` 仍走原路径
+（0.9-1.2x），`K=65536` 3x。C++ 注册自身把真实 `x[idx]` 的 K=0 从 27.5us 降到
+11.9us、K=1023 从 36.9us 降到 24.4us（同脚本前后对比）。
+
+### 验证
+
+- 新增 `tests/test_smallk.py` 7 用例：1D/2D/N-D/0-dim/空下标、f32/f64/int64、
+  1/8 线程、非连续 self/idx 回退、越界错误逐字、路由计数（K<=4096 命中、
+  多索引/mask 不命中）。
+- 全 9 套件 **99/99**；true-aten 对拍 40/40；`HPC_INDEX_NO_OVERRIDE=1` 仍为真 aten。
+- 覆盖注册改动后 `out=` / autograd / vmap 行为不变（test_index_out + 全量回归）。

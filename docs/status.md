@@ -27,11 +27,13 @@ CPU 键覆盖，autograd 不受影响）。构建/运行契约见 `README.md` �
 | T5 | 1 线程回归修复（单遍标量 + nb==1 快路径） | bd21485 | ✅ |
 | T6 | 跨设备索引校验 + `aten::index.Tensor_out` 覆盖 | f791c39 | ✅ |
 | T8 | mask 单遍融合 compaction（跳过 nonzero） | 0dd7533 | ✅ |
+| T9 | 小 K（≤4096）单整数下标精简路径 + C++ 直接覆盖 aten CPU 内核 | 本轮 | ✅ |
 
 ## 3. 路由现状（op.cpp `index_impl`）
 
 ```
 单 mask && 覆盖前 m 维 && 连续 && CPU → gather_mask（单遍压实，T8）
+单整数下标 && 末维 K<=4096 && 连续 && CPU → small_single_index（绕 normalize，T9）
 K < 1024                          → gather_direct（无线性化）
 单索引 && A>=4096 && 连续 && f32/f64 → M1 raw rowcopy（skip-linearize）
 单索引 && B==1 && A==1            → T4 raw 桶化（小值域查表）
@@ -45,9 +47,10 @@ A==1 || (连续 && A>=4 && f32/f64) → linearize + gather_index（SVE/桶化/sc
 
 ## 4. 测试
 
-- **92/92 通过**：test_correctness 25、test_errors 6、test_model 9、
-  test_normalize 9、test_smoke 2、test_sve 25、test_index_out 7、test_mask_fused 9。
-- 复跑：`for t in tests/test_smoke.py tests/test_normalize.py tests/test_correctness.py tests/test_errors.py tests/test_sve.py tests/test_model.py tests/test_index_out.py tests/test_mask_fused.py; do python $t; done`
+- **99/99 通过**：test_correctness 25、test_errors 6、test_model 9、
+  test_normalize 9、test_smoke 2、test_sve 25、test_index_out 7、test_mask_fused 9、
+  test_smallk 7。
+- 复跑：`for t in tests/test_smoke.py tests/test_normalize.py tests/test_correctness.py tests/test_errors.py tests/test_sve.py tests/test_model.py tests/test_index_out.py tests/test_mask_fused.py tests/test_smallk.py; do python $t; done`
 - 注意：测试同一进程串行跑，1 线程用例必须 `try/finally` 恢复
   `torch.get_num_threads()`（test_sve.py 内已如此）。
 - **true-aten 值级对拍**（覆盖下测试自洽，须两进程法）：
@@ -64,6 +67,7 @@ A==1 || (连续 && A>=4 && f32/f64) → linearize + gather_index（SVE/桶化/sc
 | x[i,j] 多索引 | 0.66x | **1.21x** |
 | rowcopy A=4 短行 | 0.87x | **1.39x** |
 | mask | ~1.0x | **2.1x**（T8 单遍融合后） |
+| 小 K 单下标 `K≤1023` | 0.5-0.7x | **1.8-2.3x**（T9，真实 `x[idx]`） |
 
 **全线程扫描（T0-T5 构建，RESULTS §10，30 iters interleaved）**：核心场景
 （S1/P1/P2/P3/S4、1D f64/f32、x[i,j]、rowcopy A=4）在 1/2/4/8/16/32/36/38

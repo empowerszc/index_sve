@@ -9,7 +9,9 @@ CPU 张量的高级索引调用（`x[idx]`、`x[:, i]`、`x[i, j]`、bool mask�
 
 `aten::index.Tensor` 在 dispatcher 里有一个按 **dispatch key**（CPU、CUDA、
 Autograd 等）组织的 kernel 插槽表。我们做的不是改源码，而是**把 `CPU` 这个
-key 指向的实现换成我们自己的**——这通过官方 API `torch.library.impl` 完成。
+key 指向的实现换成我们自己的**——在扩展的 C++ 初始化里用
+`TORCH_LIBRARY_IMPL(aten, CPU, m)` 完成（T9 起；早期用 Python 的
+`torch.library.impl`，每调用多一层解释器往返）。
 
 ## 2. 三步注册过程
 
@@ -27,17 +29,25 @@ TORCH_LIBRARY_IMPL(hpc_index, CPU, m) {
 把 `torch.ops.hpc_index.index`（C++ 入口 `index_impl`）挂进 dispatcher，schema
 与 `aten::index.Tensor` 完全相同（self + 可选下标列表 → Tensor）。
 
-### Step 2 — import 时把 aten 的 CPU 插槽指到我们（register_aten.py:9-10）
+### Step 2 — 扩展加载时把 aten 的 CPU 插槽指到我们（op.cpp）
 
-```python
-torch.library.impl("aten::index.Tensor", "CPU", torch.ops.hpc_index.index)
-torch.library.impl("aten::index.Tensor_out", "CPU", torch.ops.hpc_index.index_out)
+```cpp
+TORCH_LIBRARY_IMPL(aten, CPU, m) {
+  const char* e = getenv("HPC_INDEX_NO_OVERRIDE");
+  if (e == nullptr || std::string(e) != "1") {
+    m.impl("index.Tensor", &index_impl);
+    m.impl("index.Tensor_out", &index_out_aten);
+  }
+}
 ```
 
-`torch.library.impl` 的意思是：向 dispatcher 中 **`aten::index.Tensor` 算子** 的
-**`CPU` key** 注册一个 kernel，kernel 内容是 `torch.ops.hpc_index.index`。
-这就在运行时**覆盖**了 PyTorch 默认挂在 CPU key 上的 C++ 实现
-（`RegisterCPU_1.cpp` 中的 `index_cpu`）。
+`TORCH_LIBRARY_IMPL(aten, CPU, ...)` 直接向 dispatcher 的
+**`aten::index.Tensor` 算子 CPU key** 注册 kernel，**不经过 Python**。早期用
+`torch.library.impl` 时，Python 侧 kernel 每次调用要往返解释器一次（实测小 K
+多 ~10-20us）；C++ 注册后该开销消失。注册要求 C++ 签名与 schema 完全一致：
+`index.Tensor` 的 indices 必须是 `const c10::List<...>&`，
+`index.Tensor_out` 必须返回 `at::Tensor&`（故用 `index_out_aten` 薄包装）。
+`register_aten.install()` 现为空实现，仅为兼容保留。
 
 ### Step 3 — `x[idx]` 的调用路径
 
@@ -66,20 +76,20 @@ autograd 完全正常（梯度值/形状/dtype 已与 true-aten 对拍验证，�
 
 | 边界 | 说明 | 处理 |
 |---|---|---|
-| 一次性 UserWarning | `torch.library.impl` 发现 CPU key 已有 kernel，警告 "Overriding a previously registered kernel..." | 预期、无害，故意不压制（见 integration.md §4） |
+| 一次性告警 | 扩展加载时 `TORCH_LIBRARY_IMPL(aten, CPU)` 覆盖已有 kernel，dispatcher 打印一次 "Overriding a previously registered kernel..."（`previous kernel: BatchRulesScatterOps.cpp`） | 预期、无害，故意不压制（见 integration.md §4） |
 | **递归风险** | 我们的 `index_impl` 内部**绝不能**再调 `at::index` / `self.index` / `aten::index`，否则 dispatcher 又回到我们自己 → 无限递归 | 全部手写 normalize/linearize/gather；代码审查确认无任何此类调用（semantics.md §6.3） |
-| 同进程唯一 | torch 2.10 不允许同进程第二个 Python 覆盖注册到同一 op 同一 key（`RuntimeError: already a kernel registered from python`） | 默认覆盖设计的固有约束；需要第二个实现请改用 `HPC_INDEX_NO_OVERRIDE` 场景 |
+| 重复注册 | C++ 同 key 重复注册会替换旧 kernel 并再打印一次告警；`importlib.reload(index_sve)` 不会破坏覆盖 | 需要关闭覆盖用 `HPC_INDEX_NO_OVERRIDE=1`（须在 import/dlopen 前设置） |
 
 ## 5. 验证方法
 
 1. **dispatcher 表**：`torch._C._dispatch_dump_table()` 打印 dispatch 表，可见
-   `aten::index.Tensor` 的 CPU key 从 `RegisterCPU_1.cpp` 变为 Python override
-   （Task 10 用此法确认）。
+   `aten::index.Tensor` 的 CPU key 从 `RegisterCPU_1.cpp` 变为扩展注册的 C++
+   kernel（T9 前为 Python override；Task 10 曾用此法确认）。
 2. **两进程 true-aten 对拍**：无覆盖进程（`HPC_INDEX_NO_OVERRIDE=1`）生成参考，
    覆盖进程比较——覆盖激活后 `x[i]` 已走本算子，**同一进程内无法再对拍**
    （semantics.md §6.2 的"覆盖下对拍陷阱"）。
-3. **全量测试**：92/92 在覆盖激活态通过（含 backward、错误消息逐字、
-   K<1024/K>=1024、N-D 下标、mask 融合路径等）。
+3. **全量测试**：99/99 在覆盖激活态通过（含 backward、错误消息逐字、
+   K<=4096 小 K 路径、N-D 下标、mask 融合路径等）。
 
 ## 6. 为什么是 `aten::index.Tensor` 而不是别的
 
