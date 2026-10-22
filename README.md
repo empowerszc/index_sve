@@ -140,5 +140,9 @@ for t in tests/test_smoke.py tests/test_normalize.py tests/test_correctness.py \
 ```
 
 全部通过 = 75/75（覆盖激活态；test_correctness 25、test_errors 5、test_model 9、
-test_normalize 9、test_smoke 2、test_sve 25）。覆盖下的正确性对拍采用两进程法：
-无覆盖进程生成 true-aten 参考，覆盖进程比较（`agent_space/sdd-index-sve/task10_ref_*`）。
+test_normalize 9、test_smoke 2、test_sve 25）。覆盖下测试是自洽的（`x[i]` 也走
+本算子），值级真对拍用两进程法（无覆盖进程生成 true-aten 参考，覆盖进程比对）：
+
+```bash
+python tests/verify_against_aten.py --mode both    # 40/40，参考写 agent_space/（git-ignored）
+```

@@ -181,8 +181,9 @@ aten/hpc 的 median。4B f32 K=10M 大值域随机 gather 仍是硬件上限（1
 
 - 全 6 个测试套件 **75/75 通过**（T5 后：test_correctness 25、test_errors 5、
   test_model 9、test_normalize 9、test_smoke 2、test_sve 25）。
-- 正确性对拍：两进程法（无覆盖进程生成 true-aten 参考 `.pt`，覆盖进程比对），
-  含 K>=1024 用例。
+- 正确性对拍：两进程法（无覆盖进程生成 true-aten 参考，覆盖进程比对），
+  工具 `tests/verify_against_aten.py --mode both`（40/40），含 K>=1024、桶化、
+  M1 raw、T5 单遍、多索引、mask 用例。
 - 桶化路径正确性由 test_correctness 的小值域用例覆盖（`randint(0,64/100,...)`）。
 
 ## 7. 复测

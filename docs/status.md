@@ -47,6 +47,9 @@ A==1 || (连续 && A>=4 && f32/f64) → linearize + gather_index（SVE/桶化/sc
 - 复跑：`for t in tests/test_smoke.py tests/test_normalize.py tests/test_correctness.py tests/test_errors.py tests/test_sve.py tests/test_model.py; do python $t; done`
 - 注意：测试同一进程串行跑，1 线程用例必须 `try/finally` 恢复
   `torch.get_num_threads()`（test_sve.py 内已如此）。
+- **true-aten 值级对拍**（覆盖下测试自洽，须两进程法）：
+  `python tests/verify_against_aten.py --mode both`（40/40，参考写
+  `agent_space/`）。详见 semantics.md §6.2。
 
 ## 5. 性能结论（pin node 5，interleaved median）
 
