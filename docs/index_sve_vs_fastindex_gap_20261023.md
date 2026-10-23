@@ -1,7 +1,7 @@
 # fastindex 能力差异清单与 index_sve 当前仓库审计
 
 > **日期**：2026-10-23
-> **当前仓库**：`index_sve` @ `f2fbb09`
+> **当前仓库**：`index_sve` @ `6603406`
 > **外部输入**：另一 agent 提供的《fastindex 能力差异清单》（Part I，原文保留）
 > **fastindex 源码**：清单中的
 > `/home/z00889957/100Work/1012_index_op_opt/fastindex/fastindex/` 在本工作区
@@ -18,7 +18,7 @@
 # Part I：外部差异清单（原文）
 
 > 以下为外部输入的完整原文，仅去掉开头终端控制字符。文中的 **“index_sve” 指
-> 尚未融合 fastindex 能力的旧基线**，不代表本仓库 @ `f2fbb09` 的状态；状态与
+> 尚未融合 fastindex 能力的旧基线**，不代表本仓库 @ `6603406` 的状态；状态与
 > 路径请以 Part II 为准。
 
 ## fastindex 能力差异清单（给 index_sve 优化 agent 的补齐指引）
@@ -265,7 +265,7 @@ python -u benchmarks/bench_case_modes.py --measure opt > /tmp/opt.txt 2>&1
 
 ---
 
-# Part II：当前仓库（@ `f2fbb09`）逐条审计
+# Part II：当前仓库（@ `6603406`）逐条审计
 
 ## 12. 审计方法
 

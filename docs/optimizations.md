@@ -50,7 +50,7 @@ T6-T11 依次修复 index_out/autograd、mask 单遍、小 K 路径、compile op
 | T9 | 小 K 精简路径 + C++ 覆盖 | `small_single_index`（单整数下标、K<=4096）；C++ `TORCH_LIBRARY_IMPL` 替代 Python 注册 | da9a203 |
 | T10 | `torch.compile` opt-in | schema-only + fake + `register_lowering` 钉回运行时；独立 cache 目录；`HPC_INDEX_COMPILE=1` | 1cd77ce |
 | T11 | 线程数同步 + 路由/正确性修复 | `sync_omp_threads()`；`gather_direct` A==1 紧凑循环；2B/1B/complex 单遍；1t A>=4 raw rowcopy；非连续 stride 修复 | fc26cf8 |
-| T12 | fastindex 差异补齐 | `strided_rows_raw` run 块拷贝；`copy_contig_sve` ≤64B memcpy；A<16 raw；B==1 快路径；grain 下限 64；多索引 A>=4 raw（≥16t） | 本轮 |
+| T12 | fastindex 差异补齐 | `strided_rows_raw` run 块拷贝；`copy_contig_sve` ≤64B memcpy；A<16 raw；B==1 快路径；grain 下限 64；多索引 A>=4 raw（≥16t） | 6603406 |
 
 ## 3. 逐项详解
 
