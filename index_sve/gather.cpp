@@ -6,12 +6,16 @@
 #include <c10/util/irange.h>
 #include <limits>
 #include <mutex>
+#include <cstring>
 #include <vector>
 #include <type_traits>
+#include <atomic>
 
 namespace {
 
 constexpr int64_t PREFETCH_DIST = 16;  // 微基准扫描 {0,16,32,64} 后定的默认
+std::atomic<uint64_t> g_strided_rows{0};
+std::atomic<uint64_t> g_rowcopy_raw{0};
 
 bool sve_512_ok() {
   // 仅当运行时 VL 恰为 512-bit 才启用 SVE 路径（编译按 -msve-vector-bits=512）
@@ -185,6 +189,13 @@ void pure_gather_sve_flat(const IndexSpec& spec, const IdxT* idx, const T* src, 
 // 展开保持内存级并行，余下 VL 步进 + whilelt 尾数；NT 时 store 换 svstnt1_*
 template <typename T, bool NT>
 void copy_contig_sve(const T* src, T* dst, int64_t n) {
+  if (n <= 0) return;
+  // 小行宽（<=64B）用 memcpy，避免 masked SVE load/store 的谓词构造开销；
+  // 非连续尾维的短 run（如 10×f32=40B）也走这里。
+  if (n * static_cast<int64_t>(sizeof(T)) <= 64) {
+    std::memcpy(dst, src, n * sizeof(T));
+    return;
+  }
   if constexpr (std::is_same_v<T, double>) {
     const int64_t VL = svcntd();
     int64_t i = 0;
@@ -228,6 +239,51 @@ void copy_contig_sve(const T* src, T* dst, int64_t n) {
       store4_f32<NT>(pg, dst + i, svld1_f32(pg, src + i));
     }
   }
+}
+
+struct ColRun {
+  int64_t dst;
+  int64_t src;
+  int64_t len;
+};
+
+// 把 col_off 中相邻（+1）的元素合并成连续 run。尾维非连续时，每个 run 可一次
+// 块拷贝；run 长度=1 表示纯跨步，退化为逐元素。
+std::vector<ColRun> make_col_runs(const int64_t* col_off, int64_t A) {
+  std::vector<ColRun> runs;
+  int64_t c = 0;
+  while (c < A) {
+    int64_t len = 1;
+    while (c + len < A && col_off[c + len] == col_off[c + len - 1] + 1) ++len;
+    runs.push_back({c, col_off[c], len});
+    c += len;
+  }
+  return runs;
+}
+
+// 单索引、after_contiguous=false：按连续 run 做块拷贝（fastindex run_strided_rows
+// 的等价实现）。run=1 不优于 fused，由调用方保留原路径。
+template <typename T, typename IdxT, bool NT>
+void strided_rows_raw(const IndexSpec& spec, const IdxT* raw, T* dst, const T* src,
+                      const std::vector<ColRun>& runs) {
+  const int64_t B = spec.B, K = spec.K, A = spec.A;
+  const int64_t size = spec.indexed_sizes[0];
+  const int64_t stride = spec.indexed_strides[0];
+  const int64_t* row_off = spec.row_off.data();
+  at::parallel_for(0, B * K, adaptive_grain(B * K), [&](int64_t lo, int64_t hi) {
+    for (int64_t p = lo; p < hi; ++p) {
+      const int64_t r = p / K, k = p % K;
+      int64_t v = static_cast<int64_t>(raw[k]);
+      TORCH_CHECK_INDEX(v >= -size && v < size,
+          "index ", v, " is out of bounds for dimension 0 with size ", size);
+      if (v < 0) v += size;
+      const T* s = src + row_off[r] + v * stride;
+      T* d = dst + p * A;
+      for (const auto& run : runs) {
+        copy_contig_sve<T, NT>(s + run.src, d + run.dst, run.len);
+      }
+    }
+  });
 }
 
 // A>1 && after_contiguous：整行连续块拷贝 out[(r*K+k)*A+c] = src[row_off[r] + idx[k] + c]
@@ -702,21 +758,26 @@ void rowcopy_raw_single(const IndexSpec& spec, const IdxT* raw, T* dst, const T*
   const int64_t size = spec.indexed_sizes[0];
   const int64_t stride = spec.indexed_strides[0];
   const int64_t* row_off = spec.row_off.data();
+  auto row = [&](int64_t p, int64_t r, int64_t k) {
+    int64_t v = static_cast<int64_t>(raw[k]);
+    TORCH_CHECK_INDEX(v >= -size && v < size,
+        "index ", v, " is out of bounds for dimension 0 with size ", size);
+    if (v < 0) v += size;
+    copy_contig_sve<T, NT>(src + row_off[r] + v * stride, dst + p * A, A);
+  };
+  if (B == 1) {
+    at::parallel_for(0, K, adaptive_grain(K), [&](int64_t lo, int64_t hi) {
+      for (int64_t k = lo; k < hi; ++k) row(k, 0, k);
+    });
+    return;
+  }
   at::parallel_for(0, B * K, adaptive_grain(B * K), [&](int64_t lo, int64_t hi) {
-    for (int64_t p = lo; p < hi; ++p) {
-      const int64_t r = p / K, k = p % K;
-      int64_t v = static_cast<int64_t>(raw[k]);
-      TORCH_CHECK_INDEX(v >= -size && v < size,
-          "index ", v, " is out of bounds for dimension 0 with size ", size);
-      if (v < 0) v += size;
-      const T* s = src + row_off[r] + v * stride;
-      T* d = dst + p * A;
-      copy_contig_sve<T, NT>(s, d, A);
-    }
+    for (int64_t p = lo; p < hi; ++p) row(p, p / K, p % K);
   });
 }
 
 void gather_rowcopy_raw(const IndexSpec& spec, at::Tensor& out, bool non_temporal) {
+  g_rowcopy_raw.fetch_add(1, std::memory_order_relaxed);
   const at::Tensor& raw = spec.indices[0];
   const bool idx32 = raw.scalar_type() == at::kInt;
   AT_DISPATCH_ALL_TYPES_AND_COMPLEX_AND3(at::kHalf, at::kBFloat16, at::kBool,
@@ -741,6 +802,128 @@ void gather_rowcopy_raw(const IndexSpec& spec, at::Tensor& out, bool non_tempora
       }
     }
   });
+}
+
+template <typename T, bool NT>
+void rowcopy_fused_sve(const IndexSpec& spec, T* dst, const T* src) {
+  const int64_t nidx = spec.indexed_dims.size();
+  const int64_t B = spec.B, K = spec.K, A = spec.A;
+  const std::vector<int64_t>& bshape = spec.broadcast_shape;
+  const int64_t nb = bshape.size();
+  std::vector<int64_t> bfactor(nb, 1);
+  for (int64_t i = nb - 2; i >= 0; --i) bfactor[i] = bfactor[i + 1] * bshape[i + 1];
+  std::vector<const void*> ind_ptr(nidx);
+  std::vector<const int64_t*> ind_stride(nidx);
+  std::vector<int64_t> ind_size(nidx), ind_esize(nidx);
+  std::vector<bool> ind_long(nidx);
+  bool all_full_contig = (nb == 1);
+  for (const auto j : c10::irange(nidx)) {
+    const at::Tensor& ind = spec.indices[j];
+    ind_ptr[j] = ind.data_ptr();
+    ind_stride[j] = ind.strides().data();
+    ind_size[j] = spec.indexed_sizes[j];
+    ind_esize[j] = ind.element_size();
+    ind_long[j] = (ind.dtype() == at::kLong);
+    if (ind.numel() != K || !ind.is_contiguous()) all_full_contig = false;
+  }
+  if (all_full_contig) {
+    at::parallel_for(0, B * K, adaptive_grain(B * K), [&](int64_t lo, int64_t hi) {
+      for (int64_t p = lo; p < hi; ++p) {
+        const int64_t r = p / K, k = p % K;
+        int64_t off = spec.row_off[r];
+        for (const auto j : c10::irange(nidx)) {
+          const char* ptr = static_cast<const char*>(ind_ptr[j]) + k * ind_esize[j];
+          int64_t v = ind_long[j]
+              ? *reinterpret_cast<const int64_t*>(ptr)
+              : *reinterpret_cast<const int32_t*>(ptr);
+          const int64_t size = ind_size[j];
+          TORCH_CHECK_INDEX(v >= -size && v < size,
+              "index ", v, " is out of bounds for dimension ", j, " with size ", size);
+          if (v < 0) v += size;
+          off += v * spec.indexed_strides[j];
+        }
+        copy_contig_sve<T, NT>(src + off, dst + p * A, A);
+      }
+    });
+    return;
+  }
+  at::parallel_for(0, B * K, adaptive_grain(B * K), [&](int64_t lo, int64_t hi) {
+    for (int64_t p = lo; p < hi; ++p) {
+      const int64_t r = p / K, k = p % K;
+      int64_t off = spec.row_off[r];
+      for (const auto j : c10::irange(nidx)) {
+        const int64_t esize = ind_esize[j];
+        const int64_t* ind_st = ind_stride[j];
+        int64_t eoff = 0, rr = k;
+        for (const auto d : c10::irange(nb)) {
+          int64_t c = (bshape[d] > 0) ? (rr / bfactor[d]) % bshape[d] : 0;
+          eoff += c * ind_st[d];
+          if (bshape[d] > 0) rr %= bfactor[d];
+        }
+        const char* ptr = static_cast<const char*>(ind_ptr[j]) + eoff * esize;
+        int64_t v = ind_long[j]
+            ? *reinterpret_cast<const int64_t*>(ptr)
+            : *reinterpret_cast<const int32_t*>(ptr);
+        const int64_t size = ind_size[j];
+        TORCH_CHECK_INDEX(v >= -size && v < size,
+            "index ", v, " is out of bounds for dimension ", j, " with size ", size);
+        if (v < 0) v += size;
+        off += v * spec.indexed_strides[j];
+      }
+      copy_contig_sve<T, NT>(src + off, dst + p * A, A);
+    }
+  });
+}
+
+void gather_rowcopy_fused(const IndexSpec& spec, at::Tensor& out, bool non_temporal) {
+  g_rowcopy_raw.fetch_add(1, std::memory_order_relaxed);
+  const auto st = out.scalar_type();
+  if (st == at::kFloat) {
+    const float* src = static_cast<const float*>(spec.transposed_self.data_ptr());
+    float* dst = static_cast<float*>(out.data_ptr());
+    if (non_temporal) rowcopy_fused_sve<float, true>(spec, dst, src);
+    else rowcopy_fused_sve<float, false>(spec, dst, src);
+  } else {
+    const double* src = static_cast<const double*>(spec.transposed_self.data_ptr());
+    double* dst = static_cast<double*>(out.data_ptr());
+    if (non_temporal) rowcopy_fused_sve<double, true>(spec, dst, src);
+    else rowcopy_fused_sve<double, false>(spec, dst, src);
+  }
+}
+
+bool gather_strided_rows_raw(const IndexSpec& spec, at::Tensor& out, bool non_temporal) {
+  const int64_t A = spec.A;
+  auto runs = make_col_runs(spec.col_off.data(), A);
+  int64_t max_run = 0;
+  for (const auto& run : runs) max_run = std::max(max_run, run.len);
+  if (max_run < 4) return false;
+  const auto st = out.scalar_type();
+  if (st != at::kFloat && st != at::kDouble) return false;
+  g_strided_rows.fetch_add(1, std::memory_order_relaxed);
+  const at::Tensor& raw = spec.indices[0];
+  const bool idx32 = raw.scalar_type() == at::kInt;
+  if (st == at::kFloat) {
+    const float* src = static_cast<const float*>(spec.transposed_self.data_ptr());
+    float* dst = static_cast<float*>(out.data_ptr());
+    if (idx32) {
+      if (non_temporal) strided_rows_raw<float, int32_t, true>(spec, static_cast<const int32_t*>(raw.data_ptr()), dst, src, runs);
+      else strided_rows_raw<float, int32_t, false>(spec, static_cast<const int32_t*>(raw.data_ptr()), dst, src, runs);
+    } else {
+      if (non_temporal) strided_rows_raw<float, int64_t, true>(spec, static_cast<const int64_t*>(raw.data_ptr()), dst, src, runs);
+      else strided_rows_raw<float, int64_t, false>(spec, static_cast<const int64_t*>(raw.data_ptr()), dst, src, runs);
+    }
+  } else {
+    const double* src = static_cast<const double*>(spec.transposed_self.data_ptr());
+    double* dst = static_cast<double*>(out.data_ptr());
+    if (idx32) {
+      if (non_temporal) strided_rows_raw<double, int32_t, true>(spec, static_cast<const int32_t*>(raw.data_ptr()), dst, src, runs);
+      else strided_rows_raw<double, int32_t, false>(spec, static_cast<const int32_t*>(raw.data_ptr()), dst, src, runs);
+    } else {
+      if (non_temporal) strided_rows_raw<double, int64_t, true>(spec, static_cast<const int64_t*>(raw.data_ptr()), dst, src, runs);
+      else strided_rows_raw<double, int64_t, false>(spec, static_cast<const int64_t*>(raw.data_ptr()), dst, src, runs);
+    }
+  }
+  return true;
 }
 
 void gather_fused(const IndexSpec& spec, at::Tensor& out) {  AT_DISPATCH_ALL_TYPES_AND_COMPLEX_AND3(at::kHalf, at::kBFloat16, at::kBool,
@@ -820,3 +1003,6 @@ at::Tensor gather_mask(const at::Tensor& self, const at::Tensor& mask) {
   });
   return out;
 }
+
+uint64_t strided_rows_count() { return g_strided_rows.load(std::memory_order_relaxed); }
+uint64_t rowcopy_raw_count() { return g_rowcopy_raw.load(std::memory_order_relaxed); }

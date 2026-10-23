@@ -1,6 +1,6 @@
-# 优化记录：T0-T11 性能优化轮
+# 优化记录：T0-T12 性能优化轮
 
-本文档详细记录针对 AI4S 真实负载的优化工作（T0-T11）。背景：用户实测真实 AI4S
+本文档详细记录针对 AI4S 真实负载的优化工作（T0-T12）。背景：用户实测真实 AI4S
 模型端到端**无提升甚至劣化**后，按优化任务建议（T0-T4）逐项实现，每项单独
 commit、全量测试 + 前后对比；T5 针对回归扫描暴露的 1 线程劣化做定向修复。
 T6-T11 依次修复 index_out/autograd、mask 单遍、小 K 路径、compile opt-in、
@@ -50,6 +50,7 @@ T6-T11 依次修复 index_out/autograd、mask 单遍、小 K 路径、compile op
 | T9 | 小 K 精简路径 + C++ 覆盖 | `small_single_index`（单整数下标、K<=4096）；C++ `TORCH_LIBRARY_IMPL` 替代 Python 注册 | da9a203 |
 | T10 | `torch.compile` opt-in | schema-only + fake + `register_lowering` 钉回运行时；独立 cache 目录；`HPC_INDEX_COMPILE=1` | 1cd77ce |
 | T11 | 线程数同步 + 路由/正确性修复 | `sync_omp_threads()`；`gather_direct` A==1 紧凑循环；2B/1B/complex 单遍；1t A>=4 raw rowcopy；非连续 stride 修复 | fc26cf8 |
+| T12 | fastindex 差异补齐 | `strided_rows_raw` run 块拷贝；`copy_contig_sve` ≤64B memcpy；A<16 raw；B==1 快路径；grain 下限 64；多索引 A>=4 raw（≥16t） | 本轮 |
 
 ## 3. 逐项详解
 
@@ -166,11 +167,16 @@ index_impl
   0. 单 mask && 覆盖前 m 维 && mask/self 连续 && CPU → gather_mask（单遍 compaction，T8）
   0b. 单整数下标 && 末维 K<=4096 && mask/self 连续 && CPU → small_single_index（绕 normalize，T9）
   1. K < 1024                     → gather_direct（无 linearize）
-  2. 单索引 && after_contig && A>=4096 && f32/f64   → M1 raw rowcopy（skip-linearize）
+  2. 单索引 && after_contig && A>1 && (A>=4096||A<16) && f32/f64
+                                     → M1 raw rowcopy（skip-linearize）
+  2b. 单索引 && !after_contig && col_off 有 ≥4 run
+                                     → strided rows（run 块拷贝）
+  2c. 多索引 && after_contig && A>=4 && 线程数>=16
+                                     → 多索引 raw rowcopy（skip-linearize）
   3. 单索引 && B==1 && A==1       → T4 raw 桶化（skip-linearize）
   4. A==1 || (after_contig && A>=4 && f32/f64)      → linearize + gather_index
        └─ gather_index：先试 bucket（A==1 值域≤2048）→ SVE 8B/4B → rowcopy → scalar
-  5. 其余（A<4 或非连续小块）    → T3 gather_fused（不物化 idx）
+  5. 其余（A<4 / 非连续小块 / run=1）→ T3 gather_fused（不物化 idx）
 ```
 
 优先级逻辑：**先试不物化 idx 的短路路径**（direct / raw rowcopy / raw 桶化），
@@ -495,3 +501,38 @@ opt-in 实现（§14）。
 - 全 10 套件 **102/102**；两进程 true-aten 对拍 **44/44**（新增 4 个非连续
   stride 用例）。
 - 线程矩阵 31 场景 × 1/2/4/8/16/32/36；小 K 两进程 8 个 K × 7 线程。
+
+
+## 16. T12：fastindex 差异补齐（本轮）
+
+### 变更
+
+| 项 | 变更 | 代码 |
+|---|---|---|
+| T12-1 | 非连续尾维按 `col_off` 的连续 run 块拷贝；run≥4 才接管 | `gather.cpp: make_col_runs/strided_rows_raw` |
+| T12-2 | ≤64B 行/run 用 `memcpy`，避免 masked SVE 谓词开销 | `gather.cpp: copy_contig_sve` |
+| T12-3 | 单索引 A<16 多线程也 raw；`B==1` 去 `p/K`、`p%K` | `op.cpp` / `gather.cpp: rowcopy_raw_single` |
+| T12-4 | `adaptive_grain` 下限 1→64 | `grain.h` |
+| T12-5 | 多索引 A≥4 且 ≥16t 时 raw rowcopy | `gather.cpp: rowcopy_fused_sve` |
+| T12-6 | 新增路由/正确性测试 9 例 | `tests/test_strided_rows.py`、`test_rowcopy_routes.py` |
+
+### 实测（node 5，同进程交替）
+
+| 形态 | 旧 | 新 | 提升 |
+|---|---|---|---|
+| run16 A1024 1t | 10.56ms | 4.74ms | **2.23x** |
+| run16 A1024 8t | 1.59ms | 0.934ms | 1.71x |
+| run10 A640 1t | 4.71ms | 3.50ms | 1.36x |
+| A=8 多线程 | — | — | 1.21-1.37x |
+| A=15 多线程 | — | — | 1.15-1.37x |
+| 多索引 A=64 16/36t | — | — | 1.12/1.16x |
+| 1D K=8192 36t（相对 1t） | 0.76x | 0.98x | 小任务高线程不再负扩展 |
+
+放弃项：纯转置 run=1（无连续后缀，块拷贝不可用）、多索引 1-8t（raw 慢
+9-23%）、`_offset`（0-2.3%）、mask int32 转换、slice 提前回退。系统原因见
+`index_sve_vs_fastindex_gap_20261023.md` §19。
+
+### 验证
+
+- 12 个测试文件 **111/111**；两进程 true-aten 对拍 **44/44**。
+- A/B 数据与风险见新文档 Part III。

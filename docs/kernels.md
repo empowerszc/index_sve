@@ -20,7 +20,10 @@
 | 条件 | 走哪个 | 为什么 |
 |---|---|---|
 | K<1024 且单整数下标/简单 1D | `gather_direct`（A==1 紧凑循环） | 省掉 linearize 的分配与一遍遍历 |
-| A>=4 且 after 维连续 | `gather_rowcopy_raw` / RowCopy | 连续块摊薄 64B 行放大 |
+| A>=4 且 after 维连续、单索引 | `gather_rowcopy_raw` | 连续块摊薄 64B 行放大 |
+| A>=4 且 after 维连续、多索引 ≥16t | `gather_rowcopy_fused` | 跳过 linearize，高线程避免串行写/读 |
+| after 维非连续、存在 ≥4 连续 run | `strided_rows_raw` | 按 run 块拷贝，减少逐元素 load/store |
+| A<16 单索引 | raw rowcopy（多线程也跳过 linearize） | 小行宽 linearize 占比高 |
 | 2<=A<4 | `gather_fused`（T11 1t）/ 标量 | 块太短，SVE 收益被开销吃掉 |
 | A==1、8B 元素 | SVE `svld1_gather_u64index` | 8 个元素一条指令，带宽受限 |
 | A==1、4B 元素 | SVE `svld1_gather_u32index` | 4B 只用 1/16 行，受行放大限制 |
@@ -84,6 +87,9 @@ rowcopy_sve<T, IdxT, NT> → copy_contig_sve<T, NT>
 - `copy_contig_sve`：8B 用 `svld1_f64/svst1_f64`，4B 用 `svld1_f32/svst1_f32`；
   **4×VL 多寄存器展开**维持内存级并行，之后 VL 步进 + `whilelt` 尾数；NT 时
   store 换 `svstnt1_*`。
+- **≤64B 小行/短 run 走 `memcpy`**：4-16 个 f32 或 4-8 个 f64 正好 1-2 条
+  cache line，masked SVE 的谓词构造/循环开销大于一次 `memcpy`；非连续尾维的
+  40B/64B run 也走这里（实测 run10 由 0.72-0.89x 提升到 0.98-1.42x）。
 - 行拷贝只读一次 idx（`src + row_off[r] + idx[k]`），A 元素连续向量化 ——
   这是 S1 spconv / P1 图消息路径 ~4x（1 线程）/ ~1.9x（38 线程）的收益来源。
 
@@ -96,12 +102,44 @@ rowcopy_sve<T, IdxT, NT> → copy_contig_sve<T, NT>
 rowcopy_raw_single<T, IdxT, NT>（入口：gather_rowcopy_raw，op.cpp 短路）
 ```
 
-- 条件：**单索引 && after_contiguous && A>=4096 && f32/f64**（M1 最热形态）。
+- 条件：**单索引 && after_contiguous && A>1 && (A>=4096 || A<16) && f32/f64**。
+  A<16 由本轮补齐：小行宽时 linearize 的固定开销占比高，多线程也直接 raw。
 - 与 `rowcopy_sve` 唯一区别：不消费 linearize 的 idx 数组，而是直接遍历
   `spec.indices[0]` 原始下标（int32/int64），内联 `v>=size || v<-size` 检查 +
   负索引归一，随后 `copy_contig_sve` 拷贝 A 连续块。
 - 省掉 linearize 的一次 broadcast 解码 + 一次 K×N idx 写入；对单索引大块
   （A 大）收益显著：M1 weight.view(K,C,o)[ki] 1 线程 2-13x。
+- `B==1` 单独分支：`k=p`，去掉每行 `p/K`、`p%K`；A=8/15 多线程再提升
+  1.2-1.4x（见 §3.2）。
+
+### 3.2 非连续尾维 strided-rows（本轮）
+
+```cpp
+strided_rows_raw<T, IdxT, NT>（入口：gather_strided_rows_raw，op.cpp 短路）
+```
+
+- 触发：单索引、`!after_contiguous`、A>1、索引连续、f32/f64，且 `col_off` 中
+  存在长度 ≥4 的连续 run。
+- `make_col_runs(col_off, A)` 把相邻 `col_off[c+1]==col_off[c]+1` 合并成
+  `{dst_col, src_off, len}`；每行只算一次基址 `src + row_off[r] + idx[k]*stride`，
+  每个 run 一次 `copy_contig_sve`（≤64B 自动 `memcpy`）。
+- 例：尾维 `[64,200,16] -> permute(1,0,2)` 的 `col_off` 是 64 段×16 连续；
+  A=1024 时从 1024 次标量拷贝变成 64 次 64B 拷贝。实测 1t 2.23x、8t 1.71x。
+- **run=1 不启用**：纯转置（tail 64、stride 20000）没有连续后缀，块拷贝只能退化
+  为逐元素；保留 `gather_fused`，原因见
+  `index_sve_vs_fastindex_gap_20261023.md` §19.1。
+
+### 3.3 多索引 raw rowcopy（本轮）
+
+```cpp
+rowcopy_fused_sve<T, NT>（入口：gather_rowcopy_fused，op.cpp 短路）
+```
+
+- 触发：多索引、`after_contiguous`、A>=4、f32/f64，且 **线程数 ≥16**。
+- 复用 `gather_fused` 的预提取 + broadcast 解码，但内层改为
+  `copy_contig_sve` 整块拷贝，不物化 idx。
+- 门槛来自实测：1-8t 时 linearize 的写+读可摊销，raw 反而慢 9-23%；16t 后
+  linearize 的串行段占比上升，raw 提升 1.12-1.48x。**低线程仍走旧路径。**
 
 ## 4. 标量回退 `dispatch_scalar`
 

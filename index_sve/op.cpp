@@ -53,9 +53,26 @@ void index_into(const at::Tensor& self, const IndexSpec& spec, at::Tensor& out) 
   // M1 单索引大块 skip-linearize：单索引 + after_contiguous + A 大 + 值域小（S1 最热形态）。
   // 跳过 linearize，直接在 gather 阶段读原始下标算偏移（T2 阶段 1，无桶化）。
   if (spec.indices.size() == 1 && spec.after_contiguous &&
-      spec.indices[0].is_contiguous() && spec.A >= 4096 &&
+      spec.indices[0].is_contiguous() && (spec.A >= 4096 || spec.A < 16) &&
+      spec.A > 1 &&
       (out.scalar_type() == at::kFloat || out.scalar_type() == at::kDouble)) {
     gather_rowcopy_raw(spec, out, g_nt);
+    return;
+  }
+
+  // 非连续尾维：按 col_off 的连续 run 做块拷贝，仅当存在 >=4 的 run 时接管；
+  // run=1 的纯转置继续走 fused，避免把逐元素伪装成“优化”。
+  if (spec.indices.size() == 1 && !spec.after_contiguous && spec.A > 1 &&
+      spec.indices[0].is_contiguous() &&
+      (out.scalar_type() == at::kFloat || out.scalar_type() == at::kDouble)) {
+    if (gather_strided_rows_raw(spec, out, g_nt)) return;
+  }
+
+  // 多索引 A>=4：跳过 linearize，在 rowcopy 循环里直接解码原始下标。
+  if (spec.indices.size() > 1 && spec.after_contiguous && spec.A >= 4 &&
+      at::get_num_threads() >= 16 &&
+      (out.scalar_type() == at::kFloat || out.scalar_type() == at::kDouble)) {
+    gather_rowcopy_fused(spec, out, g_nt);
     return;
   }
 
@@ -317,6 +334,9 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def("small_single_count", []() {
     return g_small_single.load(std::memory_order_relaxed);
   });
+  m.def("strided_rows_count", &strided_rows_count);
+  m.def("rowcopy_raw_count", &rowcopy_raw_count);
+  m.def("debug_grain", [](int64_t n) { return adaptive_grain(n); });
   m.def("idx_dtype_choice", [](int64_t numel, const std::string& dtype) {
     // 镜像 index_impl 的 use_i32 判定（仅供测试验证 f32 溢出回退逻辑）
     const bool is_4b = (dtype == "Float" || dtype == "Int");

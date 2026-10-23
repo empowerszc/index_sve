@@ -74,7 +74,8 @@ index_impl(self, indices)
 | complex 纯 gather | dispatch_scalar | M4 |
 | f32 且 numel ≥ 2^31（防 i32 越界） | dispatch_scalar | M4（idx 被迫 int64，8B 分支又只认 f64/i64 out）|
 | rowcopy A∈[2,3] 短行 | dispatch_scalar | M3（col_off 逐个解引用）|
-| rowcopy 非连续 after 维 | dispatch_scalar | M3（无连续块可向量化）|
+| 非连续 after 且存在 ≥4 连续 run | `strided_rows_raw`（T12） | M3 已缓解（run 块拷贝）|
+| 非连续 after 且 run=1（纯转置） | gather_fused / 标量 | M3（无连续块可向量化）|
 | 4B 大 K 大值域 pure gather（idx32+f32/i32） | 4B SVE gather（与标量持平，cache-line 放大） | M1 |
 | mask（bool） | T8 gather_mask 单遍压实（不可融合时仍 nonzero + gather） | 旧路径 M3+M2；T8 已修 |
 | 1 线程单索引 A==1 大值域 | gather_single_1d（T5，已追平） | M2（已修）|
@@ -162,7 +163,15 @@ P2 A=3 E=2M 为 1.78-8.73x。**这形态是"慢于 SVE 主路径"而非"慢于 a
 **为什么慢**：必须逐元素解引用 col_off，SVE 连续 `ld1/st1` 用不上（M3/M4）。
 同 §3.3——相对 aten 通常仍有收益，只是吃不到向量化。
 
-**限制性质**：结构性。无法在现有模型下规避（除非先做一次内存重排，成本更高）。
+**T12 改进**：`col_off` 中相邻（+1）的元素合并成 run；run≥4 时
+`strided_rows_raw` 对每个 run 做块拷贝（≤64B 用 memcpy），把“每元素一次
+load/store”变成“每 run 一次”。实测 tail `[64,200,16]`（A=1024，64 段×16）
+1t 10.56→4.74ms（2.23x）、8t 1.71x。**run=1 的纯转置没有连续后缀**，块拷贝
+只能退化为逐元素，仍走 `gather_fused`；8t ~0.84x 是既有低线程尾部，见
+`index_sve_vs_fastindex_gap_20261023.md` §19.1。
+
+**限制性质**：run 长度由 after 维的 stride 布局决定；纯转置结构性无解（除非
+换固定 col_off 的 SVE gather 内核，尚未实现）。
 
 ### 3.5 mask（bool 索引）
 

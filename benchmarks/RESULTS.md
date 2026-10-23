@@ -559,6 +559,29 @@ compiled-fallback 2.57-2.67ms vs eager 2.01ms（1.28-1.33x），规模 >=8M 收�
 
 ---
 
+### 3.14 T12：fastindex 差异补齐（非连续尾维 / 小行宽 / grain）
+
+T11 矩阵不变；以下是新路由的同进程 A/B（node 5，旧/新交替，单位 ms）。
+
+| 形态 | 线程 | 旧 | 新 | 提升 |
+|---|---|---|---|---|
+| run16 A1024 | 1 | 10.56 | 4.74 | **2.23x** |
+| run16 A1024 | 8 | 1.59 | 0.934 | 1.71x |
+| run10 A640 | 1 | 4.71 | 3.50 | 1.36x |
+| run10 A640 | 36 | 0.426 | 0.300 | 1.42x |
+| A=8 单索引 | 8 | 0.068 | 0.055 | 1.24x |
+| A=15 单索引 | 8 | 0.083 | 0.068 | 1.22x |
+| 多索引 A=64 | 16 | 0.115 | 0.105 | 1.12x |
+| 多索引 A=64 | 36 | 0.068 | 0.058 | 1.16x |
+
+- 多索引 raw 只在 ≥16t 启用；1-8t 实测慢 9-23%，保留 linearize。
+- 纯转置 run=1（tail 64、stride 20000）无连续后缀，未启用块拷贝；8t 仍
+  ~0.84x，属既有低线程尾部。
+- grain 下限 64：1D K=8192 在 36t 相对 1t 从 0.76x 提升到 0.98x；2D A=16
+  K=8192 的 36t 绝对时间 0.097→0.055ms。
+- 全量测试 111/111，true-aten 44/44。细节/放弃项：
+  `docs/index_sve_vs_fastindex_gap_20261023.md`。
+
 ## 4. 复现命令
 
 ```bash
@@ -593,4 +616,5 @@ HPC_INDEX_NO_OVERRIDE=1 HPC_AFFINITY=190-227 HPC_THREADS=1,38 \
 - 内核实现与选择门槛：`docs/kernels.md`、`docs/architecture.md`。
 - 优化轮次的问题/改动/commit：`docs/optimizations.md`。
 - 慢场景与“为什么不 fallback”：`docs/fallback-analysis.md`。
+- fastindex 差异清单、T12 决策与放弃原因：`docs/index_sve_vs_fastindex_gap_20261023.md`。
 - 方法学摘要与使用建议：`docs/performance.md`、`docs/status.md`。

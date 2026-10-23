@@ -5,10 +5,10 @@
 
 > 更新规则：每轮实质变更后更新本文（测试数、commit 号、性能结论、路由）。
 
-> **30 秒现状**：T11 构建完成，10 套件 102/102、真 aten 对拍 44/44；31 场景
-> × 7 线程矩阵已重测。主要收益是 RowCopy/整块取数（1t 2.4-4.5x）；1D 8B
-> gather 1.0-1.5x；4B 随机 gather 约 1.1x；仍 <1x 的是非连续 mask、int8/uint8
-> 和“每线程工作量过小”的高线程单元。
+> **30 秒现状**：T12 完成，12 套件 111/111、真 aten 对拍 44/44；T11 的 31 场景
+> × 7 线程矩阵仍是权威性能口径。T12 补齐非连续尾维 strided-rows（run16
+> 1.7-2.2x）、小行宽 raw（A=8/15 1.2-1.4x）、grain 下限 64（1D K=8192 36t
+> 0.76→0.98x）；多索引 raw 仅 ≥16t 启用。纯转置 run=1 无连续后缀，保留旧路径。
 >
 > **本文怎么用**：这是“快照”，不追求完整推导；数字以 `benchmarks/RESULTS.md`
 > §2 为准，原因分析看 `degradation-analysis.md`，路由看 §3 与
@@ -40,6 +40,7 @@ CPU 键覆盖，autograd 不受影响）。构建/运行契约见 `README.md` �
 | T9 | 小 K（≤4096）单整数下标精简路径 + C++ 直接覆盖 aten CPU 内核 | da9a203 | ✅ |
 | T10 | `torch.compile` opt-in（`HPC_INDEX_COMPILE=1`：fake + aten fallback + 独立 cache 目录） | 1cd77ce | ✅ |
 | T11 | 线程矩阵方法学修正（libomp ICV 同步）、`gather_direct` A==1 紧凑循环、2B/1B/complex 单遍、非连续 stride 正确性修复、1t A>=4 恢复 raw rowcopy | fc26cf8 | ✅ |
+| T12 | fastindex 差异补齐：strided-rows、≤64B memcpy、A<16 raw、B==1、grain 64、多索引 A≥4（≥16t）raw | 本轮 | ✅ |
 
 ## 3. 路由现状（op.cpp `index_impl`）
 
@@ -47,12 +48,15 @@ CPU 键覆盖，autograd 不受影响）。构建/运行契约见 `README.md` �
 单 mask && 覆盖前 m 维 && 连续 && CPU → gather_mask（单遍压实，T8）
 单整数下标 && 末维 K<=4096 && 连续 && CPU → small_single_index（T9；n*A<16384 串行）
 K < 1024                          → gather_direct（无线性化；A==1 预校验紧凑循环，T11）
-单索引 && A>=4096 && 连续 self/idx && f32/f64 → M1 raw rowcopy（skip-linearize）
+单索引 && A>1 && (A>=4096||A<16) && 连续 self/idx && f32/f64
+                                  → M1 raw rowcopy（skip-linearize）
+单索引 && !连续 after && col_off 有 ≥4 run → strided_rows_raw（run 块拷贝）
+多索引 && 连续 after && A>=4 && 线程数>=16 → 多索引 raw rowcopy
 单索引 && B==1 && A==1            → T4 raw 桶化（连续 idx；小值域查表）
                                      └ 大值域 && (!SVE 内核 || 1t) → gather_single_1d
 1 线程 && 单索引 && A>1           → A>=4 连续 f32/f64 ? raw rowcopy : gather_fused
 A==1 || (连续 && A>=4 && f32/f64) → linearize + gather_index（SVE/桶化/scalar）
-其余（A<4 或非连续小块）          → gather_fused
+其余（A<4 / 非连续小块 / run=1）  → gather_fused
 ```
 
 > 线程数：T11 起入口 `sync_omp_threads()` 把 libomp team 同步为
@@ -62,10 +66,10 @@ A==1 || (连续 && A>=4 && f32/f64) → linearize + gather_index（SVE/桶化/sc
 
 ## 4. 测试
 
-- **102/102 通过**：test_correctness 25、test_errors 6、test_model 9、
+- **111/111 通过**：test_correctness 25、test_errors 6、test_model 9、
   test_normalize 9、test_smoke 2、test_sve 25、test_index_out 7、test_mask_fused 9、
-  test_smallk 7、test_compile_optin 3。
-- 复跑：`for t in tests/test_smoke.py tests/test_normalize.py tests/test_correctness.py tests/test_errors.py tests/test_sve.py tests/test_model.py tests/test_index_out.py tests/test_mask_fused.py tests/test_smallk.py tests/test_compile_optin.py; do python $t; done`
+  test_smallk 7、test_compile_optin 3、test_strided_rows 6、test_rowcopy_routes 3。
+- 复跑：`for t in tests/test_smoke.py tests/test_normalize.py tests/test_correctness.py tests/test_errors.py tests/test_sve.py tests/test_model.py tests/test_index_out.py tests/test_mask_fused.py tests/test_smallk.py tests/test_compile_optin.py tests/test_strided_rows.py tests/test_rowcopy_routes.py; do python $t; done`
 - 注意：测试同一进程串行跑，1 线程用例必须 `try/finally` 恢复
   `torch.get_num_threads()`（test_sve.py 内已如此）。
 - **true-aten 值级对拍**（覆盖下测试自洽，须两进程法）：
@@ -86,6 +90,21 @@ A==1 || (连续 && A>=4 && f32/f64) → linearize + gather_index（SVE/桶化/sc
 | mask（P3 连续） | ~1.0x | **2.23x**（T8 单遍融合；非连续 0.84-0.98x） |
 | 小 K 单下标 `K≤1024` | 0.5-0.7x | **1.31-2.03x**（T9/T11，真实 `x[idx]`） |
 | 2B/1B/complex | 0.5-0.97x | **0.95-1.53x**（1t；高线程至 2.4x） |
+
+**T12 新增（同进程 A/B，node 5）**：
+
+| 形态 | 旧 | 新 | 提升 |
+|---|---|---|---|
+| run16 A1024 1t | 10.56ms | 4.74ms | **2.23x** |
+| run16 A1024 8t | 1.59ms | 0.934ms | 1.71x |
+| run10 A640 1t | 4.71ms | 3.50ms | 1.36x |
+| A=8 多线程 | — | — | 1.21-1.37x |
+| A=15 多线程 | — | — | 1.15-1.37x |
+| 多索引 A=64 16/36t | — | — | 1.12/1.16x |
+| 1D K=8192 36t（相对 1t） | 0.76x | 0.98x | 小任务高线程不再负扩展 |
+
+纯转置 run=1（tail 无连续后缀）保持 `gather_fused`，8t 仍 0.84x；块拷贝无法
+改善，原因见 `index_sve_vs_fastindex_gap_20261023.md` §19.1。
 
 **全线程矩阵（T11 修正，RESULTS §2，1/2/4/8/16/32/36，node 5）**：31 个
 场景里绝大多数 ≥1.0x，低线程最强（RowCopy/1D pure 在 2-8t 为 1.3-4.5x；
@@ -137,8 +156,9 @@ mask 经 T8 后 1.3-4.2x；
 - 4B 大 K 大值域 gather：软件预取 / 按 cache line 分桶排序（规避行放大；SVE 与
   标量已持平，换指令无收益）。
 - 端到端 AI4S 模型复测（验证 T0-T11 在真实负载上的整体收益）。
-- 小规模并行的有效线程上限（按每线程 ≥64KB；<8KB 基本无收益）：实测 1D
-  K=8192 在 36t 相对 1t 0.76x（58µs），见 degradation §6.3。
+- 纯转置 run=1 的低线程尾部（8t 0.84x）：若要继续，需要独立的“固定 col_off
+  SVE gather”内核，不是 strided-rows 能解决；见 gap 文档 §19.1。
+- 多索引 raw 的 16t 阈值需在其它机器复测；当前只按 920F/node5 定。
 - 扩展 dtype 白名单到 ATen 的完整集合（barebones u16/u32/u64、float8、
   complex32 当前抛 NotImplementedError；见 semantics.md §4）。
 - 在真实 AI4S 模型上验证 `HPC_INDEX_COMPILE=1` 的端到端收益与编译时间，再决定

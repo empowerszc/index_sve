@@ -18,6 +18,7 @@
 | [override-mechanism.md](override-mechanism.md) | **Dispatcher 劫持机制详解**：如何覆盖 aten::index、autograd 为何不受影响、递归/唯一性边界、验证方法 | 想搞清"怎么做到的"的读者 |
 | [porting.md](porting.md) | 移植到其他 aarch64/SVE 变体、非 512-bit VL、其他 torch 版本 | 移植维护 |
 | [status.md](status.md) | **当前进展快照**：完成的工作、路由现状、性能结论、已知限制、下一步 | 新读者/agent 快速上手 |
+| [index_sve_vs_fastindex_gap_20261023.md](index_sve_vs_fastindex_gap_20261023.md) | **fastindex 能力差异清单 + 当前仓库逐条审计**：strided-rows、offset 融合、grain 下限、`_offset` 变体、int32/mask、slice、小行宽；原文与实测状态对照 | 规划下一轮优化、核对能力覆盖 |
 
 ### 背景参考（reference/）
 
@@ -34,7 +35,9 @@
   §2 → [degradation-analysis.md](degradation-analysis.md)（先看 §0 结论与 §5 逐案）。
 - **要改内核/调优**：[kernels.md](kernels.md) → [architecture.md](architecture.md)
   → [optimizations.md](optimizations.md) §4 路由 → [degradation-analysis.md](degradation-analysis.md)
-  §7 微架构证据 → [fallback-analysis.md](fallback-analysis.md)。
+  §7 微架构证据 → [fallback-analysis.md](fallback-analysis.md)
+  → [index_sve_vs_fastindex_gap_20261023.md](index_sve_vs_fastindex_gap_20261023.md)
+  （fastindex 能力差异与待补项）。
 - **集成 / 排障 / 与 compile 共存**：[integration.md](integration.md)
   → [override-mechanism.md](override-mechanism.md) → [torch-compile.md](torch-compile.md)。
 - **移植到别的 CPU/torch**：[porting.md](porting.md) → [kernels.md](kernels.md) §1-§3。
@@ -56,7 +59,9 @@ aten::index.Tensor ──► index_impl(self, indices)
         │                 ├─ 单整数下标 && K<=4096 && 连续 ? small_single_index()  (T9)
         │                 ├─ normalize_index()     对齐 ATen make_info
         │                 ├─ K < 1024 ? gather_direct()      (快速路径，无线性化；A==1 预校验紧凑循环)
-        │                 ├─ M1 ? gather_rowcopy_raw()       (单索引 A>=4096 skip-linearize)
+        │                 ├─ M1 ? gather_rowcopy_raw()       (单索引 A>1 && (≥4096||<16))
+        │                 ├─ 非连续尾维有 ≥4 run ? strided_rows_raw()  (T12)
+        │                 ├─ 多索引 A>=4 && ≥16t ? rowcopy_fused_sve() (T12)
         │                 ├─ T4 ? gather_bucket_pure_raw()   (单索引 B==1 A==1 小值域查表)
         │                 │        └─ 无 SVE 内核 dtype 或 1 线程 ? gather_single_1d()  (单遍标量)
         │                 ├─ 1 线程 && 单索引 && A>1 ? A>=4 连续 ? raw rowcopy : fused
