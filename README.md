@@ -71,6 +71,7 @@ index_sve/
 │   │                     # bench_t1.py/bench_t2.py/bench_ai4s.py（优化轮专项）、bench_regression.py（回归扫描）
 │   │                     # bench_threads.py（全线程矩阵 1-36t）
 │   │                     # bench_smallk_real.py / bench_smallk_driver.py（小 K 两进程对拍）
+│   │                     # degrade_probe.py（阈值/mask 分解）、memprobe.c（内存系统探针）
 │   └── RESULTS.md        # 完整基准报告（§2 T11 权威矩阵；§3 历史轮次）
 └── docs/                 # 本系列文档
 ```

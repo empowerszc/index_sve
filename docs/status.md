@@ -99,9 +99,12 @@ range2048 16t 0.87x（单点抖动/小规模强扩展，均非持续趋势）。
 > 用 38 个 worker），已标注作废；不要再用其中 "≥1.06x" 的结论。
 
 **访存上限（不可修，非 bug）**：4B（f32/i32）大 K 随机 pure gather 受 64B
-cache line 放大（4B 只用 4B/行）+ DRAM 延迟限制。同构建 A/B 实测 SVE 4B 与标量
-持平（8MB 1.85 vs 1.86 ms、256MB 7.46 vs 7.45 ms，8/38t），换指令/回退标量无效，
+cache line 放大（4B 只用 4B/行）+ DRAM 延迟 + 地址翻译限制（实测 dTLB miss
+≈1.1 次/访问，本地 DRAM 115-192ns）。同构建 A/B 实测 SVE 4B 与标量持平
+（8MB 1.85 vs 1.86 ms、256MB 7.46 vs 7.45 ms，8/38t），换指令/回退标量无效，
 **不是 SVE MLP 缺陷**（RESULTS §3.7；早期 0.75 vs 3.4 GB/s 探针归因已撤回）。
+36t 时 4B 行流量 73-76GB/s，已达单节点读带宽上限 73.3GB/s（degradation §6.4），
+所以高线程倍率再高也只是把行带宽用满，不会改善“有用字节/行”。
 T4 桶化在小值域规避行放大，大值域靠预取/行 gather 等待未来优化。不要据此
 推断"所有场景都 ≥1x"：`x[:,i]`/1B/complex 仍有结构性差距（见
 `degradation-analysis.md`）。
@@ -134,7 +137,8 @@ mask 经 T8 后 1.3-4.2x；
 - 4B 大 K 大值域 gather：软件预取 / 按 cache line 分桶排序（规避行放大；SVE 与
   标量已持平，换指令无收益）。
 - 端到端 AI4S 模型复测（验证 T0-T11 在真实负载上的整体收益）。
-- 小规模并行的有效线程上限（按每线程字节数），消除 S4/小 K 的 0.46-0.96x。
+- 小规模并行的有效线程上限（按每线程 ≥64KB；<8KB 基本无收益）：实测 1D
+  K=8192 在 36t 相对 1t 0.76x（58µs），见 degradation §6.3。
 - 扩展 dtype 白名单到 ATen 的完整集合（barebones u16/u32/u64、float8、
   complex32 当前抛 NotImplementedError；见 semantics.md §4）。
 - 在真实 AI4S 模型上验证 `HPC_INDEX_COMPILE=1` 的端到端收益与编译时间，再决定

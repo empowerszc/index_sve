@@ -80,8 +80,9 @@
 - **dtype 白名单 gap**：barebones `uint16/uint32/uint64`、float8 系列、complex32
   目前抛 `NotImplementedError`（ATen 支持）；需要扩展 dispatch 宏并补回归，
   见 semantics.md §4。
-- **小规模并行阈值**：每线程工作量 <64KB 时高线程为负扩展（如 2D K=8192
-  0.46-0.83x）；可按“每线程 ≥64KB”限制有效线程数，见 degradation §6.3。
+- **小规模并行阈值**：每线程 <64KB 效率明显下降、<8KB 基本无收益（1D K=8192
+  在 36t 相对 1t 0.76x，绝对时间仅 58µs）；可按“每线程 ≥64KB”限制有效线程数，
+  延迟受限的 1D gather 可放宽到 16KB，见 degradation §6.3。
 - **M1 值域桶化（T2 阶段 2，未做）**：M1 大块路径当前是 skip-linearize 直接
   rowcopy，未对下标做值域分析（keys[order] 等若值域小可再桶化）。文档见
   优化任务建议 T2 阶段 2；`gather_rowcopy_raw` 已为后续接入留好入口。
