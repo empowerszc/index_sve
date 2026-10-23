@@ -27,6 +27,7 @@ index_impl(self, indices)
   3. sync_omp_threads()                     # libomp team = at::get_num_threads()（T11）
   4. mask_fast_path(self, vec, out)         # 单 mask 连续：gather_mask 单遍压实（T8）
   5. small_single_index(self, vec, out)     # 单整数下标 && K<=4096：绕过 normalize（T9）
+  5b. small_multi_index(self, vec, out)     # 多索引同 shape/连续 && n<=65536：绕过 normalize（T13）
   6. spec = normalize_index(self, vec)      # → IndexSpec
   7. out = at::empty(spec.out_shape, self.options())
   8. index_into(self, spec, out)：
@@ -39,7 +40,7 @@ index_impl(self, indices)
               && col_off 存在 ≥4 连续 run
             → gather_strided_rows_raw（run 块拷贝，T12）
        b3. 多索引 && after_contiguous && A>=4 && f32/f64 && 线程数≥16
-            → gather_rowcopy_fused（跳过 linearize，T12）
+            → gather_rowcopy_fused（跳过 linearize，T12；n>65536 或广播/非连续）
        c. T4 raw: 单索引 && B==1 && A==1 && 连续 idx
             → gather_bucket_pure_raw（小值域查表）
             └ 无 SVE 内核 dtype 或 1 线程 → gather_single_1d（单遍标量，T5/T11）
@@ -63,7 +64,8 @@ M1 raw rowcopy / T4 raw 桶化），需要 idx 时再 linearize；T3 fused 只�
 又把 1 线程 A>=4 连续块改回 raw rowcopy（SVE 整块拷贝）。T12 补齐非连续尾维
 run 块拷贝、A<16 多线程 raw、多索引 A>=4（仅 ≥16t）raw；run=1 纯转置与多索引
 A==1 **保留旧路径**（无连续 run / fused 解码更差）；单 mask 在入口走 `mask_fast_path` →
-`gather_mask` 单遍压实（T8）。
+`gather_mask` 单遍压实（T8）。T13 把“多索引同 shape/连续、n≤65536”的短调用
+提前到 normalize 之前，直接预校验偏移并逐行 memcpy。
 
 ## 2. `IndexSpec` 数据布局（normalize.h）
 

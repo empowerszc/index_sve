@@ -5,10 +5,10 @@
 
 > 更新规则：每轮实质变更后更新本文（测试数、commit 号、性能结论、路由）。
 
-> **30 秒现状**：T12 完成，12 套件 111/111、真 aten 对拍 44/44；T11 的 31 场景
-> × 7 线程矩阵仍是权威性能口径。T12 补齐非连续尾维 strided-rows（run16
-> 1.7-2.2x）、小行宽 raw（A=8/15 1.2-1.4x）、grain 下限 64（1D K=8192 36t
-> 0.76→0.98x）；多索引 raw 仅 ≥16t 启用。纯转置 run=1 无连续后缀，保留旧路径。
+> **30 秒现状**：T13 完成，13 套件 123/123、真 aten 对拍 44/44。T13 新增多索引
+> 小 K 入口快路径（跳过 normalize、一次预校验、dom==1 fill、逐行 memcpy）：
+> K=512/A=1 从 0.74x 提升到 1.6-2.0x，A=64 1t 从 0.67x 提升到 3.4x。
+> T11 的 31 场景矩阵仍是全形态口径；T12 strided-rows（run16 1.7-2.2x）不变。
 >
 > **本文怎么用**：这是“快照”，不追求完整推导；数字以 `benchmarks/RESULTS.md`
 > §2 为准，原因分析看 `degradation-analysis.md`，路由看 §3 与
@@ -41,12 +41,14 @@ CPU 键覆盖，autograd 不受影响）。构建/运行契约见 `README.md` �
 | T10 | `torch.compile` opt-in（`HPC_INDEX_COMPILE=1`：fake + aten fallback + 独立 cache 目录） | 1cd77ce | ✅ |
 | T11 | 线程矩阵方法学修正（libomp ICV 同步）、`gather_direct` A==1 紧凑循环、2B/1B/complex 单遍、非连续 stride 正确性修复、1t A>=4 恢复 raw rowcopy | fc26cf8 | ✅ |
 | T12 | fastindex 差异补齐：strided-rows、≤64B memcpy、A<16 raw、B==1、grain 64、多索引 A≥4（≥16t）raw | 6603406 | ✅ |
+| T13 | 多索引小 K 入口快路径：跳过 normalize、偏移预计算、dom==1 fill、逐行 memcpy；n≤65536 | 本轮 | ✅ |
 
 ## 3. 路由现状（op.cpp `index_impl`）
 
 ```
 单 mask && 覆盖前 m 维 && 连续 && CPU → gather_mask（单遍压实，T8）
 单整数下标 && 末维 K<=4096 && 连续 && CPU → small_single_index（T9；n*A<16384 串行）
+多索引 && 同 shape && 连续 && n<=65536 → small_multi_index（跳过 normalize，T13）
 K < 1024                          → gather_direct（无线性化；A==1 预校验紧凑循环，T11）
 单索引 && A>1 && (A>=4096||A<16) && 连续 self/idx && f32/f64
                                   → M1 raw rowcopy（skip-linearize）
@@ -66,10 +68,11 @@ A==1 || (连续 && A>=4 && f32/f64) → linearize + gather_index（SVE/桶化/sc
 
 ## 4. 测试
 
-- **111/111 通过**：test_correctness 25、test_errors 6、test_model 9、
+- **123/123 通过**：test_correctness 25、test_errors 6、test_model 9、
   test_normalize 9、test_smoke 2、test_sve 25、test_index_out 7、test_mask_fused 9、
-  test_smallk 7、test_compile_optin 3、test_strided_rows 6、test_rowcopy_routes 3。
-- 复跑：`for t in tests/test_smoke.py tests/test_normalize.py tests/test_correctness.py tests/test_errors.py tests/test_sve.py tests/test_model.py tests/test_index_out.py tests/test_mask_fused.py tests/test_smallk.py tests/test_compile_optin.py tests/test_strided_rows.py tests/test_rowcopy_routes.py; do python $t; done`
+  test_smallk 7、test_compile_optin 3、test_strided_rows 6、test_rowcopy_routes 4、
+  test_small_multi 11。
+- 复跑：`for t in tests/test_smoke.py tests/test_normalize.py tests/test_correctness.py tests/test_errors.py tests/test_sve.py tests/test_model.py tests/test_index_out.py tests/test_mask_fused.py tests/test_smallk.py tests/test_compile_optin.py tests/test_strided_rows.py tests/test_rowcopy_routes.py tests/test_small_multi.py; do python $t; done`
 - 注意：测试同一进程串行跑，1 线程用例必须 `try/finally` 恢复
   `torch.get_num_threads()`（test_sve.py 内已如此）。
 - **true-aten 值级对拍**（覆盖下测试自洽，须两进程法）：
@@ -105,6 +108,17 @@ A==1 || (连续 && A>=4 && f32/f64) → linearize + gather_index（SVE/桶化/sc
 
 纯转置 run=1（tail 无连续后缀）保持 `gather_fused`，8t 仍 0.84x；块拷贝无法
 改善，原因见 `index_sve_vs_fastindex_gap_20261023.md` §19.1。
+
+**T13 多索引小 K（真实 `x[i,j]`，K=512，重复 3000 次，µs/调用）**：
+
+| 形态 | 线程 | aten | T13 | 比值 |
+|---|---|---:|---:|---:|
+| B=8，A=1 | 1 / 8 / 36 | 23.0 / 29.9 / 31.4 | 14.5 / 15.1 / 18.8 | 1.59 / 1.99 / 1.67x |
+| B=8，A=4 | 1 / 8 / 36 | 36.0 / 52.9 / 48.8 | 18.9 / 22.9 / 29.9 | 1.90 / 2.31 / 1.64x |
+| B=8，A=64 | 1 / 8 / 36 | 184.3 / 39.1 / 45.4 | 54.0 / 29.9 / 33.9 | 3.41 / 1.31 / 1.34x |
+
+B=32/2 同趋势。旧路径在 1t 为 0.67-0.73x；新路径把固定开销和多索引广播解码
+都移出了热点，且 dom==1 时只做一次 fill。
 
 **全线程矩阵（T11 修正，RESULTS §2，1/2/4/8/16/32/36，node 5）**：31 个
 场景里绝大多数 ≥1.0x，低线程最强（RowCopy/1D pure 在 2-8t 为 1.3-4.5x；
@@ -159,6 +173,9 @@ mask 经 T8 后 1.3-4.2x；
 - 纯转置 run=1 的低线程尾部（8t 0.84x）：若要继续，需要独立的“固定 col_off
   SVE gather”内核，不是 strided-rows 能解决；见 gap 文档 §19.1。
 - 多索引 raw 的 16t 阈值需在其它机器复测；当前只按 920F/node5 定。
+- `small_multi_index` 当前只覆盖“所有索引同 shape 且连续、self 连续”；广播、
+  非连续索引仍走 `normalize + gather_direct`（后续 P1：修正 `all_full_contig`
+  并复用偏移预计算）。
 - 扩展 dtype 白名单到 ATen 的完整集合（barebones u16/u32/u64、float8、
   complex32 当前抛 NotImplementedError；见 semantics.md §4）。
 - 在真实 AI4S 模型上验证 `HPC_INDEX_COMPILE=1` 的端到端收益与编译时间，再决定

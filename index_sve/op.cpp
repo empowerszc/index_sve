@@ -168,6 +168,112 @@ bool mask_fast_path(const at::Tensor& self,
 }
 
 std::atomic<uint64_t> g_small_single{0};
+std::atomic<uint64_t> g_small_multi{0};
+
+// 多整数下标（覆盖前 nidx 维）+ 小规模：直接按索引张量平坦顺序取行，绕过
+// normalize 的 expand/transpose/vector 分配。要求所有索引同 shape 且连续，
+// self 连续；广播、None、非连续一律回退通用路径。
+bool small_multi_index(const at::Tensor& self,
+                       const std::vector<c10::optional<at::Tensor>>& vec,
+                       at::Tensor& out) {
+  const int64_t nidx = vec.size();
+  if (nidx < 2 || nidx > self.dim()) return false;
+  if (!self.is_cpu() || !self.is_contiguous()) return false;
+
+  const at::Tensor* first = nullptr;
+  for (const auto& opt : vec) {
+    if (!opt.has_value() || !opt->defined()) return false;
+    const at::Tensor& ind = *opt;
+    const auto st = ind.scalar_type();
+    if (st != at::kLong && st != at::kInt) return false;
+    if (!ind.is_cpu() || !ind.is_contiguous()) return false;
+    if (first == nullptr) {
+      first = &ind;
+    } else if (ind.sizes() != first->sizes()) {
+      return false;
+    }
+  }
+  const int64_t n = first->numel();
+  if (n > 65536) return false;
+
+  int64_t A = 1;
+  for (const auto d : c10::irange(nidx, self.dim())) A *= self.size(d);
+  std::vector<int64_t> out_shape(first->sizes().begin(), first->sizes().end());
+  out_shape.reserve(out_shape.size() + self.dim() - nidx);
+  for (const auto d : c10::irange(nidx, self.dim())) out_shape.push_back(self.size(d));
+  out = at::empty(out_shape, self.options());
+  g_small_multi.fetch_add(1, std::memory_order_relaxed);
+  if (n == 0 || A == 0) return true;
+
+  std::vector<int64_t> ind_stride(nidx);
+  int64_t stride = A;
+  for (int64_t j = nidx - 1; j >= 0; --j) {
+    ind_stride[j] = stride;
+    stride *= self.size(j);
+  }
+
+  std::vector<const void*> ind_ptr(nidx);
+  std::vector<int64_t> ind_size(nidx);
+  std::vector<bool> ind_long(nidx);
+  for (const auto j : c10::irange(nidx)) {
+    ind_ptr[j] = vec[j]->data_ptr();
+    ind_size[j] = self.size(j);
+    ind_long[j] = (vec[j]->scalar_type() == at::kLong);
+  }
+
+  std::vector<int64_t> offs(n);
+  int64_t first_off = 0;
+  bool same = true;
+  for (const auto p : c10::irange(n)) {
+    int64_t off = 0;
+    for (const auto j : c10::irange(nidx)) {
+      int64_t v = ind_long[j]
+          ? static_cast<const int64_t*>(ind_ptr[j])[p]
+          : static_cast<const int32_t*>(ind_ptr[j])[p];
+      const int64_t size = ind_size[j];
+      TORCH_CHECK_INDEX(v >= -size && v < size,
+          "index ", v, " is out of bounds for dimension ", j, " with size ", size);
+      if (v < 0) v += size;
+      off += v * ind_stride[j];
+    }
+    offs[p] = off;
+    if (p == 0) {
+      first_off = off;
+    } else if (off != first_off) {
+      same = false;
+    }
+  }
+
+  AT_DISPATCH_ALL_TYPES_AND_COMPLEX_AND3(at::kHalf, at::kBFloat16, at::kBool,
+      out.scalar_type(), "hpc_index_small_multi", [&] {
+    const scalar_t* src = static_cast<const scalar_t*>(self.data_ptr());
+    scalar_t* dst = static_cast<scalar_t*>(out.data_ptr());
+    const int64_t bytes = A * static_cast<int64_t>(sizeof(scalar_t));
+    auto run = [&](int64_t lo, int64_t hi) {
+      if (same) {
+        if (A == 1) {
+          std::fill(dst + lo, dst + hi, src[first_off]);
+        } else {
+          for (int64_t p = lo; p < hi; ++p) {
+            std::memcpy(dst + p * A, src + first_off, bytes);
+          }
+        }
+      } else if (A == 1) {
+        for (int64_t p = lo; p < hi; ++p) dst[p] = src[offs[p]];
+      } else {
+        for (int64_t p = lo; p < hi; ++p) {
+          std::memcpy(dst + p * A, src + offs[p], bytes);
+        }
+      }
+    };
+    if (n * A >= 2048) {
+      at::parallel_for(0, n, adaptive_grain(n), run);
+    } else {
+      run(0, n);
+    }
+  });
+  return true;
+}
 
 // 单整数下标 + 末维 K<=4096：直接按 idx 平坦顺序取行，绕过 normalize 的向量分配/
 // transpose 分析，也避开 gather_direct 内层对 at::Tensor 方法的重复访问。
@@ -240,6 +346,7 @@ at::Tensor index_impl(const at::Tensor& self,
   at::Tensor out;
   if (mask_fast_path(self, vec, out)) return out;
   if (small_single_index(self, vec, out)) return out;
+  if (small_multi_index(self, vec, out)) return out;
   auto spec = normalize_index(self, vec);
   out = at::empty(spec.out_shape, self.options());
   index_into(self, spec, out);
@@ -333,6 +440,9 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   });
   m.def("small_single_count", []() {
     return g_small_single.load(std::memory_order_relaxed);
+  });
+  m.def("small_multi_count", []() {
+    return g_small_multi.load(std::memory_order_relaxed);
   });
   m.def("strided_rows_count", &strided_rows_count);
   m.def("rowcopy_raw_count", &rowcopy_raw_count);

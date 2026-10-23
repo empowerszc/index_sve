@@ -48,7 +48,8 @@ compile/mask/小K/opt-in）。本文档是方法论与结论摘要；T5（1 线�
 
 T11 起 `torch.set_num_threads` 对扩展生效；旧 §8.3/§10 的 2-36t 数据因
 libomp/libgomp 双 ICV 作废。小 K 单下标 `x[idx]`（K≤1023）真实路径 1.31-2.03x，
-K=4096 约 0.9x，K≥8192 高线程 0.6-0.9x（RESULTS §2.3）。
+K=4096 约 0.9x，K≥8192 高线程 0.6-0.9x（RESULTS §2.3）。多索引小 K（T13）在
+K=512、A=1/4/64 为 1.3-2.3x（1t A=64 3.4x），见 RESULTS §3.15。
 
 RowCopy 附加数据（node 4 全矩阵定点）：`x[:,idx]` B=256 K=100k **3.48x**、
 `x[idx,:]` C=32 E=1M **3.50x**（1 线程）。608 全核定点（node 4）S4 可达 5.6x

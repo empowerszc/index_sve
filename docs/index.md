@@ -57,6 +57,7 @@ aten::index.Tensor ──► index_impl(self, indices)
         │                 │
         │                 ├─ 单 mask && 覆盖前 m 维 && 连续 ? gather_mask()  (T8 单遍压实)
         │                 ├─ 单整数下标 && K<=4096 && 连续 ? small_single_index()  (T9)
+        │                 ├─ 多索引同 shape/连续 && n<=65536 ? small_multi_index()  (T13)
         │                 ├─ normalize_index()     对齐 ATen make_info
         │                 ├─ K < 1024 ? gather_direct()      (快速路径，无线性化；A==1 预校验紧凑循环)
         │                 ├─ M1 ? gather_rowcopy_raw()       (单索引 A>1 && (≥4096||<16))

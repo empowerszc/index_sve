@@ -19,6 +19,7 @@
 
 | 条件 | 走哪个 | 为什么 |
 |---|---|---|
+| 多索引同 shape/连续、n<=65536 | `small_multi_index`（T13） | 省掉 normalize + 广播解码 |
 | K<1024 且单整数下标/简单 1D | `gather_direct`（A==1 紧凑循环） | 省掉 linearize 的分配与一遍遍历 |
 | A>=4 且 after 维连续、单索引 | `gather_rowcopy_raw` | 连续块摊薄 64B 行放大 |
 | A>=4 且 after 维连续、多索引 ≥16t | `gather_rowcopy_fused` | 跳过 linearize，高线程避免串行写/读 |
@@ -136,10 +137,30 @@ rowcopy_fused_sve<T, NT>（入口：gather_rowcopy_fused，op.cpp 短路）
 ```
 
 - 触发：多索引、`after_contiguous`、A>=4、f32/f64，且 **线程数 ≥16**。
+  n≤65536 且索引同 shape/连续时已被 T13 `small_multi_index` 提前接走，本节主要
+  覆盖 n>65536 或广播/非连续索引。
 - 复用 `gather_fused` 的预提取 + broadcast 解码，但内层改为
   `copy_contig_sve` 整块拷贝，不物化 idx。
 - 门槛来自实测：1-8t 时 linearize 的写+读可摊销，raw 反而慢 9-23%；16t 后
   linearize 的串行段占比上升，raw 提升 1.12-1.48x。**低线程仍走旧路径。**
+
+### 3.4 多索引小 K 入口快路径（T13）
+
+```cpp
+small_multi_index（op.cpp 入口，normalize 之前）
+```
+
+- 条件：索引数 ≥2、全是 int32/int64、**同 shape 且连续**、self 连续、索引覆盖
+  self 前 nidx 维、`n=idx.numel()<=65536`。
+- 不经过 `normalize_index`：直接 `out_shape = idx.shape + self.shape[nidx:]`；
+  行内偏移一次预校验/预计算 `off[k] = Σ v_j[k]*stride_j`。
+- 拷贝：扫描 offset 检测 `dom==1`（全同），A==1 用 `std::fill`，A>1 循环
+  `memcpy` 同一行；非全同时 A==1 标量、A≥2 逐行 `memcpy`。
+- 并行：`n*A >= 2048` 才 `at::parallel_for`；更小的短调用串行，避免线程池
+  起停成本。
+- 不覆盖广播、非连续索引、非连续 self、n>65536；这些回退通用路径。
+- 实测 K=512：A=1 1t/8t/36t 为 1.59/1.99/1.67x，A=4 为 1.90/2.31/1.64x，
+  A=64 1t 3.41x（相对 aten）。
 
 ## 4. 标量回退 `dispatch_scalar`
 

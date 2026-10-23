@@ -1,6 +1,6 @@
-# 优化记录：T0-T12 性能优化轮
+# 优化记录：T0-T13 性能优化轮
 
-本文档详细记录针对 AI4S 真实负载的优化工作（T0-T12）。背景：用户实测真实 AI4S
+本文档详细记录针对 AI4S 真实负载的优化工作（T0-T13）。背景：用户实测真实 AI4S
 模型端到端**无提升甚至劣化**后，按优化任务建议（T0-T4）逐项实现，每项单独
 commit、全量测试 + 前后对比；T5 针对回归扫描暴露的 1 线程劣化做定向修复。
 T6-T11 依次修复 index_out/autograd、mask 单遍、小 K 路径、compile opt-in、
@@ -51,6 +51,7 @@ T6-T11 依次修复 index_out/autograd、mask 单遍、小 K 路径、compile op
 | T10 | `torch.compile` opt-in | schema-only + fake + `register_lowering` 钉回运行时；独立 cache 目录；`HPC_INDEX_COMPILE=1` | 1cd77ce |
 | T11 | 线程数同步 + 路由/正确性修复 | `sync_omp_threads()`；`gather_direct` A==1 紧凑循环；2B/1B/complex 单遍；1t A>=4 raw rowcopy；非连续 stride 修复 | fc26cf8 |
 | T12 | fastindex 差异补齐 | `strided_rows_raw` run 块拷贝；`copy_contig_sve` ≤64B memcpy；A<16 raw；B==1 快路径；grain 下限 64；多索引 A>=4 raw（≥16t） | 6603406 |
+| T13 | 多索引小 K 入口快路径 | `small_multi_index`：绕过 normalize、偏移预校验、dom==1 fill、逐行 memcpy；n≤65536 | 本轮 |
 
 ## 3. 逐项详解
 
@@ -536,3 +537,46 @@ opt-in 实现（§14）。
 
 - 12 个测试文件 **111/111**；两进程 true-aten 对拍 **44/44**。
 - A/B 数据与风险见新文档 Part III。
+
+## 17. T13：多索引小 K 入口快路径
+
+### 问题
+
+`K<1024` 的多索引（如 `x[i,j]`，索引 shape `(B,K)`）仍走 `normalize + gather_direct`：
+
+- `normalize_index` 每次调用做 `expand_outplace`、`has_contiguous_subspace`、
+  vector 分配；短调用固定开销占比高。
+- `gather_direct` 的 `all_full_contig=(nb==1)` 对 2D 索引恒为 false，逐元素走
+  `rr / bfactor[d] % bshape[d]` 广播解码 + 每索引边界检查。
+- 内层 `d[c] = s[col_off[c]]` 标量拷贝，A>=4 也不用 memcpy。
+
+实测 K=512、A=1、8t：0.74x；1t：0.67x（见 `benchmarks/RESULTS.md` §3.15）。
+
+### 变更
+
+| 项 | 变更 | 代码 |
+|---|---|---|
+| T13-1 | 入口 `small_multi_index`：所有索引同 shape/连续、self 连续、覆盖前 nidx 维、n≤65536 | `op.cpp` |
+| T13-2 | 绕过 normalize，直接构造 out shape；索引偏移一次预校验/预计算 | `op.cpp` |
+| T13-3 | 扫描 offset 检测 dom==1；A==1 用 `fill`，A>1 循环 memcpy 同一行 | `op.cpp` |
+| T13-4 | A≥2 逐行 memcpy；`n*A≥2048` 才 parallel_for | `op.cpp` |
+| T13-5 | 新增 `tests/test_small_multi.py` 11 例；路由计数 `small_multi_count` | tests |
+
+不覆盖：索引广播、非连续索引、非连续 self、n>65536；这些回退原路径。
+
+### 实测
+
+真实 `x[i,j]`，K=512，重复 3000 次（node 5，µs/调用）：
+
+| 形态 | 线程 | aten | T13 | 比值 |
+|---|---|---:|---:|---:|
+| B=8，A=1 | 1 / 8 / 36 | 23.0 / 29.9 / 31.4 | 14.5 / 15.1 / 18.8 | 1.59 / 1.99 / 1.67x |
+| B=8，A=4 | 1 / 8 / 36 | 36.0 / 52.9 / 48.8 | 18.9 / 22.9 / 29.9 | 1.90 / 2.31 / 1.64x |
+| B=8，A=64 | 1 / 8 / 36 | 184.3 / 39.1 / 45.4 | 54.0 / 29.9 / 33.9 | 3.41 / 1.31 / 1.34x |
+
+B=32/2 同趋势；A=1/A=4 的 1t 旧路径为 0.67/0.73x，T13 后均 >1.5x。
+
+### 验证
+
+- 13 个测试文件 **123/123**；两进程 true-aten 对拍 **44/44**。
+- 新增 dom1、负索引、int32、空索引、零尾维、广播/非连续回退测试。

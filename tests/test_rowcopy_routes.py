@@ -20,10 +20,21 @@ def test_small_row_raw_route():
         torch.set_num_threads(old)
 
 
-def test_multi_index_raw_route():
+def test_multi_index_small_route():
     x = torch.randn(20000, 8, 64)
     i = torch.randint(0, 20000, (8192,))
     j = torch.randint(0, 8, (8192,))
+    ref = torch.index_select(x.reshape(-1, 64), 0, i * x.size(1) + j)
+    before = C.small_multi_count()
+    y = index_sve.index(x, [i, j])
+    torch.testing.assert_close(y, ref)
+    assert C.small_multi_count() == before + 1, "small multi-index did not take the direct path"
+
+
+def test_multi_index_raw_route():
+    x = torch.randn(20000, 8, 64)
+    i = torch.randint(0, 20000, (131072,))
+    j = torch.randint(0, 8, (131072,))
     ref = torch.index_select(x.reshape(-1, 64), 0, i * x.size(1) + j)
     old = torch.get_num_threads()
     try:

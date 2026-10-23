@@ -40,14 +40,15 @@ backward 不受影响。
   预取（`svprfd/svprfw_gather_u32index`）。
 - `K<1024` 快速路径 `gather_direct`：跳过线性化，直接读原始下标 + 内联检查
   （等价 ATen `Indexer`），支持 N-D 整数下标（broadcast_shape 混合进制解码）。
-- **优化轮（T0-T12）**：自适应并行粒度 `grain.h`；M1 单索引大块
+- **优化轮（T0-T13）**：自适应并行粒度 `grain.h`；M1 单索引大块
   `gather_rowcopy_raw` skip-linearize；T4 小值域桶化（值域 ≤2048 查表）；
   T3 `gather_fused` 融合单遍；int32 linearize 直接写 int32；T5 1 线程单遍；
   T8 mask 单遍压实；T9 小 K（≤4096）精简路径；T10 `torch.compile` opt-in；
   T11 线程数同步 + `gather_direct` A==1 紧凑循环 + 2B/1B/complex 单遍 +
   非连续 stride 正确性修复 + 1 线程 A>=4 恢复 raw rowcopy；T12 非连续尾维
   strided-rows（run 块拷贝）、≤64B memcpy、A<16 raw、grain 下限 64、多索引
-  A>=4（仅 ≥16t）raw。
+  A>=4（仅 ≥16t）raw；T13 多索引小 K 入口快路径（跳过 normalize、预校验、
+  dom==1 fill、逐行 memcpy）。
 - 并行：`at::parallel_for`（`adaptive_grain`）。**必须 `-fopenmp` 编译**。
   扩展链接 BiSheng libomp、ATen 链接 libgomp；T11 起入口
   `sync_omp_threads()` 使 `torch.set_num_threads(t)` 对扩展生效（此前只改
@@ -69,7 +70,7 @@ index_sve/
 │   ├── linearize.{h,cpp} # 线性化 + 越界检查，int32 保持（直接写 int32）
 │   ├── grain.h           # 自适应并行粒度（T0）
 │   ├── gather.{h,cpp}    # SVE gather/rowcopy/scalar + gather_direct + M1 raw / T3 fused / T4 桶化
-├── tests/                # 111 测试（smoke/normalize/correctness/errors/sve/model/index_out/mask/smallk/compile/strided/routes）
+├── tests/                # 123 测试（smoke/normalize/correctness/errors/sve/model/index_out/mask/smallk/compile/strided/routes/smallmulti）
 ├── benchmarks/           # bench_index.py（原始矩阵）、bench_pinned.py/bench_gate.py（定点核复测）
 │   │                     # bench_t1.py/bench_t2.py/bench_ai4s.py（优化轮专项）、bench_regression.py（回归扫描）
 │   │                     # bench_threads.py（全线程矩阵 1-36t）
@@ -177,12 +178,13 @@ for t in tests/test_smoke.py tests/test_normalize.py tests/test_correctness.py \
          tests/test_errors.py tests/test_sve.py tests/test_model.py \
          tests/test_index_out.py tests/test_mask_fused.py tests/test_smallk.py \
          tests/test_compile_optin.py tests/test_strided_rows.py \
-         tests/test_rowcopy_routes.py; do python $t; done
+         tests/test_rowcopy_routes.py tests/test_small_multi.py; do python $t; done
 ```
 
-全部通过 = 111/111（覆盖激活态；test_correctness 25、test_errors 6、test_model 9、
+全部通过 = 123/123（覆盖激活态；test_correctness 25、test_errors 6、test_model 9、
 test_normalize 9、test_smoke 2、test_sve 25、test_index_out 7、test_mask_fused 9、
-test_smallk 7、test_compile_optin 3、test_strided_rows 6、test_rowcopy_routes 3）。
+test_smallk 7、test_compile_optin 3、test_strided_rows 6、test_rowcopy_routes 4、
+test_small_multi 11）。
 覆盖下测试是自洽的（`x[i]` 也走
 本算子），值级真对拍用两进程法（无覆盖进程生成 true-aten 参考，覆盖进程比对）：
 
