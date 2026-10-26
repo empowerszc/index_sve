@@ -27,7 +27,7 @@
 | A<16 单索引 | raw rowcopy（多线程也跳过 linearize） | 小行宽 linearize 占比高 |
 | 2<=A<4 | `gather_fused`（T11 1t）/ 标量 | 块太短，SVE 收益被开销吃掉 |
 | A==1、8B 元素 | SVE `svld1_gather_u64index` | 8 个元素一条指令，带宽受限 |
-| A==1、4B 元素 | SVE `svld1_gather_u32index` | 4B 只用 1/16 行，受行放大限制 |
+| A==1、4B 元素 | SVE `svld1_gather_u32index` | 4B 只用 1/16 行，受行放大限制；T15-C 起多线程 f32/i32 数据 + i64 下标且源 >512KB（L2 实测 768KB，取其下保守界）时走专用单遍内核 `pure_gather_sve_4b_i64idx`（向量检查/归一 + uzp1 收窄后复用 u32index）；小源标量更快（每元素标量 L1 命中 ~7.1ns vs 4B gather 微码/发射下限 ~18ns，大源反转为 ~19 vs ~10ns，见 degradation-analysis.md §5.9） |
 | 值域 ≤2048 | `bucket_gather_pure(_raw)` | 查表替代随机地址 |
 | 2B/1B/complex/非连续 after | 标量单遍（T11 起） | 无 SVE 内核，避免两遍 |
 | bool mask | `gather_mask` 单遍压实 | 跳过 `nonzero()` 物化 |
@@ -103,8 +103,11 @@ rowcopy_sve<T, IdxT, NT> → copy_contig_sve<T, NT>
 rowcopy_raw_single<T, IdxT, NT>（入口：gather_rowcopy_raw，op.cpp 短路）
 ```
 
-- 条件：**单索引 && after_contiguous && A>1 && (A>=4096 || A<16) && f32/f64**。
-  A<16 由本轮补齐：小行宽时 linearize 的固定开销占比高，多线程也直接 raw。
+- 条件：**单索引 && after_contiguous && A>1 && (A>=4096 || A<16 || (A<=64 && B*K<=65536)) && f32/f64**。
+  A<16 由 T12 补齐：小行宽时 linearize 的固定开销占比高，多线程也直接 raw。
+  T15 放行 A 17..64 的小 K（B*K≤65536）形态（2D A=16 K=8192 曾落 linearize 两遍，
+  32/36t 0.73/0.76x）；大 K 不放行——linearize 的预校验偏移+无检查拷贝在冷源
+  行拷贝下更快（raw 慢 12-32%）。
 - 与 `rowcopy_sve` 唯一区别：不消费 linearize 的 idx 数组，而是直接遍历
   `spec.indices[0]` 原始下标（int32/int64），内联 `v>=size || v<-size` 检查 +
   负索引归一，随后 `copy_contig_sve` 拷贝 A 连续块。
@@ -232,7 +235,8 @@ linearize 同样预提取 + nb==1 快路径
   循环外一次提取。1D f32 K=5M 0.75x → 1.07x，f64 0.71x → 1.24x。
 - **T5-2** 1 线程单索引短行（A<4）改走 `gather_fused` 单遍：rowcopy A=4
   K=200k 0.87x → 1.39x。T11 起 A>=4 连续块改回 raw rowcopy（SVE 整块拷贝）：
-  A=4 1t 2.41x、A=16 1t 3.58x、S1（A=64）1t 4.46x。
+  A=4 1t 2.41x、A=16 1t 3.58x、S1（A=64）1t 4.46x（T13 复测 1.87x/
+  2.14x/3.04x，run 间差异主要来自共享箱）。
 - **T5-3** fused/linearize 预提取索引张量属性 + nb==1 全长连续快路径（跳过
   bfactor 混合进制广播解码，直读 `idx_j[k]`）：x[i,j] 双全长索引 0.66x → 1.21x
   （T11 修正为 1.19x）
@@ -301,8 +305,10 @@ gather_mask(self, mask)  // op.cpp mask_fast_path 调用
 ## 10. T9 小 K 单整数下标精简路径（op.cpp）
 
 单整数下标、末维 `K<=4096`、self/idx 连续、CPU 时，`small_single_index` 直接在
-`index_impl` 入口按 idx 平坦顺序取行：`out[p] = self[idx[p]]`，A>=4 用 `memcpy`
-整行拷贝，`n*A<16384` 时串行（并行任务开销大于收益；只看 n 会让 2D A=16
-K=4096 误判为串行，8-36t 掉到 0.55-0.66x，T11 已修）。绕过 `normalize_index` 的
-vector 分配/transpose 分析与 `gather_direct` 的内层 `at::Tensor` 访问。
-`K>4096` 仍走 SVE/桶化主路径。
+`index_impl` 入口按 idx 平坦顺序取行：`out[p] = self[idx[p]]`，A>=2 用 `memcpy`
+整行拷贝（T14：A=3 的 3 次迭代标量循环每行耗时 ~2x 于 memcpy（shortq 实测
+35µs vs 16µs，A=2 仅 ~1.1x）），`n*A < max(16384, 512×线程数)` 时串行（T15 起按
+线程数缩放：38t 下 16384 元素的 fork-join 净亏 ~10µs；并行任务开销大于收益；只看 n
+会让 2D A=16 K=4096 误判为串行，8-36t 掉到 0.55-0.66x，T11 已修）。绕过
+`normalize_index` 的 vector 分配/transpose 分析与 `gather_direct` 的内层
+`at::Tensor` 访问。`K>4096` 仍走 SVE/桶化主路径。

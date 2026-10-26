@@ -14,6 +14,12 @@
 > 纯转置（run=1）无连续后缀，块拷贝无收益，保留原路径并记录原因。
 > 后续 T13 又补了“多索引小 K”入口快路径（§21），K=512/A=1 从 0.74x 提升到
 > 1.6-2.0x。
+> **T15 更新（2026-10-26）**：raw 条件放宽为
+> `A>=4096||A<16||(A<=64&&B*K<=65536)`；新增 f32/i32+i64 大源直连 SVE
+> `pure_gather_sve_4b_i64idx`（源>512KB 门）；小 K 并行阈值线程缩放
+> `max(16384, 512×nt)`。正文标注“当前”的路由描述如有出入，以
+> `architecture.md` §1 与 `optimizations.md` §19 为准；`copy_contig_sve`
+> 的 memcpy 阈值已放宽到 A>=2（T14）。
 
 ---
 
@@ -336,7 +342,7 @@ run=1 仍走现有 fused。
 
 当前已跳过 linearize 的路径：
 
-- `gather_rowcopy_raw`：单索引、`after_contiguous`、A>=4096（1t 另 A>=4）、f32/f64。
+- `gather_rowcopy_raw`：单索引、`after_contiguous`、`A>=4096||A<16||(A<=64&&B*K<=65536)`（T15 起放宽；1t 另 A>=4）、f32/f64。
 - `gather_fused`：A<4 或非连续小块。
 - `bucket_gather_pure_raw`：单索引、B==1、A==1。
 - `gather_single_1d`：1t 单索引 A==1。
@@ -410,8 +416,10 @@ Profiler 证据：
 
 - `copy_contig_sve` 尾部用 `svwhilelt`，不会越界读整 VL；但 `n<VL` 时仍走
   masked SVE load/store，不是 `memcpy`。
-- 多线程单索引 A∈[4,15] 仍 `linearize+gather_index`（`index_into` 的 M1 条件只
-  放行 A>=4096；1t 才放行 A>=4）。
+- 多线程单索引 A∈[17,64] 且大 K（`B*K>65536`）仍 `linearize+gather_index`
+  （M1 条件 T15 起为 `A>=4096||A<16||(A<=64&&B*K<=65536)`；A<16 与小总
+  工作量已放行。大 K 保 linearize 是实测分界：raw 逐行地址链在冷源下慢
+  12-32%，见 `degradation-analysis.md` §5.9.4）。
 - `rowcopy_raw_single` 每行 `p/K`、`p%K`，B==1 时是常量除法，可消。
 
 方案：
@@ -616,6 +624,8 @@ T12 后实测 `x[i,j]`、K=512 的多索引小调用仍慢于 aten：1t A=1 为 
 
 - 广播索引、非连续索引/self 的小 K 仍走 `gather_direct`；可做 P1：
   修正 `all_full_contig`（全长连续即可线性读，不必 `nb==1`）+ 复用偏移预校验。
-- `small_single_index` 的 A==2 仍走标量循环，可统一为 memcpy；收益小。
+- ~~`small_single_index` 的 A==2 仍走标量循环，可统一为 memcpy~~（T14 已修，
+  放宽到 A>=2；实测收益主要在 A=3：标量循环每行 ~2x 于 memcpy，shortq A=3
+  K=1023 i64 从 0.84-0.99x 修到 2.6x+）。
 - C++ 原生 fallback（`at::native::index_out`）只作为未覆盖形状的兜底，重跑
   `make_info` 固定成本高，不作为主路径。

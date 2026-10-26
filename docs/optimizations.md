@@ -1,6 +1,6 @@
-# 优化记录：T0-T13 性能优化轮
+# 优化记录：T0-T15 性能优化轮
 
-本文档详细记录针对 AI4S 真实负载的优化工作（T0-T13）。背景：用户实测真实 AI4S
+本文档详细记录针对 AI4S 真实负载的优化工作（T0-T15）。背景：用户实测真实 AI4S
 模型端到端**无提升甚至劣化**后，按优化任务建议（T0-T4）逐项实现，每项单独
 commit、全量测试 + 前后对比；T5 针对回归扫描暴露的 1 线程劣化做定向修复。
 T6-T11 依次修复 index_out/autograd、mask 单遍、小 K 路径、compile opt-in、
@@ -52,6 +52,8 @@ T6-T11 依次修复 index_out/autograd、mask 单遍、小 K 路径、compile op
 | T11 | 线程数同步 + 路由/正确性修复 | `sync_omp_threads()`；`gather_direct` A==1 紧凑循环；2B/1B/complex 单遍；1t A>=4 raw rowcopy；非连续 stride 修复 | fc26cf8 |
 | T12 | fastindex 差异补齐 | `strided_rows_raw` run 块拷贝；`copy_contig_sve` ≤64B memcpy；A<16 raw；B==1 快路径；grain 下限 64；多索引 A>=4 raw（≥16t） | 6603406 |
 | T13 | 多索引小 K 入口快路径 | `small_multi_index`：绕过 normalize、偏移预校验、dom==1 fill、逐行 memcpy；n≤65536 | a91d566 |
+| T14 | 短行 memcpy 放宽 | `small_single_index` 行拷贝 memcpy 阈值 `A>=4` → `A>=2`（A=3 标量循环每行 ~2x 于 memcpy，realpath 对拍发现） | （未提交） |
+| T15 | 中等行宽 raw（小 K）+ f32+i64 单遍 SVE + 阈值线程缩放 | raw rowcopy 放行 `A<=64 && B*K<=65536`（大 K 回归，见 §19）；1D f32/i32+i64 下标多线程改走专用单遍 SVE 内核（uzp1 收窄复用 u32index）；`small_single` 并行阈值 `max(16384, 512×nt)` | （未提交） |
 
 ## 3. 逐项详解
 
@@ -168,13 +170,15 @@ index_impl
   0. 单 mask && 覆盖前 m 维 && mask/self 连续 && CPU → gather_mask（单遍 compaction，T8）
   0b. 单整数下标 && 末维 K<=4096 && mask/self 连续 && CPU → small_single_index（绕 normalize，T9）
   1. K < 1024                     → gather_direct（无 linearize）
-  2. 单索引 && after_contig && A>1 && (A>=4096||A<16) && f32/f64
+  2. 单索引 && after_contig && A>1 && (A>=4096||A<16||(A<=64&&B*K<=65536)) && f32/f64
                                      → M1 raw rowcopy（skip-linearize）
   2b. 单索引 && !after_contig && col_off 有 ≥4 run
                                      → strided rows（run 块拷贝）
   2c. 多索引 && after_contig && A>=4 && 线程数>=16
                                      → 多索引 raw rowcopy（skip-linearize）
   3. 单索引 && B==1 && A==1       → T4 raw 桶化（skip-linearize）
+       └ 大值域 && f32/i32 数据+i64 下标 && 源>512KB && >1t
+                                     → gather_single_1d_sve（T15-C 单遍 SVE）
   4. A==1 || (after_contig && A>=4 && f32/f64)      → linearize + gather_index
        └─ gather_index：先试 bucket（A==1 值域≤2048）→ SVE 8B/4B → rowcopy → scalar
   5. 其余（A<4 / 非连续小块 / run=1）→ T3 gather_fused（不物化 idx）
@@ -493,9 +497,10 @@ opt-in 实现（§14）。
 | half/bf16 1-36t | 0.5-0.97x | **1.2-2.4x** |
 | 2D A=16 K=4096 32/36t | 0.53-0.55x | **1.03-1.05x** |
 
-仍 <1x：非连续 mask 0.84-0.98x、int8/uint8/complex 0.9-1.0x、小工作量
-（S4 8/16t、小 K 高线程）0.46-0.96x。逐 case 分析见
-`docs/degradation-analysis.md`。
+T13 后仍 <1x：非连续 1D mask 0.86-0.98x、int8/uint8 8/16t 0.82-0.99x、
+complex 1t 0.95x、S4/multi 8/16t 0.91-0.98x、1D K=65536 16-36t 0.81-0.88x、
+2D A=16 K=8192 32/36t 0.73/0.76x。逐 case 分析见
+`docs/degradation-analysis.md` §5.8。
 
 ### 验证
 
@@ -580,3 +585,110 @@ B=32/2 同趋势；A=1/A=4 的 1t 旧路径为 0.67/0.73x，T13 后均 >1.5x。
 
 - 13 个测试文件 **123/123**；两进程 true-aten 对拍 **44/44**。
 - 新增 dom1、负索引、int32、空索引、零尾维、广播/非连续回退测试。
+
+## 18. T14：`small_single_index` 短行 memcpy（A>=2）
+
+### 问题（realpath 对拍发现，RESULTS §2.5）
+
+真实 workload 对拍（`bench_realpath_driver.py`）发现 shortq A=3（图消息/邻域
+查询短行，12B/行）K=512-1023 全线程 **0.84-1.69x**（i64 0.84-1.22x），是真实
+路径矩阵里唯一 <1x 的家族。定位：同一路径（`small_single_index`，
+串行）下，A=2（17µs）与 A=4（memcpy 分支，16µs）都快，唯独 A=3（逐元素标量
+循环分支）35µs——3 次迭代的每行耗时约是 8/12/16B memcpy 的 **2 倍**。aten 对
+A=2/3/4 一律 ~33µs（i64 下标无 int32 转换开销，是强基线），因此 A=3 i64 落到
+0.84-0.99x。
+
+此问题在既有基准里不可见：`bench_threads.py` 的 A=2/3 场景 K=200k（不走
+small_single），smallk 只有 A=1/A=16 —— 只有真实尺寸的 shortq 才暴露。
+
+### 变更
+
+| 项 | 变更 | 代码 |
+|---|---|---|
+| T14-1 | 行拷贝 memcpy 阈值 `A>=4` → `A>=2`；A==1 保持单元素赋值 | `op.cpp`（一处分支） |
+
+### 实测（node 5，两进程交替）
+
+| case | 修复前（v1 官方轮） | 修复后 |
+|---|---|---|
+| shortq A=3 K=1023 i64 | 0.84-0.99x | **2.62-2.72x** |
+| shortq A=3 K=1023 i32 | 1.19-1.41x | **3.58-3.66x** |
+| shortq A=3 K=512 i64 | 1.15-1.22x | **2.75-2.82x** |
+| shortq A=3 K=512 i32 | 1.62-1.69x | **3.72-3.90x** |
+
+hpc 绝对时间 A=3 从 35.5µs 降到 24.5µs，与 A=2（23.7µs）/A=4（24.5µs）拉平；
+7 轮聚焦复测 hpc spread 1.05。M5 标量 2D A=3（K=1）不受影响——单次调用
+开销占主导，行拷贝不是瓶颈。
+
+### 验证
+
+- 13 个测试文件 **123/123**；两进程 true-aten 对拍 **44/44**。
+- 全量 realpath 重跑（§2.5）：全形态 ≥1.11x，无新增退化；T14 不影响既有
+  31 场景矩阵（无 A=2/3 且 K≤4096 的单索引场景）与 smallk（A=1/A=16）。
+
+## 19. T15：中等行宽 raw 放行（小 K）+ f32+i64 大源单遍 SVE + 阈值线程缩放
+
+### 问题（degradation-analysis §5.8 C/E + §2.7 38t 边界）
+
+T13 矩阵残余的三类退化：
+
+- **E**：2D A=16 K=8192 在 32/36t 只有 0.73/0.76x——A=16 落在 raw rowcopy 条件
+  （`A<16 || A>=4096`）的空档，多线程走 linearize+rowcopy 两遍；小总工作量下
+  linearize 的 fork-join 固定开销占主导。
+- **C**：1D f32 + i64 下标（K=65536）16-36t 0.81-0.88x——1D 快路径的 `sve_ok`
+  门只认 (i32 下标, f32/i32) 或 (i64 下标, f64/i64)，f32+i64 无 SVE 路由，任何
+  线程数都落 `gather_single_1d` 标量单遍。
+- **38t 边界**：2D A=16 K=1024（n*A=16384 恰好触发并行）38t 1.46x vs K=1023
+  串行 2.49x——38 线程 fork-join 对 64KB 任务净亏 ~17µs。
+
+### 变更
+
+| 项 | 变更 | 代码 |
+|---|---|---|
+| T15-E | raw rowcopy 条件增加 `A<=64 && B*K<=65536`（大 K 不放行，见下） | `op.cpp` 一处条件 |
+| T15-C | 新内核 `pure_gather_sve_4b_i64idx<T>`：i64 向量读入 → 向量边界检查/负归一 → uzp1 抽低 32 位 → 复用 u32index gather+预取；1D 快路径在 f32/i32 + i64 下标 + **源>512KB（L2 实测 768KB，取其下保守界）** + >1 线程时直连调用，跳过 linearize 与 bucket 扫描 | `gather.cpp`/`gather.h`/`op.cpp` |
+| T15-阈值 | `small_single` 并行阈值 `n*A>=16384` → `max(16384, 512×线程数)` | `op.cpp` |
+
+### 两次迭代（A/B 纠正了两个错误假设）
+
+第一版放行全部 A<=64、且 C 经 linearize 落 `gather_index`，聚焦 A/B（7 轮
+中位数）发现两处回归后收窄：
+
+1. **大 K 下 raw 反而慢 12-32%**（A=64 E=1M i32 8t 7982→10378µs、rc A=16
+   K=200k 1724→2286µs、M2 (20000,64) +12%）：raw 每行做内联检查/负归一/
+   `v*stride` 地址链，冷源（L3/DRAM）行拷贝下拖慢发射；linearize 的预校验
+   偏移 + 无检查拷贝两遍反而快。小 K（B*K≤65536）省一遍 fork-join 收益更大，
+   raw 赢——实测分界清晰，条件定为 `A<=64 && B*K<=65536`。
+2. **小源下 4B SVE gather 每元素成本高于标量**（实测每线程每元素：小源
+   标量 L1 命中 ~7.1ns vs gather ~18ns，双口径/双内核复现；大源反转
+   ~19 vs ~10ns，机理与推导见 degradation-analysis.md §5.9）：C 经
+   linearize→`gather_index` 是 4 遍 fork-join（bucket 扫描 ×2 + linearize +
+   SVE），K=65536 56→110µs；直连单遍内核也要 92-102µs。
+   分界是**源驻留级**而非 K：8MB 源（L3/DRAM）gather 的 8 路在飞负载把
+   延迟摊薄（K=10M 8t 1.32→1.93x），16KB 源（L1）标量的乱序重叠已把延迟
+   藏住、指令更少——最终给内核加源>512KB（L2 实测 768KB，取其下保守界）
+   门，小源保持标量。ACLE 无 32 位数据的 64 位下标 gather intrinsic，
+   故用 uzp1 从归一后的 i64 向量抽低 32 位复用 u32index（独立程序在本机 SVE
+   上验证过语义，含负值归一/尾数谓词/OOB 检测）。
+
+### 实测（聚焦 A/B，node 5，两进程交替，7 轮中位数）
+
+| case | 修复前 | 修复后 |
+|---|---|---|
+| 2D A=16 K=8192（8-38t） | 1.28-1.66x | **2.12-2.49x** |
+| 2D A=16 K=65536（32-38t） | 1.53-1.59x | **2.49-2.82x** |
+| 2D A=16 K=1024（36/38t） | 1.86-1.98x（fork-join 净亏 10-17µs） | **2.83-4.57x**（hpc 17.1µs，与 K=1023 串行完全拉平） |
+| 1D f32 K=10M idx64（8-36t） | 1.23-1.32x | **1.44-2.22x**（hpc -15~-40%） |
+| 1D f32 K=65536 小源（对照，回标量） | 1.26-1.33x | 0.98-1.25x（hpc 42-61µs，不劣于修复前） |
+| A=64 E=1M / rc A=16 K=200k / M2（对照） | — | 与修复前差 **1-3%**（回归全修复） |
+
+smallk 官方复测见 RESULTS §2.3（T15 构建）。
+
+### 验证
+
+- `test_rowcopy_routes` **8/8**（新增 4 个路由测试：`medium_a_raw_route`、
+  `medium_a_large_k_keeps_linearize`、`f32_i64_1d_route`、
+  `small_single_thread_scaled_threshold`，全部走计数器断言）；13 个测试文件
+  **127/127**；两进程 true-aten 对拍 **44/44**。
+- realpath 全形态路由不变（A1 K=1、M1 A=1024/2048/4096、M2 B·K=10 万均不在
+  新路由范围），§2.5 T14 数据继续有效。

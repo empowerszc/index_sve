@@ -45,9 +45,12 @@ index_impl(self, indices)
   ├─ 单 mask && 覆盖前 m 维 && 连续 && CPU → gather_mask（T8 单遍压实）
   ├─ 单整数下标 && K<=4096 && 连续 && CPU → small_single_index（T9）
   ├─ K < 1024                    → gather_direct（快速路径，无 linearize）
-  ├─ 单索引 && A>=4096 && 连续 && f32/f64 → M1 raw rowcopy（skip-linearize）★主路径
+  ├─ 单索引 && (A>=4096||A<16||(A<=64&&B*K<=65536)) && 连续 && f32/f64
+  │                                    → M1 raw rowcopy（skip-linearize）★主路径
   ├─ 单索引 && B==1 && A==1      → T4 raw 桶化（值域≤2048 查表）
-  │     └─ 值域>2048 && 1 线程   → gather_single_1d（T5 单遍标量）
+  │     ├─ 值域>2048 && f32/i32 数据+i64 下标 && 源>512KB && >1t
+  │     │                       → gather_single_1d_sve（T15-C 单遍 SVE）
+  │     └─ 值域>2048 其余（1 线程/小源/其他 dtype）→ gather_single_1d（T5 单遍标量）
   ├─ 1 线程 && 单索引 && A>1     → A>=4 连续 ? raw rowcopy : gather_fused（T11）
   │
   └─ linearize + gather_index
@@ -72,7 +75,7 @@ index_impl(self, indices)
 |---|---|---|
 | dtype ∈ {half, bf16, i16, i8, u8, bool} 纯 gather | dispatch_scalar | M4（无 4B/8B 覆盖）|
 | complex 纯 gather | dispatch_scalar | M4 |
-| f32 且 numel ≥ 2^31（防 i32 越界） | dispatch_scalar | M4（idx 被迫 int64，8B 分支又只认 f64/i64 out）|
+| f32 且 numel ≥ 2^31（防 i32 越界） | 2^31..2^32 多线程走 `gather_single_1d_sve`（T15-C）；≥2^32、1t、小源 → 标量 | M4（idx 被迫 int64；8B 分支只认 f64/i64 out，4B 直连内核需源>512KB）|
 | rowcopy A∈[2,3] 短行 | dispatch_scalar | M3（col_off 逐个解引用）|
 | 非连续 after 且存在 ≥4 连续 run | `strided_rows_raw`（T12） | M3 已缓解（run 块拷贝）|
 | 非连续 after 且 run=1（纯转置） | gather_fused / 标量 | M3（无连续块可向量化）|
@@ -195,8 +198,8 @@ linearize（混合进制 decode）+ gather。
 at::Tensor 方法（引用计数/虚调用）→ 0.66x。**T5 已修复**（nb==1 全长连续
 快路径 + 属性预提取）：linearize 4.84→1.10ms，x[i,j] 1t 0.66x→**1.21x**（T11
 重新测量 1.19x）。
-T11 修正矩阵为 1.05-1.25x（1/2/4t 1.05-1.19x；8/16t 0.96/0.89x 是 400KB
-小输出的任务切分噪声；32/36t 回 1.24/1.25x）。
+T13 矩阵为 1t-4t 1.04-1.20x；8/16t 0.97/0.92x 是 400KB 小输出的任务切分
+成本（focused 复测同值）；32/36t 1.70/1.98x 含 aten 退化放大。
 
 **T13 补充**：索引同 shape/连续且 `n≤65536` 的短调用，在 normalize 之前直接
 走 `small_multi_index`（偏移预计算 + dom1 fill + 逐行 memcpy）。K=512 实测
@@ -215,8 +218,14 @@ A=1 1t/8t/36t 为 1.59/1.99/1.67x，A=4 为 1.90/2.31/1.64x。
 超大张量本身罕见；标量路径相对 aten 通常仍有收益（idx 变 8B 使 linearize
 写放大，但 gather 段二者都标量）。
 
-**限制性质**：语义强制的实现空白。可补 f32+i64idx 的 8B 偏移 SVE gather（off
-按 8B 存、按 4B 取），未做。
+**限制性质**：语义强制的实现空白。**T15 已补**（多线程主体）：新增直连
+单遍内核 `pure_gather_sve_4b_i64idx`——读原始 i64 下标、向量边界检查/负
+归一、uzp1 抽低 32 位后复用 u32index gather（不做 linearize 物化），路由门
+为 `源>512KB && size<2^32 && >1 线程`；numel≥2^31 的 f32 源必 >512KB，
+落在 2^31..2^32 区间的即走此内核（聚焦 A/B：1D f32 K=10M idx64 源 8MB
+8t 1.32→2.22x）。仍落标量的只剩 numel≥2^32（uzp1 低 32 位会截断）、小源
+（L1 常驻下标量快于 4B gather 微码下限）或 1 线程——均罕见且标量不劣于
+aten。原“8B 偏移存取（off 按 8B 存、按 4B 取）”的物化方案不再需要。
 
 ### 3.8 1 线程（T5 已修）
 

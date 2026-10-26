@@ -34,8 +34,8 @@ index_impl(self, indices)
        a. K < 1024 → gather_direct
             └ A==1 单索引全长连续 → 预校验紧凑循环（T11）
        b. M1: 单索引 && 连续 idx && after_contiguous && A>1
-              && (A>=4096 || A<16) && f32/f64
-            → gather_rowcopy_raw（跳过 linearize，T2/T12）
+              && (A>=4096 || A<16 || (A<=64 && B*K<=65536)) && f32/f64
+            → gather_rowcopy_raw（跳过 linearize，T2/T12；T15 放行小 K 中等行宽）
        b2. 单索引 && !after_contiguous && A>1 && 连续 idx && f32/f64
               && col_off 存在 ≥4 连续 run
             → gather_strided_rows_raw（run 块拷贝，T12）
@@ -43,7 +43,9 @@ index_impl(self, indices)
             → gather_rowcopy_fused（跳过 linearize，T12；n>65536 或广播/非连续）
        c. T4 raw: 单索引 && B==1 && A==1 && 连续 idx
             → gather_bucket_pure_raw（小值域查表）
-            └ 无 SVE 内核 dtype 或 1 线程 → gather_single_1d（单遍标量，T5/T11）
+            └ f32/i32+i64 下标 && 源>512KB && >1 线程 → gather_single_1d_sve
+              （T15-C 单遍 SVE：uzp1 收窄后 u32index gather）
+            └ 其余无 SVE 内核 dtype 或 1 线程 → gather_single_1d（单遍标量，T5/T11）
        d. 1 线程 && 单索引 && A>1
             → A>=4 连续 ? gather_rowcopy_raw : gather_fused（T5/T11）
        e. A==1 || (after_contiguous && A>=4 && f32/f64)
@@ -62,7 +64,7 @@ M1 raw rowcopy / T4 raw 桶化），需要 idx 时再 linearize；T3 fused 只�
 非连续小块服务；**T5 让 1 线程走单遍**（单索引 A==1 大值域
 `gather_single_1d`、A<4 短行 `gather_fused`），避开 linearize 两遍模型；T11
 又把 1 线程 A>=4 连续块改回 raw rowcopy（SVE 整块拷贝）。T12 补齐非连续尾维
-run 块拷贝、A<16 多线程 raw、多索引 A>=4（仅 ≥16t）raw；run=1 纯转置与多索引
+run 块拷贝、A<=64 且 B*K<=65536 的多线程 raw（T15，原仅 A<16）、多索引 A>=4（仅 ≥16t）raw；run=1 纯转置与多索引
 A==1 **保留旧路径**（无连续 run / fused 解码更差）；单 mask 在入口走 `mask_fast_path` →
 `gather_mask` 单遍压实（T8）。T13 把“多索引同 shape/连续、n≤65536”的短调用
 提前到 normalize 之前，直接预校验偏移并逐行 memcpy。
@@ -155,7 +157,7 @@ L1/L2 常驻查找表的标量随机读避免了 64B 行放大，远优于大值
 
 | 短路 | 条件 | 内核 |
 |---|---|---|
-| M1 raw rowcopy | 单索引 && after_contiguous && A>1 && (A>=4096 || A<16) && f32/f64 | `rowcopy_raw_single<T,IdxT,NT>` |
+| M1 raw rowcopy | 单索引 && after_contiguous && A>1 && (A>=4096 \|\| A<16 \|\| (A<=64 && B*K<=65536)) && f32/f64 | `rowcopy_raw_single<T,IdxT,NT>` |
 | strided rows | 单索引 && !after_contiguous && col_off 有 ≥4 run | `strided_rows_raw<T,IdxT,NT>` |
 | 多索引 raw | 多索引 && after_contiguous && A>=4 && ≥16t | `rowcopy_fused_sve<T,NT>` |
 | T4 raw 桶化 | 单索引 && B==1 && A==1（1D 纯 gather） | `bucket_gather_pure_raw<T,IdxT>` |

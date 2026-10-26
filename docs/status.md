@@ -5,10 +5,14 @@
 
 > 更新规则：每轮实质变更后更新本文（测试数、commit 号、性能结论、路由）。
 
-> **30 秒现状**：T13 完成，13 套件 123/123、真 aten 对拍 44/44。T13 新增多索引
-> 小 K 入口快路径（跳过 normalize、一次预校验、dom==1 fill、逐行 memcpy）：
-> K=512/A=1 从 0.74x 提升到 1.6-2.0x，A=64 1t 从 0.67x 提升到 3.4x。
-> T11 的 31 场景矩阵仍是全形态口径；T12 strided-rows（run16 1.7-2.2x）不变。
+> **30 秒现状**：T15 完成，`test_rowcopy_routes` 路由测试 8/8、13 套件全
+> PASS、真 aten 对拍 44/44。T15 修复 T13 残余高线程空档：2D A=16
+> K=8192/65536 raw 放行（32-38t 0.73/0.76x → **1.26-2.17x**，hpc 绝对时间
+> 砍半）；K=1024 并行阈值线程缩放（38t 1.46x → 2.17x，与 K=1023 拉平）；
+> f32/i32+i64 下标大源（>512KB）直连单遍 SVE（K=10M idx64 8t 1.32→
+> **2.22x**）。此前 T14 修复 realpath 对拍唯一 <1x 项（shortq A=3
+> 0.84x → 2.6x）；T13 多索引小 K 快路径（K=512/A=1 0.74→1.6-2.0x，
+> A=64 1t 0.67→3.4x）与 T12 strided-rows 不变。
 >
 > **本文怎么用**：这是“快照”，不追求完整推导；数字以 `benchmarks/RESULTS.md`
 > §2 为准，原因分析看 `degradation-analysis.md`，路由看 §3 与
@@ -42,20 +46,25 @@ CPU 键覆盖，autograd 不受影响）。构建/运行契约见 `README.md` �
 | T11 | 线程矩阵方法学修正（libomp ICV 同步）、`gather_direct` A==1 紧凑循环、2B/1B/complex 单遍、非连续 stride 正确性修复、1t A>=4 恢复 raw rowcopy | fc26cf8 | ✅ |
 | T12 | fastindex 差异补齐：strided-rows、≤64B memcpy、A<16 raw、B==1、grain 64、多索引 A≥4（≥16t）raw | 6603406 | ✅ |
 | T13 | 多索引小 K 入口快路径：跳过 normalize、偏移预计算、dom==1 fill、逐行 memcpy；n≤65536 | a91d566 | ✅ |
+| T14 | `small_single_index` 短行 memcpy 阈值 A>=4 → A>=2（realpath 对拍发现 shortq A=3 0.84x） | （未提交） | ✅ |
+| T15 | 中等行宽 raw 放行 `A<=64 && B*K<=65536`（2D A=16 K=8192 32/36t 0.73/0.76x）；f32/i32+i64 下标大源（>512KB）直连单遍 SVE `pure_gather_sve_4b_i64idx`（uzp1 收窄复用 u32index）；`small_single` 并行阈值 `max(16384, 512×nt)`（38t K=1024 边界） | （未提交） | ✅ |
 
 ## 3. 路由现状（op.cpp `index_impl`）
 
 ```
 单 mask && 覆盖前 m 维 && 连续 && CPU → gather_mask（单遍压实，T8）
-单整数下标 && 末维 K<=4096 && 连续 && CPU → small_single_index（T9；n*A<16384 串行）
+单整数下标 && 末维 K<=4096 && 连续 && CPU → small_single_index（T9；n*A<max(16384,512×nt) 串行）
 多索引 && 同 shape && 连续 && n<=65536 → small_multi_index（跳过 normalize，T13）
 K < 1024                          → gather_direct（无线性化；A==1 预校验紧凑循环，T11）
-单索引 && A>1 && (A>=4096||A<16) && 连续 self/idx && f32/f64
+单索引 && A>1 && (A>=4096||A<16||(A<=64&&B*K<=65536)) && 连续 self/idx && f32/f64
                                   → M1 raw rowcopy（skip-linearize）
 单索引 && !连续 after && col_off 有 ≥4 run → strided_rows_raw（run 块拷贝）
 多索引 && 连续 after && A>=4 && 线程数>=16 → 多索引 raw rowcopy
 单索引 && B==1 && A==1            → T4 raw 桶化（连续 idx；小值域查表）
-                                     └ 大值域 && (!SVE 内核 || 1t) → gather_single_1d
+                                     └ 大值域 && f32/i32 数据+i64 下标 && 源>512KB && >1t
+                                        → gather_single_1d_sve（T15-C 单遍 SVE）
+                                     └ 其余大值域（无 SVE 内核 dtype/1t/小源）
+                                        → gather_single_1d（单遍标量）
 1 线程 && 单索引 && A>1           → A>=4 连续 f32/f64 ? raw rowcopy : gather_fused
 A==1 || (连续 && A>=4 && f32/f64) → linearize + gather_index（SVE/桶化/scalar）
 其余（A<4 / 非连续小块 / run=1）  → gather_fused
@@ -68,10 +77,10 @@ A==1 || (连续 && A>=4 && f32/f64) → linearize + gather_index（SVE/桶化/sc
 
 ## 4. 测试
 
-- **123/123 通过**：test_correctness 25、test_errors 6、test_model 9、
+- **127/127 通过**：test_correctness 25、test_errors 6、test_model 9、
   test_normalize 9、test_smoke 2、test_sve 25、test_index_out 7、test_mask_fused 9、
-  test_smallk 7、test_compile_optin 3、test_strided_rows 6、test_rowcopy_routes 4、
-  test_small_multi 11。
+  test_smallk 7、test_compile_optin 3、test_strided_rows 6、test_rowcopy_routes 8
+  （T15 增至 8：raw 路由/大 K 回退/f32+i64 路由/阈值缩放）、test_small_multi 11。
 - 复跑：`for t in tests/test_smoke.py tests/test_normalize.py tests/test_correctness.py tests/test_errors.py tests/test_sve.py tests/test_model.py tests/test_index_out.py tests/test_mask_fused.py tests/test_smallk.py tests/test_compile_optin.py tests/test_strided_rows.py tests/test_rowcopy_routes.py tests/test_small_multi.py; do python $t; done`
 - 注意：测试同一进程串行跑，1 线程用例必须 `try/finally` 恢复
   `torch.get_num_threads()`（test_sve.py 内已如此）。
@@ -81,7 +90,7 @@ A==1 || (连续 && A>=4 && f32/f64) → linearize + gather_index（SVE/桶化/sc
 
 ## 5. 性能结论（pin node 5，interleaved median）
 
-**1 线程（T11 矩阵）**：
+**1 线程（T11 基线；T13 复测 S1/P1 约 3.0x）**：
 
 | 形态 | 修复前 | T11 |
 |---|---|---|
@@ -90,8 +99,8 @@ A==1 || (连续 && A>=4 && f32/f64) → linearize + gather_index（SVE/桶化/sc
 | 1D pure f32 K=2M | 0.75x | **1.07x**（K=5M 1.24x） |
 | x[i,j] 多索引 | 0.66x | **1.19x** |
 | `x[:,i]` | 0.18x | **2.02x** |
-| mask（P3 连续） | ~1.0x | **2.23x**（T8 单遍融合；非连续 0.84-0.98x） |
-| 小 K 单下标 `K≤1024` | 0.5-0.7x | **1.31-2.03x**（T9/T11，真实 `x[idx]`） |
+| mask（P3 连续） | ~1.0x | **1.78x**（T8 单遍融合；非连续 0.86-0.98x） |
+| 小 K 单下标 `K≤1024` | 0.5-0.7x | **1.47-2.38x**（T9/T11/T12，真实 `x[idx]`） |
 | 2B/1B/complex | 0.5-0.97x | **0.95-1.53x**（1t；高线程至 2.4x） |
 
 **T12 新增（同进程 A/B，node 5）**：
@@ -120,13 +129,53 @@ A==1 || (连续 && A>=4 && f32/f64) → linearize + gather_index（SVE/桶化/sc
 B=32/2 同趋势。旧路径在 1t 为 0.67-0.73x；新路径把固定开销和多索引广播解码
 都移出了热点，且 dom==1 时只做一次 fill。
 
-**全线程矩阵（T11 修正，RESULTS §2，1/2/4/8/16/32/36，node 5）**：31 个
-场景里绝大多数 ≥1.0x，低线程最强（RowCopy/1D pure 在 2-8t 为 1.3-4.5x；
-单节点内存带宽用少量核即饱和）。仍 <1x 的为：int8/uint8 0.90-0.99x、
-complex 0.95-0.97x、非连续 mask 0.84-0.98x、S4 8/16t 0.87/0.76x、
-`x[i,j]` 8/16t 0.96/0.89x、int64 4t 0.87x、mask empty 4t 0.74x、
-range2048 16t 0.87x（单点抖动/小规模强扩展，均非持续趋势）。逐 case
-微架构分析见 `degradation-analysis.md`。
+T13 小 K 复测（`bench_smallk_driver.py`）：1D K<=1024 为 1.47-2.38x；
+2D A=16 K=128-1024 为 1.37-3.15x；剩余高线程空档为 1D K=65536 16-36t
+0.81-0.88x、2D A=16 K=8192 32/36t 0.73/0.76x（RESULTS §2.3）。
+
+**T15 小 K 复测（RESULTS §2.3 新表，2026-10-26）**：2D A=16 K=8192 32-38t
+**1.26-1.30x**（hpc 73-79µs 砍半到 36-37µs；aten 绝对时间随箱态漂移，以
+同轮交替比值为准）、K=65536 32-38t **2.01-2.17x**；K=1024 与 K=1023 全
+线程拉平（38t hpc 17.89 vs 17.86µs，T14 轮 38t 曾 1.46x）；1D K<=1024
+1.83-2.36x。剩余 <1x 仅 1D 小源家族：K=8192 36/38t 0.95x、K=65536 32-38t
+0.90-0.92x——T15-C 判明小源（L1 常驻）下 4B SVE gather 微码吞吐反而低于
+标量，保持标量；残留为 `gather_bucket_pure_raw` 前置值域扫描 ~15µs（未来项）。
+
+**T14 真实 workload 对拍（`bench_realpath_driver.py`，RESULTS §2.5，两进程
+`x[idx]` 全链路，1/8/16/38t）**：
+
+| 形态 | 1t | 8t | 16t | 38t |
+|---|---|---|---|---|
+| M1 权重块（≤16KB/行，E=20k） | 13.0-13.6x | 5.1-5.8x | 2.7-3.2x | 1.2-1.4x |
+| M5 标量循环 / A1 单元素高频 | 2.6-3.8x | 2.6-3.7x | 2.6-3.7x | 2.6-3.7x |
+| shortq A=2-4 K=64-1023 | 2.6-4.3x | 2.6-4.3x | 2.6-4.3x | 2.6-4.3x |
+| M2 (20000,8/64/256) E=100k | 1.2-3.5x | 1.6-2.7x | 1.5-2.4x | 1.1-4.9x |
+
+全形态 ≥1.11x（38t 的 1.1-1.4x 为带宽饱和）。T14 修复 shortq A=3（唯一 <1x
+项，0.84-0.99x → 2.6x+）。aten 在 16/38t 的 K=1023×A≥3 有 539-615µs 的
+fork-join 病理（我们串行免疫），对应 22-26x 格子不作收益宣传。
+
+**T13 全量复测（RESULTS §2.4，31 场景 × 7 线程，node 5）**：绝大多数
+≥1.0x，RowCopy 仍最强（S1/P1 1t 3.0x、rowcopy A=4/16 1t 1.9/2.1x）。
+T13 只改多索引小 K，未引入新退化；仍 <1x 的持续项集中在五类（另加单点抖动）：
+
+- **每线程工作量小**：S4 8/16t 0.98/0.91x、`x[i,j]` 8/16t 0.97/0.92x；
+  每线程 50-100KB，fork-join/调度 > 并行收益。
+- **1B 行放大**：int8 8/16t 0.85/0.82x、uint8 0.99/0.94x（focused 复测
+  为 0.98/0.94、0.97/0.86x）；64B line 只用 1B，aten 同为标量。
+- **无 SVE dtype**：complex64 1t 0.95x，2t+ 持平；标量单遍的边界检查开销。
+- **非连续 mask**：1D stride2 mask 1-16t 0.86-0.98x；T8 只接连续 mask，
+  回退 `nonzero`（物化 int64）+ linearize。
+- **小 K 高线程路由空档（T15 已修大半）**：2D A=16 K=8192/65536 已修
+  （raw 放行，32-38t 1.26-2.17x）；1D K=65536 大源已修（f32/i32+i64 直连
+  SVE 单遍，K=10M idx64 8t 1.32→2.22x），小源判明标量更快（每元素标量
+  L1 命中 ~7.1ns vs 4B gather 微码/发射下限 ~18ns，大源反转为 ~19 vs
+  ~10ns，见 degradation-analysis.md §5.9），32-38t 0.90-0.92x
+  残留为前置 bucket 扫描 ~15µs（未来项）。
+- 单点抖动：range2048 16t 0.93x、mask 4t 0.97x；相邻线程 >1.2x，判为噪声。
+
+32/36t 的 2-10x 多数是 aten 在带宽饱和后自身变慢，不应作为收益宣传。
+逐 case 微架构分析见 `degradation-analysis.md` §5.8。
 
 > 旧 RESULTS §3.6.1/§3.9 的 2-36t 数据因 libomp/libgomp 两套 ICV 失效（扩展实际
 > 用 38 个 worker），已标注作废；不要再用其中 "≥1.06x" 的结论。
@@ -166,10 +215,14 @@ mask 经 T8 后 1.3-4.2x；
 
 ## 7. 下一步候选（未做）
 
+- 1D 小源跳过 `gather_bucket_pure_raw` 前置值域扫描（~15µs / 总 42-53µs，
+  把 K=8192/65536 小源 36-38t 的 0.90-0.95x 拉回 ≥1x；degradation-analysis.md
+  §5.8-C、§8 第 1 项）。
+- f64+i32 下标经 `svunpklo` 加宽走 8B gather（当前落标量；收益小）。
 - M1 值域桶化（T2 阶段 2）：`gather_rowcopy_raw` 未对下标做值域分析，可再桶化。
 - 4B 大 K 大值域 gather：软件预取 / 按 cache line 分桶排序（规避行放大；SVE 与
   标量已持平，换指令无收益）。
-- 端到端 AI4S 模型复测（验证 T0-T11 在真实负载上的整体收益）。
+- 端到端 AI4S 模型复测（验证 T0-T15 在真实负载上的整体收益）。
 - 纯转置 run=1 的低线程尾部（8t 0.84x）：若要继续，需要独立的“固定 col_off
   SVE gather”内核，不是 strided-rows 能解决；见 gap 文档 §19.1。
 - 多索引 raw 的 16t 阈值需在其它机器复测；当前只按 920F/node5 定。
@@ -194,8 +247,12 @@ for t in tests/test_smoke.py tests/test_normalize.py tests/test_correctness.py \
 python tests/verify_against_aten.py --mode both
 
 # 全线程矩阵（RESULTS §2，pin node 5 静默节点，25 iters interleaved）
-HPC_INDEX_NO_OVERRIDE=1 HPC_AFFINITY=190-227 HPC_THREADS=1,2,4,8,16,32,36 \
+HPC_INDEX_NO_OVERRIDE=1 HPC_AFFINITY=190-227 HPC_THREADS=1,2,4,8,16,32,36,38 \
   python benchmarks/bench_threads.py
+
+# 真实 workload 对拍（RESULTS §2.5，短调用/真实路径结论首选）
+HPC_AFFINITY=190-227 HPC_THREADS=1,8,16,38 HPC_REPS=3 \
+  python benchmarks/bench_realpath_driver.py
 
 # 回归扫描（pin node 5 静默节点，避免共享箱噪声）
 HPC_INDEX_NO_OVERRIDE=1 HPC_AFFINITY=190-227 HPC_THREADS=1,8,32 \
