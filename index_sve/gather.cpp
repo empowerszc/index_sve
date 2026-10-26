@@ -160,6 +160,66 @@ void pure_gather_sve_4b_s32(const int32_t* src, const int32_t* idx, int32_t* dst
   }
 }
 
+// T15-C：4B 元素 + 原始 i64 下标（元素偏移）。ACLE 无 32 位数据的 64 位下标
+// gather，故先向量边界检查/负归一，再 uzp1 抽各 i64 低 32 位得 u32 元素偏移
+// （调用方保证 size<2^32 且 stride==1），复用 u32index gather 与预取；每迭代
+// svcntd() 个元素（VL512 下 8 个）。
+template <typename T>
+void pure_gather_sve_4b_i64idx(const T* src, const int64_t* idx, T* dst,
+                               int64_t n, int64_t size, int64_t pf) {
+  const int64_t VL = svcntd();
+  const svint64_t vsize = svdup_n_s64(size), nsize = svdup_n_s64(-size);
+  // 归一（负索引 +size）后抽低 32 位：uzp1(w, w) 的前 VL 个 u32 = 各 i64 低半
+  auto norm_narrow = [&](svbool_t pg, svint64_t v) {
+    svbool_t neg = svcmplt_s64(pg, v, svdup_n_s64(0));
+    svint64_t vn = svadd_s64_m(neg, v, vsize);
+    svuint32_t w = svreinterpret_u32_u64(svreinterpret_u64_s64(vn));
+    return svuzp1_u32(w, w);
+  };
+  auto check = [&](svbool_t pg, svint64_t v, int64_t i) {
+    svbool_t bad = svcmplt_s64(pg, v, nsize);
+    bad = svorr_z(pg, bad, svcmpge_s64(pg, v, vsize));
+    if (svptest_any(pg, bad)) {
+      for (int64_t j = i, e = std::min(i + VL, n); j < e; ++j) {
+        int64_t u = idx[j];
+        TORCH_CHECK_INDEX(u >= -size && u < size,
+            "index ", u, " is out of bounds for dimension 0 with size ", size);
+      }
+    }
+  };
+  auto gather_store = [&](svbool_t pg4, svuint32_t off, int64_t i) {
+    if constexpr (std::is_same_v<T, float>) {
+      store4_f32<false>(pg4, dst + i, svld1_gather_u32index_f32(pg4, src, off));
+    } else {
+      store4_s32<false>(pg4, dst + i, svld1_gather_u32index_s32(pg4, src, off));
+    }
+  };
+  const svbool_t pg = svptrue_b64();
+  const svbool_t pg4 = svwhilelt_b32((int64_t)0, VL);
+  int64_t i = 0;
+  if (pf > 0) {
+    for (; i + pf + VL <= n; i += VL) {
+      svprfw_gather_u32index(
+          pg4, src, norm_narrow(pg, svld1_s64(pg, idx + i + pf)), SV_PLDL1KEEP);
+      svint64_t v = svld1_s64(pg, idx + i);
+      check(pg, v, i);
+      gather_store(pg4, norm_narrow(pg, v), i);
+    }
+  }
+  for (; i + VL <= n; i += VL) {
+    svint64_t v = svld1_s64(pg, idx + i);
+    check(pg, v, i);
+    gather_store(pg4, norm_narrow(pg, v), i);
+  }
+  if (i < n) {
+    svbool_t pgt = svwhilelt_b64(i, n);
+    svbool_t pg4t = svwhilelt_b32(i, n);
+    svint64_t v = svld1_s64(pgt, idx + i);
+    check(pgt, v, i);
+    gather_store(pg4t, norm_narrow(pgt, v), i);
+  }
+}
+
 // A==1 纯 gather：扁平输出 [0, B*K) 并行（B==1 时即按 K 分块，修复旧串行化）。
 // 块内可能跨行，按行切段，段内连续 k 用一条向量 gather。
 template <typename T, typename IdxT, bool NT>
@@ -747,6 +807,31 @@ void gather_single_1d(const IndexSpec& spec, at::Tensor& out) {
       gather_single_1d<scalar_t, int64_t>(spec, static_cast<const int64_t*>(ind.data_ptr()), dst, src);
     }
   });
+}
+
+// T15-C：1D 单索引纯 gather，f32/i32 数据 + 原始 i64 下标的多线程单遍 SVE。
+// 调用方保证：单索引、B==1、A==1、idx 连续 int64、stride0==1、size<2^32、
+// SVE512、线程数>1（1 线程仍走上方 gather_single_1d 标量单遍）。
+template <typename T>
+void gather_single_1d_sve_impl(const IndexSpec& spec, const int64_t* raw,
+                               T* dst, const T* src) {
+  const int64_t size = spec.indexed_sizes[0];
+  at::parallel_for(0, spec.K, adaptive_grain(spec.K), [&](int64_t lo, int64_t hi) {
+    pure_gather_sve_4b_i64idx<T>(src, raw + lo, dst + lo, hi - lo, size, PREFETCH_DIST);
+  });
+}
+
+void gather_single_1d_sve(const IndexSpec& spec, at::Tensor& out) {
+  const int64_t* raw = static_cast<const int64_t*>(spec.indices[0].data_ptr());
+  if (out.scalar_type() == at::kFloat) {
+    gather_single_1d_sve_impl<float>(spec, raw,
+        static_cast<float*>(out.data_ptr()),
+        static_cast<const float*>(spec.transposed_self.data_ptr()));
+  } else {
+    gather_single_1d_sve_impl<int32_t>(spec, raw,
+        static_cast<int32_t*>(out.data_ptr()),
+        static_cast<const int32_t*>(spec.transposed_self.data_ptr()));
+  }
 }
 
 // M1 单索引大块 skip-linearize：不物化 idx，直接在 gather 阶段读原始下标、内联边界

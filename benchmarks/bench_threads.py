@@ -1,13 +1,14 @@
-"""多线程扫描：核心场景 × 1/2/4/8/16/32/36 线程（interleaved median）。
+"""多线程扫描：核心场景 × 1/2/4/8/16/32/36/38 线程（interleaved median）。
 
 替代 bench_gate.py 的顺序法：aten/hpc 交错 iters，取中位数（共享箱抗噪）。
 覆盖模型形态（S1/P1/P2/P3/S4）、1D pure 4B/8B、mask（1D/2D/空）、小值域桶化、
 rowcopy A=2/3/4、多索引、列索引、非连续、2B/1B/complex（M4）、以及 T8/T9 形态。
-小 K（<16384 元素）用 bench_smallk_real.py 走真实 `x[idx]` 两进程法，避免
-pybind wrapper 开销污染。
+本脚本 hpc 侧为 hpc_index() pybind 直呼（绕过 dispatcher），适合大 K / 全线程
+正式矩阵；短调用 / 真实 `x[idx]` 路径结论以 bench_realpath_driver.py 为准，
+小 K（<16384 元素）另见 bench_smallk_real.py 两进程法。
 
 用法：
-  HPC_INDEX_NO_OVERRIDE=1 HPC_AFFINITY=190-227 HPC_THREADS=1,2,4,8,16,32,36 \
+  HPC_INDEX_NO_OVERRIDE=1 HPC_AFFINITY=190-227 HPC_THREADS=1,2,4,8,16,32,36,38 \
     python benchmarks/bench_threads.py
 """
 import ctypes, os, sys, time, torch, statistics
@@ -35,7 +36,7 @@ def set_threads(t):
     if _LIBOMP is not None:
         _LIBOMP.omp_set_num_threads(t)
 
-THREADS = [int(t) for t in os.environ.get("HPC_THREADS", "1,2,4,8,16,32,36").split(",")]
+THREADS = [int(t) for t in os.environ.get("HPC_THREADS", "1,2,4,8,16,32,36,38").split(",")]
 ITERS = int(os.environ.get("HPC_ITERS", "40"))
 
 def med_pair(fa, fh, n=ITERS):
@@ -130,12 +131,18 @@ def main():
     sweep("1D f64 K=10M idx32", x, [i], lambda: x[i], 10_000_000 * (4 + 8))
 
     # --- 2B/1B/complex：无 SVE 内核，dispatch_scalar（M4） ---
-    for dt, nbytes in ((torch.float16, 2), (torch.bfloat16, 2),
-                       (torch.int8, 1), (torch.uint8, 1)):
+    for dt, nbytes in ((torch.float16, 2), (torch.bfloat16, 2)):
         x = torch.randn(2_000_000, generator=rng).to(dt)
         i = torch.randint(0, 2_000_000, (2_000_000,), generator=rng)
         sweep(f"1D {str(dt).replace('torch.','')} K=2M", x, [i],
               lambda: x[i], 2_000_000 * (8 + nbytes))
+    # 1B 整数用 randint 直接生成全值域随机字节；randn().to() 向零截断后只有
+    # 少数近零值（0 ≈70%，±1 ≈27%），数据不具代表性。
+    for dt, name, lo, hi in ((torch.int8, "int8", -128, 128),
+                             (torch.uint8, "uint8", 0, 256)):
+        x = torch.randint(lo, hi, (2_000_000,), dtype=dt, generator=rng)
+        i = torch.randint(0, 2_000_000, (2_000_000,), generator=rng)
+        sweep(f"1D {name} K=2M", x, [i], lambda: x[i], 2_000_000 * (8 + 1))
     x = torch.randn(2_000_000, dtype=torch.complex64, generator=rng)
     i = torch.randint(0, 2_000_000, (2_000_000,), generator=rng)
     sweep("1D complex64 K=2M", x, [i], lambda: x[i], 2_000_000 * (8 + 8))

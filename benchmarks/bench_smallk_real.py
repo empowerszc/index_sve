@@ -2,7 +2,7 @@
 
 小 K 的单次调用只有几微秒，`bench_threads.py` 的 pybind `hpc_index()` 包装
 （Python 调用 + list 转换）会污染比值；这里用真实 `x[idx]`，并由外层驱动脚本
-交替启动 aten/hpc 两个进程（见 `bench_smallk_driver.sh`），取每个进程的中位数。
+交替启动 aten/hpc 两个进程（见 `bench_smallk_driver.py`），取每个进程的中位数。
 
 用法（单进程，输出 JSON）：
   HPC_INDEX_NO_OVERRIDE=1 python benchmarks/bench_smallk_real.py > aten.json
@@ -44,7 +44,7 @@ for _part in _affinity.replace(" ", "").split(","):
         _cpus.add(int(_part))
 os.sched_setaffinity(0, _cpus)
 
-THREADS = [int(t) for t in os.environ.get("HPC_THREADS", "1,2,4,8,16,32,36").split(",")]
+THREADS = [int(t) for t in os.environ.get("HPC_THREADS", "1,2,4,8,16,32,36,38").split(",")]
 ITERS = int(os.environ.get("HPC_ITERS", "200"))
 REPS = int(os.environ.get("HPC_REPS", "3"))
 

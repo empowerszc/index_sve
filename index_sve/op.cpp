@@ -41,6 +41,9 @@ void sync_omp_threads() {
 #endif
 }
 
+std::atomic<uint64_t> g_single_1d{0};
+std::atomic<uint64_t> g_single_1d_sve{0};
+
 // 核心路由：out 已由调用方确定为正确 shape/dtype/device（functional 分配或 out 变体校验）。
 void index_into(const at::Tensor& self, const IndexSpec& spec, at::Tensor& out) {
   const bool g_nt = non_temporal_enabled();
@@ -52,8 +55,14 @@ void index_into(const at::Tensor& self, const IndexSpec& spec, at::Tensor& out) 
 
   // M1 单索引大块 skip-linearize：单索引 + after_contiguous + A 大 + 值域小（S1 最热形态）。
   // 跳过 linearize，直接在 gather 阶段读原始下标算偏移（T2 阶段 1，无桶化）。
+  // T15：中等行宽 A<=64 且总行数 B*K<=65536 时放行（2D A=16 K=8192 曾落 linearize
+  // 两遍，32/36t 0.73/0.76x）。大 K 不放行：linearize 的预校验偏移+无检查拷贝更快
+  // （A/B 实测 raw 慢 12-32%：A=64 E=1M 8t +30%、A=16 K=200k 8t +32%、M2 (20000,64)
+  // 8t +12%）——raw 逐行检查/负归一/v*stride 链在冷源（L3/DRAM）行拷贝下拖慢发射。
   if (spec.indices.size() == 1 && spec.after_contiguous &&
-      spec.indices[0].is_contiguous() && (spec.A >= 4096 || spec.A < 16) &&
+      spec.indices[0].is_contiguous() &&
+      (spec.A >= 4096 || spec.A < 16 ||
+       (spec.A <= 64 && spec.B * spec.K <= 65536)) &&
       spec.A > 1 &&
       (out.scalar_type() == at::kFloat || out.scalar_type() == at::kDouble)) {
     gather_rowcopy_raw(spec, out, g_nt);
@@ -79,9 +88,11 @@ void index_into(const at::Tensor& self, const IndexSpec& spec, at::Tensor& out) 
   // T4 raw 小值域 1D 纯 gather：单索引 + B==1 + A==1（M3 keys[order]、M4 等）直接查表，
   // 完全跳过 linearize 的 broadcast 解码。fast_1d 要求索引连续（raw 内核按 idx[k]
   // 平坦读；非连续索引走下面的 linearize 通用路径）。
-  // 无 SVE 内核的 dtype（2B/1B/complex、f32+i64idx、f64+i32idx）在任何线程数都走
-  // 单遍标量：linearize 物化一遍偏移对这类标量 gather 纯属额外开销（实测 2-16t
-  // 0.5-0.9x）。有 SVE 内核时 1 线程仍用单遍（T5），多线程走 linearize+SVE。
+  // 无 SVE 内核的 dtype（2B/1B/complex、f64+i32idx）在任何线程数都走单遍标量：
+  // linearize 物化一遍偏移对这类标量 gather 纯属额外开销（实测 2-16t 0.5-0.9x）。
+  // 有 SVE 内核时 1 线程仍用单遍（T5），多线程走 linearize+SVE。f32/i32 数据 +
+  // i64 下标不走 linearize+SVE——那要 bucket 扫描+linearize+bucket 扫描+SVE 共
+  // 4 遍 fork-join（T15 实测 K=65536 56→110µs）；T15 改为下方专用单遍 SVE 内核。
   if (spec.indices.size() == 1 && spec.B == 1 && spec.A == 1) {
     const at::Tensor& ind0 = spec.indices[0];
     const bool fast_1d = ind0.is_contiguous();
@@ -96,7 +107,23 @@ void index_into(const at::Tensor& self, const IndexSpec& spec, at::Tensor& out) 
     const bool sve_ok = hw_sve512 &&
         ((idx32 && (st == at::kFloat || st == at::kInt)) ||
          (!idx32 && (st == at::kDouble || st == at::kLong)));
+    // T15-C：f32/i32 数据 + 原始 i64 下标 + stride==1 的多线程 1D 纯 gather，源
+    // >512KB（L2 实测 768KB，取其下保守界）时走专用单遍 SVE（读原始 i64、向量
+    // 检查/归一/uzp1 收窄后复用 u32index gather），不经 linearize——gather_index
+    // 前后的 bucket 值域扫描会多出两遍 fork-join。小源不走：实测每线程每元素
+    // 标量 L1 命中 ~7.1ns vs 4B SVE gather ~18ns（微码/发射下限，双内核复现）；
+    // 大源反转（L3/DRAM ~19 vs ~10ns，gather 的 8 路在飞负载摊薄延迟），见
+    // degradation-analysis.md §5.9。
+    if (fast_1d && !idx32 && hw_sve512 && at::get_num_threads() > 1 &&
+        (st == at::kFloat || st == at::kInt) &&
+        spec.indexed_strides[0] == 1 && spec.indexed_sizes[0] < (1LL << 32) &&
+        self.numel() * self.element_size() > (512 << 10)) {
+      g_single_1d_sve.fetch_add(1, std::memory_order_relaxed);
+      gather_single_1d_sve(spec, out);
+      return;
+    }
     if (fast_1d && (!sve_ok || at::get_num_threads() == 1)) {
+      g_single_1d.fetch_add(1, std::memory_order_relaxed);
       gather_single_1d(spec, out);
       return;
     }
@@ -275,6 +302,15 @@ bool small_multi_index(const at::Tensor& self,
   return true;
 }
 
+// small_single_index 的并行阈值：小 K 下 parallel_for 的任务开销超过收益，按总
+// 拷贝元素数 n*A 而非 n 判断（2D A=16 K=4096 曾因只看 n 而串行，8-36t 掉到
+// 0.55-0.66x）。
+inline int64_t small_single_par_threshold() {
+  // T15：高线程 fork-join 更贵，按线程数抬下限（smallk 38t：K=1024×A=16 并行
+  // 37µs vs 串行 27µs，净亏 ~10µs；K=4096×A=16 的 65536 元素仍需并行）。
+  return std::max<int64_t>(16384, 512 * at::get_num_threads());
+}
+
 // 单整数下标 + 末维 K<=4096：直接按 idx 平坦顺序取行，绕过 normalize 的向量分配/
 // transpose 分析，也避开 gather_direct 内层对 at::Tensor 方法的重复访问。
 bool small_single_index(const at::Tensor& self,
@@ -316,16 +352,16 @@ bool small_single_index(const at::Tensor& self,
         if (A == 0) continue;
         const scalar_t* sp = src + v * A;
         scalar_t* dp = dst + p * A;
-        if (A >= 4) {
+        if (A >= 2) {
+          // A=3 的 3 次迭代标量循环每行耗时 ~2x 于 memcpy（shortq 实测 35µs
+          // vs 16µs；A=2 仅 ~1.1x），8/12B 小拷贝交给 memcpy 内联序列。
           std::memcpy(dp, sp, A * sizeof(scalar_t));
         } else {
-          for (const auto c : c10::irange(A)) dp[c] = sp[c];
+          dp[0] = sp[0];
         }
       }
     };
-    // 小 K 下 parallel_for 的任务开销超过收益；阈值按总拷贝元素数 n*A 而非 n
-    // （2D A=16 K=4096 曾因只看 n=4096 而串行，8-36t 掉到 0.55-0.66x）。
-    if (n * A >= 16384) {
+    if (n * A >= small_single_par_threshold()) {
       at::parallel_for(0, n, adaptive_grain(n), run);
     } else {
       run(0, n);
@@ -446,6 +482,15 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   });
   m.def("strided_rows_count", &strided_rows_count);
   m.def("rowcopy_raw_count", &rowcopy_raw_count);
+  m.def("single_1d_count", []() {
+    return g_single_1d.load(std::memory_order_relaxed);
+  });
+  m.def("single_1d_sve_count", []() {
+    return g_single_1d_sve.load(std::memory_order_relaxed);
+  });
+  m.def("debug_ss_parallel", [](int64_t n, int64_t A) {
+    return n * A >= small_single_par_threshold();
+  });
   m.def("debug_grain", [](int64_t n) { return adaptive_grain(n); });
   m.def("idx_dtype_choice", [](int64_t numel, const std::string& dtype) {
     // 镜像 index_impl 的 use_i32 判定（仅供测试验证 f32 溢出回退逻辑）

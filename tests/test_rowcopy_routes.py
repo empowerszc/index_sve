@@ -62,6 +62,90 @@ def test_grain_floor():
         torch.set_num_threads(old)
 
 
+def test_medium_a_raw_route():
+    # T15-E：2D A=16 K=8192 曾落在 raw 路由空档（A<16 或 A>=4096），32/36t 0.73/0.76x。
+    # 放宽到 A<=64 后，单索引 A=16 全线程跳过 linearize。
+    x = torch.randn(20000, 16)
+    idx = torch.randint(0, 20000, (8192,), dtype=torch.int32)
+    ref = torch.index_select(x, 0, idx)
+    old = torch.get_num_threads()
+    try:
+        for t in (8, 36):
+            torch.set_num_threads(t)
+            before = C.rowcopy_raw_count()
+            y = index_sve.index(x, [idx])
+            torch.testing.assert_close(y, ref)
+            assert C.rowcopy_raw_count() == before + 1, f"A=16 t={t} did not skip linearize"
+    finally:
+        torch.set_num_threads(old)
+
+
+def test_medium_a_large_k_keeps_linearize():
+    # T15 复调：A<=64 的 raw 放行只限 B*K<=65536。大 K 下 linearize 的预校验偏移 +
+    # 无检查拷贝更快（A/B 实测 A=16 K=200k 8t raw 慢 32%、A=64 E=1M 8t 慢 30%）。
+    x = torch.randn(20000, 64)
+    idx = torch.randint(0, 20000, (200_000,), dtype=torch.int32)
+    ref = torch.index_select(x, 0, idx)
+    old = torch.get_num_threads()
+    try:
+        torch.set_num_threads(8)
+        before = C.rowcopy_raw_count()
+        y = index_sve.index(x, [idx])
+        torch.testing.assert_close(y, ref)
+        assert C.rowcopy_raw_count() == before, "A=64 K=200k should keep linearize"
+    finally:
+        torch.set_num_threads(old)
+
+
+def test_f32_i64_1d_route():
+    # T15-C：f32 数据 + int64 下标的 1D 纯 gather。小源（≤512KB，L1/L2 常驻）标量
+    # 单遍更快——4B SVE gather 微码吞吐下限 ~1.2ns/元素，高于标量 L1 命中循环
+    # ~0.63ns/元素（实测 K=65536 源 16KB：SVE 75µs vs 标量 41µs）；大源（L3/DRAM）
+    # 走专用单遍 SVE 内核（gather MLP 吸收延迟，K=10M 源 8MB：8t 1.32→1.93x）。
+    # 不能经 linearize 落 gather_index——bucket 扫描+linearize+bucket 扫描+SVE
+    # 共 4 遍 fork-join（实测 K=65536 56→110µs）。
+    idx = torch.randint(0, 4096, (65536,), dtype=torch.int64)
+    x = torch.randn(4096)
+    ref = torch.index_select(x, 0, idx)
+    big_x = torch.randn(2_000_000)
+    big_idx = torch.randint(0, 2_000_000, (100_000,), dtype=torch.int64)
+    big_ref = torch.index_select(big_x, 0, big_idx)
+    old = torch.get_num_threads()
+    try:
+        torch.set_num_threads(16)
+        before = C.single_1d_count()
+        before_s = C.single_1d_sve_count()
+        # 小源：标量单遍
+        torch.testing.assert_close(index_sve.index(x, [idx]), ref)
+        assert C.single_1d_count() == before + 1, "small-source f32+i64 should stay scalar"
+        assert C.single_1d_sve_count() == before_s, "small source must not use SVE kernel"
+        # 大源：直连 SVE 单遍
+        torch.testing.assert_close(index_sve.index(big_x, [big_idx]), big_ref)
+        assert C.single_1d_sve_count() == before_s + 1, "large-source f32+i64 should hit SVE kernel"
+        assert C.single_1d_count() == before + 1, "large source must not be scalar"
+        # 对照：complex64 仍无 SVE 内核，继续走标量单遍（计数器有效性）
+        cx = torch.randn(4096, dtype=torch.complex64)
+        cref = torch.index_select(cx, 0, idx)
+        torch.testing.assert_close(index_sve.index(cx, [idx]), cref)
+        assert C.single_1d_count() == before + 2, "complex64 control should stay scalar"
+    finally:
+        torch.set_num_threads(old)
+
+
+def test_small_single_thread_scaled_threshold():
+    # T15：small_single 并行阈值按线程缩放——38t 下 K=1024×A=16（16384 元素）的
+    # fork-join 净亏 ~17µs，保持串行；K=4096×A=16 仍并行；8t 行为不变。
+    old = torch.get_num_threads()
+    try:
+        torch.set_num_threads(38)
+        assert not C.debug_ss_parallel(1024, 16), "K=1024 A=16 should stay serial at 38t"
+        assert C.debug_ss_parallel(4096, 16), "K=4096 A=16 should parallelize at 38t"
+        torch.set_num_threads(8)
+        assert C.debug_ss_parallel(1024, 16), "K=1024 A=16 should parallelize at 8t"
+    finally:
+        torch.set_num_threads(old)
+
+
 if __name__ == "__main__":
     sys.path.insert(0, __file__.rsplit("/", 1)[0])
     import _harness

@@ -1,7 +1,7 @@
 """交替启动 aten/hpc 两个进程，汇总 `bench_smallk_real.py` 的中位数。
 
 用法：
-  HPC_AFFINITY=190-227 HPC_THREADS=1,2,4,8,16,32,36 \
+  HPC_AFFINITY=190-227 HPC_THREADS=1,2,4,8,16,32,36,38 \
     python benchmarks/bench_smallk_driver.py
 
 每个 (case, K, threads) 在每个进程里取中位数；两模式交替跑 HPC_REPS 轮，
