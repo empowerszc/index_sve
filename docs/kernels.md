@@ -53,14 +53,16 @@ RESULTS §2 的修正矩阵取代（`torch.set_num_threads` 对扩展生效问�
 ## 2. 4B 元素 gather（f32/i32）
 
 ```cpp
-pure_gather_sve_4b_f32 / pure_gather_sve_4b_s32
+pure_gather_sve_4b_f32 / pure_gather_sve_4b_s32 / pure_gather_sve_4b_i64idx（T15-C，§2.1）
 ```
 
 - `svld1_gather_u32index_f32(pg, base, off)`：`off` 为 **u32 元素偏移**（esize=4）。
   `svcntw()==16`（每向量 16 个 4B 元素）。
 - 预取 `svprfw_gather_u32index`；NT 时 store 换 `svstnt1_f32/s32`（**无 4B NT
   gather 指令**，gather 本身始终常规 load）。
-- 门控：仅 `idx32`（线性化后 int32 下标）且 dtype∈{f32,i32}。
+- 门控：`pure_gather_sve_4b_f32/s32` 仅 `idx32`（线性化后 int32 下标）且
+  dtype∈{f32,i32}；原始 i64 下标的 4B gather 走 §2.1（多线程 + 源 >512KB
+  才启用）。
 
 **⚠ 已知访存限制（重要，T11 复核）**：4B 随机 gather 的瓶颈是 **64B cache line
 放大 + DRAM 延迟**，不是 SVE 指令的 MLP。同一个真实内核、同一随机模式做 A/B：
@@ -75,6 +77,36 @@ pure_gather_sve_4b_f32 / pure_gather_sve_4b_s32
 2x 有用字节（8B 行放大 8x vs 4B 16x），而非指令 MLP 差异。因此 4B 大 K 大值域
 的可行方向是减少行流量（T4 小值域桶化、预取、行 gather），而不是换指令；
 f64 8B 路径不受影响。
+
+### 2.1 T15-C 大源直连 SVE `pure_gather_sve_4b_i64idx`（gather.cpp）
+
+上述"换标量无效"的结论对**中等源**成立；T15-C 补上了**大源**（L3/DRAM 驻留）
+入口：标量循环的乱序重叠有限，摊不掉大源延迟；SVE gather 每迭代 8 路在飞
+负载，实测大源每元素 ~10ns vs 标量 ~19ns。此前缺入口的原因是 ACLE 没有
+32 位数据的 64 位下标 gather。
+
+**内核**（每迭代 `svcntd()`=8 个元素，主循环 + `svwhilelt_b64` 尾部）：
+
+- `svld1_s64` 向量读 8 个原始 i64 下标；
+- 向量检查 `v>=size || v<-size`（命中才回退逐元素 `TORCH_CHECK_INDEX`），
+  负索引掩码加 `+size` 归一；
+- `uzp1` 抽各 i64 低 32 位 → u32 元素偏移（调用方保证 `size<2^32` 且
+  `stride==1`，低 32 位无损失），复用 `svld1_gather_u32index_f32/s32` 与
+  `svprfw_gather_u32index` 预取（PREFETCH_DIST）；store 固定常规（无 NT）。
+
+**入口 `gather_single_1d_sve`**（op.cpp 在 `gather_bucket_pure_raw` 分支内
+短路，不经 linearize，也省掉 bucket 值域扫描的两遍 fork-join）：
+
+- 门控：1D 单索引 A==1、原始 i64 下标、dtype∈{f32,i32}、`stride0==1`、
+  `size<2^32`、SVE512、**线程数>1**、**源 >512KB**（L2 实测 768KB，取其下
+  保守界）；只显式实例化 float/int32；
+- `at::parallel_for(0, K, adaptive_grain(K))` 分块调内核；计数器
+  `g_single_1d_sve`；
+- **小源与 1 线程不走**：小源标量更快（L1 命中 ~7.1ns/元素 vs SVE 微码/
+  发射下限 ~18ns，双内核复现）；1 线程仍走 `gather_single_1d` 标量单遍。
+  交叉点 ≈L2，机理见 degradation §5.9；
+- 实测：1D f32 K=10M idx64 8t **2.22x**（hpc 绝对时间 -40%），8-36t
+  1.44-2.22x（optimizations §19、degradation §5.9）。
 
 ## 3. 行拷贝 RowCopy（A>1 连续块）
 
@@ -116,7 +148,7 @@ rowcopy_raw_single<T, IdxT, NT>（入口：gather_rowcopy_raw，op.cpp 短路）
 - `B==1` 单独分支：`k=p`，去掉每行 `p/K`、`p%K`；A=8/15 多线程再提升
   1.2-1.4x（见 §3.2）。
 
-### 3.2 非连续尾维 strided-rows（本轮）
+### 3.2 非连续尾维 strided-rows（T12）
 
 ```cpp
 strided_rows_raw<T, IdxT, NT>（入口：gather_strided_rows_raw，op.cpp 短路）
@@ -133,7 +165,7 @@ strided_rows_raw<T, IdxT, NT>（入口：gather_strided_rows_raw，op.cpp 短路
   为逐元素；保留 `gather_fused`，原因见
   `index_sve_vs_fastindex_gap_20261023.md` §19.1。
 
-### 3.3 多索引 raw rowcopy（本轮）
+### 3.3 多索引 raw rowcopy（T12）
 
 ```cpp
 rowcopy_fused_sve<T, NT>（入口：gather_rowcopy_fused，op.cpp 短路）

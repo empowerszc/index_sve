@@ -9,7 +9,7 @@
 | [glossary.md](glossary.md) | **术语与代号速查（唯一名词入口）**：技术术语表、场景/负载代号（S1/P1/M1-M6/A1/shortq…）、形状记号、代号冲突警示 | 读任何文档遇到看不懂的名词/代号时查 |
 | [architecture.md](architecture.md) | 三段流水线整体架构、控制流、dispatch 树、数据布局 | 架构理解、代码走读 |
 | [semantics.md](semantics.md) | 与 ATen `aten::index.Tensor` 的语义对齐点与**有意差异**、错误信息、dtype 覆盖 | 正确性审查、回归测试 |
-| [kernels.md](kernels.md) | SVE512 各内核（8B/4B gather、rowcopy、scalar）实现细节 + 优化轮新路径（M1 raw rowcopy、T3 fused、T4 桶化）、预取、NT 开关 | 性能优化、内核修改 |
+| [kernels.md](kernels.md) | SVE512 各内核（8B/4B gather、rowcopy、scalar）实现细节 + 优化轮新路径（M1 raw rowcopy、T3 fused、T4 桶化、T12 strided/multi raw、T13 small_multi、T15-C 大源 4B 直连 SVE）、预取、NT 开关 | 性能优化、内核修改 |
 | [performance.md](performance.md) | 基准方法论、模型场景结果表、**胜出场景的硬件根因（§4.3：rowcopy/gather MLP/遍数消除/固定开销/桶化/串行边界）**、已知硬件限制、如何复测 | 性能评估、验收、想知道"为什么快"的读者 |
 | [benchmarks.md](benchmarks.md) | **benchmarks/ 目录指南**：逐脚本用途、公共环境变量、典型命令、真实 workload 覆盖与预测力矩阵、与功能测试的区别 | 想知道"该跑哪个基准、结果能不能外推"的读者 |
 | [degradation-analysis.md](degradation-analysis.md) | **性能退化与线程扩展分析**：修正后的 1/2/4/8/16/32/36 线程矩阵、逐 case 微架构定位（x[:,i]、2B/1B、非连续 mask、小规模并行）、perf 方法、**§5.9 残余劣化的硬件根因（微架构/系统结构/并行编程）**、优化优先级 | 想知道"哪个线程数慢、为什么慢"的读者 |
