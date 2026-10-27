@@ -213,26 +213,31 @@ mask 经 T8 后 1.3-4.2x；
   fallback 的 Python wrapper 开销 ~45µs/调用对以 RowCopy 小张量为收益主体的
   本算子是不可接受的全局回归。
 
-## 7. 下一步候选（未做）
+## 7. 演进方向（后续再看从这里开始）
 
-- 1D 小源跳过 `gather_bucket_pure_raw` 前置值域扫描（~15µs / 总 42-53µs，
-  把 K=8192/65536 小源 36-38t 的 0.90-0.95x 拉回 ≥1x；degradation-analysis.md
-  §5.8-C、§8 第 1 项）。
-- f64+i32 下标经 `svunpklo` 加宽走 8B gather（当前落标量；收益小）。
-- M1 值域桶化（T2 阶段 2）：`gather_rowcopy_raw` 未对下标做值域分析，可再桶化。
-- 4B 大 K 大值域 gather：软件预取 / 按 cache line 分桶排序（规避行放大；SVE 与
-  标量已持平，换指令无收益）。
-- 端到端 AI4S 模型复测（验证 T0-T15 在真实负载上的整体收益）。
-- 纯转置 run=1 的低线程尾部（8t 0.84x）：若要继续，需要独立的“固定 col_off
-  SVE gather”内核，不是 strided-rows 能解决；见 gap 文档 §19.1。
-- 多索引 raw 的 16t 阈值需在其它机器复测；当前只按 920F/node5 定。
-- `small_multi_index` 当前只覆盖“所有索引同 shape 且连续、self 连续”；广播、
-  非连续索引仍走 `normalize + gather_direct`（后续 P1：修正 `all_full_contig`
-  并复用偏移预计算）。
-- 扩展 dtype 白名单到 ATen 的完整集合（barebones u16/u32/u64、float8、
-  complex32 当前抛 NotImplementedError；见 semantics.md §4）。
-- 在真实 AI4S 模型上验证 `HPC_INDEX_COMPILE=1` 的端到端收益与编译时间，再决定
-  是否默认开启（当前默认关闭）。
+> 2026-10-27 收尾时的建议排序。P1/P2 是最后两个"可修的"劣化家族（其余
+> <1x 项为硬上限或使用侧问题）；P3 是验证项，其结果决定后续投入是否值得。
+> 各项根因推导见 `degradation-analysis.md` §5.9。
+
+| 优先级 | 项目 | 预期收益 | 工作量 | 详见 |
+|---|---|---|---|---|
+| **P1** | 1D 小源跳过 `gather_bucket_pure_raw` 前置值域扫描（并入 gather 单遍） | K=8192/65536 小源 36-38t 0.90-0.95x → ≥1x（省 ~15µs / 总 42-53µs，fork-join 占 30-50%） | 小 | degradation §5.8-C/§5.9.2、§8-1 |
+| **P2** | 非连续 mask 的 T8 stride 扩展（计数/压实按 mask stride 读，去 nonzero 物化） | 0.86-0.98x → 1.2-1.5x（8t 实测可省 ~1ms） | 中 | degradation §5.8-D、§8-2 |
+| **P3** | 端到端 AI4S 模型复测 | 验证 T0-T15 累计收益是否传导到真实负载（决策项） | 中 | performance §3/§4.1 |
+| P4 | f64+i32 下标经 `svunpklo` 加宽走 8B gather | ≈持平 → 小幅正收益 | 小 | degradation §8-3 |
+| P5 | M1 值域桶化（T2 阶段 2）：`gather_rowcopy_raw` 做下标值域分析 | 高重复下标场景再提升 | 中 | optimizations §3.5 |
+| P6 | 4B 大 K 大值域：按 cache line 分桶/排序 | 受 64B 行放大硬上限，只有改访问结构有效 | 大 | degradation §5.9.3 |
+| P7 | `small_multi_index` 扩广播/非连续索引（修正 `all_full_contig` + 复用偏移预计算） | 覆盖面，非性能 | 中 | — |
+| P8 | dtype 白名单扩展（barebones u16/u32/u64、float8、complex32） | 覆盖面（当前抛 NotImplementedError） | 小-中 | semantics §4 |
+| P9 | `HPC_INDEX_COMPILE=1` 真实模型端到端验证 | 决定是否默认开启 | 中 | torch-compile §6 |
+
+**不建议再投入**：1B/complex（64B 行放大是硬上限，aten 同为标量，换指令
+无解）；纯转置 run=1 低线程尾部（8t 0.84x，需独立"固定 col_off SVE
+gather"内核，收益面窄；gap 文档 §19.1）。
+
+**换机器注意**：多索引 raw 的 16t 阈值与 T15 各门值（源>512KB、
+512×nt）均按 920F/node5 实测标定；L2 容量、内存带宽、fork-join 成本
+不同则需重跑聚焦 A/B 再定门值。
 
 ## 8. 复现 / 复测命令
 

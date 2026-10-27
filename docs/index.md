@@ -18,7 +18,7 @@
 | [torch-compile.md](torch-compile.md) | **与 `torch.compile` 的关系**：Inductor 内联导致覆盖失效、三份实现对比、强制 fallback 让 compile 用回本算子（实测 2.6x→1.07-1.3x）、缓存/私有 API/FakeTensor 坑、`HPC_INDEX_COMPILE=1` opt-in 落地 | 需要在 compile/export 场景部署的读者 |
 | [override-mechanism.md](override-mechanism.md) | **Dispatcher 劫持机制详解**：如何覆盖 aten::index、autograd 为何不受影响、递归/唯一性边界、验证方法 | 想搞清"怎么做到的"的读者 |
 | [porting.md](porting.md) | 移植到其他 aarch64/SVE 变体、非 512-bit VL、其他 torch 版本 | 移植维护 |
-| [status.md](status.md) | **当前进展快照**：完成的工作、路由现状、性能结论、已知限制、下一步 | 新读者/agent 快速上手 |
+| [status.md](status.md) | **当前进展快照**：完成的工作、路由现状、性能结论、已知限制、**演进方向（§7 优先级表，接续开发从这看）** | 新读者/agent 快速上手 |
 | [index_sve_vs_fastindex_gap_20261023.md](index_sve_vs_fastindex_gap_20261023.md) | **fastindex 能力差异清单 + 当前仓库逐条审计**：strided-rows、offset 融合、grain 下限、`_offset` 变体、int32/mask、slice、小行宽；原文与实测状态对照 | 规划下一轮优化、核对能力覆盖 |
 
 ### 背景参考（reference/）

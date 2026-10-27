@@ -29,6 +29,8 @@ backward 不受影响。
   （劣化硬件根因 §5.9；胜出根因 `docs/performance.md` §4.3）。
 - 想改内核：`docs/kernels.md` → `docs/architecture.md` → `docs/optimizations.md`
   → `docs/index_sve_vs_fastindex_gap_20261023.md`（fastindex 差异与待补项）。
+- 想接续开发：`docs/status.md` §7（演进方向优先级表：P1 小源扫描合并、
+  P2 mask stride、P3 端到端验证，含预期收益与根因交叉引用）。
 - 想集成/排障：`docs/integration.md` → `docs/override-mechanism.md` → `docs/status.md`。
 
 ## 设计要点
