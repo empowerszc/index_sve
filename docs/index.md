@@ -6,6 +6,7 @@
 
 | 文档 | 内容 | 读者 |
 |---|---|---|
+| [summary.md](summary.md) | **项目汇总（给同事的系统介绍）**：背景（AI4S 热点 27270ms）、aten::index 机制与慢因、六类改进手段、使用方法（含 torch.compile 重载）、基准方法与正确性、性能测试结果（通用 + AI4S 专项）、劣化根因、为何不做性能级回退、绕过/边界清单、训练适用性、FAQ | 第一次接触项目、要与他人系统讨论的读者 |
 | [glossary.md](glossary.md) | **术语与代号速查（唯一名词入口）**：技术术语表、场景/负载代号（S1/P1/M1-M6/A1/shortq…）、形状记号、代号冲突警示 | 读任何文档遇到看不懂的名词/代号时查 |
 | [architecture.md](architecture.md) | 三段流水线整体架构、控制流、dispatch 树、数据布局 | 架构理解、代码走读 |
 | [semantics.md](semantics.md) | 与 ATen `aten::index.Tensor` 的语义对齐点与**有意差异**、错误信息、dtype 覆盖 | 正确性审查、回归测试 |

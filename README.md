@@ -28,6 +28,8 @@ backward 不受影响。
 场景/负载代号、形状记号、同名冲突警示）。
 
 **建议阅读路线**：
+- 想系统了解（或讲给同事）：[`docs/summary.md`](docs/summary.md)——10-15 分钟
+  读完全貌（背景/机制/使用/性能结果/劣化根因/为何不回退/边界/训练适用性/FAQ）。
 - 只想用：本节 → [快速开始](#快速开始) → [已知限制](#已知限制--注意事项)。
 - 想看性能：`benchmarks/RESULTS.md` §2 → `docs/degradation-analysis.md`
   （劣化硬件根因 §5.9；胜出根因 `docs/performance.md` §4.3）。

@@ -79,7 +79,7 @@ barebones unsigned（u16/u32/u64）、float8 系列与 complex32；本实现的 
 
 ## 6. 正确性验证方法
 
-1. **测试套件**（102/102 通过，覆盖激活态；T6 后 test_index_out 7、T8 后 test_mask_fused 9、T9 后 test_smallk 7）：
+1. **测试套件**（127/127 通过，覆盖激活态，13 个文件；T6 后 test_index_out 7、T8 后 test_mask_fused 9、T9 后 test_smallk 7、T10 后 test_compile_optin 3、T12 后 test_strided_rows 6、T13 后 test_small_multi 11）：
    - `test_smoke.py` — 基本注册/调用；
    - `test_normalize.py` — spec 字段结构断言（dims_before/dims_after、transpose、
      mask 展开、after_contiguous）；
