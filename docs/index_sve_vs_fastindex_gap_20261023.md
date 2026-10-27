@@ -47,6 +47,9 @@
 
 ### 0. 术语表（与 index_sve 文档同一套）
 
+通用术语与场景/负载代号（S1/P1/M1…）见 [`glossary.md`](glossary.md)；
+下表只列本对比特有的读法约定：
+
 | 术语 | 含义 |
 |---|---|
 | **ratio** | 原生耗时 / 实现耗时，>1 = 实现快，<1 = 退化 |
@@ -240,7 +243,7 @@ fastindex 的 `make_index_info` 与 index_sve 的 `normalize_index` 都复刻 AT
 ### 10. 优先级建议
 
 > 注：本表 P0-P5 是**本文档内部**的差异点排序，与模型场景代号 P1/P2/P3
-> （h[src] 等，见 `degradation-analysis.md` §1.1）及演进路线 R1-R9
+> （h[src] 等，见 `glossary.md`）及演进路线 R1-R9
 > （`status.md` §7）均无关。
 
 | 优先级 | 差异点 | 预期收益 | 改动量 |

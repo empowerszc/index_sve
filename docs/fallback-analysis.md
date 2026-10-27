@@ -37,8 +37,7 @@ aten::index），受限于什么**。这是"回退到 aten"类问题（integrati
 
 > **代号消歧**：本表的 M1-M4 是**机制**代号；performance/RESULTS 里的
 > M1-M6 是 **AI4S 负载**代号（权重块、spconv 特征等），两套互不相干。
-> 全部场景/负载代号与形状记号的白话速查见 `degradation-analysis.md`
-> §1.1-1.2。
+> 全部场景/负载代号与形状记号的白话速查见 `glossary.md`。
 
 ## 2. 路由与回退路径全图
 

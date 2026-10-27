@@ -6,12 +6,13 @@
 
 | 文档 | 内容 | 读者 |
 |---|---|---|
+| [glossary.md](glossary.md) | **术语与代号速查（唯一名词入口）**：技术术语表、场景/负载代号（S1/P1/M1-M6/A1/shortq…）、形状记号、代号冲突警示 | 读任何文档遇到看不懂的名词/代号时查 |
 | [architecture.md](architecture.md) | 三段流水线整体架构、控制流、dispatch 树、数据布局 | 架构理解、代码走读 |
 | [semantics.md](semantics.md) | 与 ATen `aten::index.Tensor` 的语义对齐点与**有意差异**、错误信息、dtype 覆盖 | 正确性审查、回归测试 |
 | [kernels.md](kernels.md) | SVE512 各内核（8B/4B gather、rowcopy、scalar）实现细节 + 优化轮新路径（M1 raw rowcopy、T3 fused、T4 桶化）、预取、NT 开关 | 性能优化、内核修改 |
 | [performance.md](performance.md) | 基准方法论、模型场景结果表、**胜出场景的硬件根因（§4.3：rowcopy/gather MLP/遍数消除/固定开销/桶化/串行边界）**、已知硬件限制、如何复测 | 性能评估、验收、想知道"为什么快"的读者 |
 | [benchmarks.md](benchmarks.md) | **benchmarks/ 目录指南**：逐脚本用途、公共环境变量、典型命令、真实 workload 覆盖与预测力矩阵、与功能测试的区别 | 想知道"该跑哪个基准、结果能不能外推"的读者 |
-| [degradation-analysis.md](degradation-analysis.md) | **性能退化与线程扩展分析**：术语表、修正后的 1/2/4/8/16/32/36 线程矩阵、逐 case 微架构定位（x[:,i]、2B/1B、非连续 mask、小规模并行）、perf 方法、**§5.9 残余劣化的硬件根因（微架构/系统结构/并行编程）**、优化优先级 | 想知道"哪个线程数慢、为什么慢"的读者 |
+| [degradation-analysis.md](degradation-analysis.md) | **性能退化与线程扩展分析**：修正后的 1/2/4/8/16/32/36 线程矩阵、逐 case 微架构定位（x[:,i]、2B/1B、非连续 mask、小规模并行）、perf 方法、**§5.9 残余劣化的硬件根因（微架构/系统结构/并行编程）**、优化优先级 | 想知道"哪个线程数慢、为什么慢"的读者 |
 | [optimizations.md](optimizations.md) | **T0-T15 优化/修复轮记录**：自适应粒度、rowcopy A>=4、M1 skip-linearize、融合单遍、小值域桶化、1 线程单遍、跨设备校验、mask 单遍压实、小 K 精简路径、compile opt-in、T12-T15（strided run 块/multi raw/raw 放宽/4B 直连 SVE）；变更、路由、实测数据、复测 | 想了解"做了哪些优化"的读者 |
 | [fallback-analysis.md](fallback-analysis.md) | **慢场景/回退路径深度分析**：为什么某些形态慢（4B 随机 gather 的 64B 行放大 + DRAM 延迟、两遍模型、串行阶段、无内核 dtype）、受限于什么、为何不做 fallback、判定速查表 | 想搞清"为什么慢、能不能修"的读者 |
 | [integration.md](integration.md) | 默认覆盖 `aten::index.Tensor` 机制、运行时环境契约、逃逸开关、慢场景 fallback 决策（不改） | 集成部署、排障 |
