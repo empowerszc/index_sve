@@ -5,8 +5,8 @@
 
 > 更新规则：每轮实质变更后更新本文（测试数、commit 号、性能结论、路由）。
 
-> **30 秒现状**：T15 完成，`test_rowcopy_routes` 路由测试 8/8、13 套件全
-> PASS、真 aten 对拍 44/44。T15 修复 T13 残余高线程空档：2D A=16
+> **30 秒现状**：T15 完成；补测 autograd 专项回归（`test_autograd.py`
+> 16/16），14 套件 **143/143** 全 PASS、真 aten 对拍 44/44。T15 修复 T13 残余高线程空档：2D A=16
 > K=8192/65536 raw 放行（32-38t 0.73/0.76x → **1.26-2.17x**，hpc 绝对时间
 > 砍半）；K=1024 并行阈值线程缩放（38t 1.46x → 2.17x，与 K=1023 拉平）；
 > f32/i32+i64 下标大源（>512KB）直连单遍 SVE（K=10M idx64 8t 1.32→
@@ -48,6 +48,7 @@ CPU 键覆盖，autograd 不受影响）。构建/运行契约见 `README.md` �
 | T13 | 多索引小 K 入口快路径：跳过 normalize、偏移预计算、dom==1 fill、逐行 memcpy；n≤65536 | a91d566 | ✅ |
 | T14 | `small_single_index` 短行 memcpy 阈值 A>=4 → A>=2（realpath 对拍发现 shortq A=3 0.84x） | 428bafd | ✅ |
 | T15 | 中等行宽 raw 放行 `A<=64 && B*K<=65536`（2D A=16 K=8192 32/36t 0.73/0.76x）；f32/i32+i64 下标大源（>512KB）直连单遍 SVE `pure_gather_sve_4b_i64idx`（uzp1 收窄复用 u32index）；`small_single` 并行阈值 `max(16384, 512×nt)`（38t K=1024 边界） | 428bafd | ✅ |
+| 补测 | autograd 专项回归 `test_autograd.py`（16 项：梯度 vs `index_add_` 独立参考、负索引/重复/mask/多索引/非连续/gradcheck、路由计数器、`torch.ops` 直调无 autograd 公式） | 24cd8b3 | ✅ |
 
 ## 3. 路由现状（op.cpp `index_impl`）
 
@@ -77,11 +78,12 @@ A==1 || (连续 && A>=4 && f32/f64) → linearize + gather_index（SVE/桶化/sc
 
 ## 4. 测试
 
-- **127/127 通过**：test_correctness 25、test_errors 6、test_model 9、
+- **143/143 通过**：test_correctness 25、test_errors 6、test_model 9、
   test_normalize 9、test_smoke 2、test_sve 25、test_index_out 7、test_mask_fused 9、
   test_smallk 7、test_compile_optin 3、test_strided_rows 6、test_rowcopy_routes 8
-  （T15 增至 8：raw 路由/大 K 回退/f32+i64 路由/阈值缩放）、test_small_multi 11。
-- 复跑：`for t in tests/test_smoke.py tests/test_normalize.py tests/test_correctness.py tests/test_errors.py tests/test_sve.py tests/test_model.py tests/test_index_out.py tests/test_mask_fused.py tests/test_smallk.py tests/test_compile_optin.py tests/test_strided_rows.py tests/test_rowcopy_routes.py tests/test_small_multi.py; do python $t; done`
+  （T15 增至 8：raw 路由/大 K 回退/f32+i64 路由/阈值缩放）、test_small_multi 11、
+  test_autograd 16（autograd 专项回归，24cd8b3）。
+- 复跑：`for t in tests/test_smoke.py tests/test_normalize.py tests/test_correctness.py tests/test_errors.py tests/test_sve.py tests/test_model.py tests/test_index_out.py tests/test_mask_fused.py tests/test_smallk.py tests/test_compile_optin.py tests/test_strided_rows.py tests/test_rowcopy_routes.py tests/test_small_multi.py tests/test_autograd.py; do python $t; done`
 - 注意：测试同一进程串行跑，1 线程用例必须 `try/finally` 恢复
   `torch.get_num_threads()`（test_sve.py 内已如此）。
 - **true-aten 值级对拍**（覆盖下测试自洽，须两进程法）：

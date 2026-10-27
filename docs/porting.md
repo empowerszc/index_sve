@@ -71,9 +71,10 @@
 11. `tests/test_strided_rows.py`（非连续尾维 run 块拷贝，T12）；
 12. `tests/test_rowcopy_routes.py`（raw 路由 / 大 K 回退 / f32+i64 路由 / 阈值缩放，T15）；
 13. `tests/test_small_multi.py`（多索引小 K 快路径，T13）；
-14. 两进程 true-aten 对拍（semantics.md §6，含 K>=1024 与非连续 stride 用例）。
+14. `tests/test_autograd.py`（autograd 专项回归 16 项，24cd8b3）；
+15. 两进程 true-aten 对拍（semantics.md §6，含 K>=1024 与非连续 stride 用例）。
 
-全部通过 = 127/127（覆盖激活态）；对拍 44/44。
+全部通过 = 143/143（覆盖激活态）；对拍 44/44。
 
 ## 6. 已知可优化项（后续工作）
 

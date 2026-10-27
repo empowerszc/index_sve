@@ -203,13 +203,13 @@ for t in tests/test_smoke.py tests/test_normalize.py tests/test_correctness.py \
          tests/test_errors.py tests/test_sve.py tests/test_model.py \
          tests/test_index_out.py tests/test_mask_fused.py tests/test_smallk.py \
          tests/test_compile_optin.py tests/test_strided_rows.py \
-         tests/test_rowcopy_routes.py tests/test_small_multi.py; do python $t; done
+         tests/test_rowcopy_routes.py tests/test_small_multi.py tests/test_autograd.py; do python $t; done
 ```
 
-全部通过 = 127/127（覆盖激活态；test_correctness 25、test_errors 6、test_model 9、
+全部通过 = 143/143（覆盖激活态；test_correctness 25、test_errors 6、test_model 9、
 test_normalize 9、test_smoke 2、test_sve 25、test_index_out 7、test_mask_fused 9、
 test_smallk 7、test_compile_optin 3、test_strided_rows 6、test_rowcopy_routes 8
-（T15 增至 8）、test_small_multi 11）。
+（T15 增至 8）、test_small_multi 11、test_autograd 16）。
 覆盖下测试是自洽的（`x[i]` 也走
 本算子），值级真对拍用两进程法（无覆盖进程生成 true-aten 参考，覆盖进程比对）：
 

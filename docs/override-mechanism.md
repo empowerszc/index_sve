@@ -76,8 +76,9 @@ AutogradCPU → CPU（我们的实现）→ 底层
 ```
 
 forward 走到我们；backward 的梯度散射仍是 ATen 自己的公式。所以测试中
-autograd 完全正常（梯度值/形状/dtype 已与 true-aten 对拍验证，见 semantics.md
-§6）。
+autograd 完全正常（梯度值/形状/dtype 已与 true-aten 对拍验证，并有套件专项
+回归 `tests/test_autograd.py` 16 项——其中路由计数器断言证明带 grad 前向
+真的落到本算子内核；见 semantics.md §6）。
 
 ## 4. 三个边界（为什么这方案成立、约束在哪）
 
@@ -95,9 +96,9 @@ autograd 完全正常（梯度值/形状/dtype 已与 true-aten 对拍验证，�
 2. **两进程 true-aten 对拍**：无覆盖进程（`HPC_INDEX_NO_OVERRIDE=1`）生成参考，
    覆盖进程比较——覆盖激活后 `x[i]` 已走本算子，**同一进程内无法再对拍**
    （semantics.md §6.2 的"覆盖下对拍陷阱"）。
-3. **全量测试**：127/127 在覆盖激活态通过（错误消息逐字、K<=4096 小 K 路径、
-   N-D 下标、mask 融合路径等；梯度对拍记录见 semantics.md §6.4，套件内暂无
-   autograd 专项回归用例）。
+3. **全量测试**：143/143 在覆盖激活态通过（错误消息逐字、K<=4096 小 K 路径、
+   N-D 下标、mask 融合路径、autograd 专项回归 `tests/test_autograd.py` 16 项
+   等；两进程梯度对拍记录见 semantics.md §6.4）。
 
 ## 6. 为什么是 `aten::index.Tensor` 而不是别的
 

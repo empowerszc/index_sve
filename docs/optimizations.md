@@ -213,7 +213,8 @@ aten/hpc 的 median。4B f32 K=10M 大值域随机 gather 仍是硬件上限（1
 ## 6. 验证
 
 - （T8 时点）全 10 个测试套件 **102/102 通过**（T5 时点为 6 套件 75/75；
-  T15 时点为 13 套件 **127/127**，见 §19 验证）。
+  T15 时点为 13 套件 **127/127**；补测 autograd 后为 14 套件 **143/143**，见
+  §19 验证）。
 - 正确性对拍：两进程法（无覆盖进程生成 true-aten 参考，覆盖进程比对），
   工具 `tests/verify_against_aten.py --mode both`（**44/44**），含 K>=1024、
   桶化、M1 raw、T5 单遍、多索引、mask、非连续 stride 用例。
@@ -690,6 +691,7 @@ smallk 官方复测见 RESULTS §2.3（T15 构建）。
 - `test_rowcopy_routes` **8/8**（新增 4 个路由测试：`medium_a_raw_route`、
   `medium_a_large_k_keeps_linearize`、`f32_i64_1d_route`、
   `small_single_thread_scaled_threshold`，全部走计数器断言）；13 个测试文件
-  **127/127**；两进程 true-aten 对拍 **44/44**。
+  **127/127**（T15 时点；补测 autograd 后全套件 14 文件 **143/143**）；
+  两进程 true-aten 对拍 **44/44**。
 - realpath 全形态路由不变（A1 K=1、M1 A=1024/2048/4096、M2 B·K=10 万均不在
   新路由范围），§2.5 T14 数据继续有效。

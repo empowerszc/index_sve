@@ -17,7 +17,10 @@
 1. 只需 `import index_sve`；确认日志里出现一次预期告警（见 §4）。
 2. 多线程程序不要只调 `torch.set_num_threads` 就假设扩展已跟随——T11 起
    `index_impl` 会主动同步 `at::get_num_threads()`；直接用 `torch.ops.hpc_index.*`
-   时也会同步。
+   时也会同步。但直调 `torch.ops` 无 autograd 公式：requires_grad 输入的梯度
+   会被 fallback 静默丢弃（下游 backward 不报错但梯度不回传）——训练场景
+   务必用 `x[...]`（aten::index 的 AutogradCPU 链完整；行为由
+   `tests/test_autograd.py` 钉住）。
 3. 用 `torch.compile` 时先决定：要 compile 的图优化，还是要本算子覆盖
    （二选一，见 §8 与 `torch-compile.md`）。
 

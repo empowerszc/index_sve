@@ -79,7 +79,7 @@ barebones unsigned（u16/u32/u64）、float8 系列与 complex32；本实现的 
 
 ## 6. 正确性验证方法
 
-1. **测试套件**（127/127 通过，覆盖激活态，13 个文件；T6 后 test_index_out 7、T8 后 test_mask_fused 9、T9 后 test_smallk 7、T10 后 test_compile_optin 3、T12 后 test_strided_rows 6、T13 后 test_small_multi 11）：
+1. **测试套件**（143/143 通过，覆盖激活态，14 个文件；T6 后 test_index_out 7、T8 后 test_mask_fused 9、T9 后 test_smallk 7、T10 后 test_compile_optin 3、T12 后 test_strided_rows 6、T13 后 test_small_multi 11、补测 test_autograd 16）：
    - `test_smoke.py` — 基本注册/调用；
    - `test_normalize.py` — spec 字段结构断言（dims_before/dims_after、transpose、
      mask 展开、after_contiguous）；
@@ -90,7 +90,10 @@ barebones unsigned（u16/u32/u64）、float8 系列与 complex32；本实现的 
    - `test_errors.py` — 逐字错误格式；
    - `test_sve.py` — SVE 分支门控、值正确性、NT 路径；
    - `test_model.py` — 9 个模型场景正确性（`x[:, perm]` 注意是 `:` 而非 `None`，
-     torch 2.10 下 `x[None, perm]` 会 OOB）。
+     torch 2.10 下 `x[None, perm]` 会 OOB）；
+   - `test_autograd.py` — autograd 专项回归 16 项（前向记录/grad_fn、梯度 vs
+     `index_add_` 独立参考、负索引/重复/mask/多索引/非连续/half/bf16/gradcheck、
+     路由计数器、`torch.ops` 直调无 autograd 公式）。
 2. **覆盖下的对拍陷阱**：覆盖激活后 `x[...]` 也走本算子，测试变自洽。因此：
    - 错误/形状/崩溃类仍有效；
    - 值级真对拍必须用**两进程法**：无覆盖进程（`HPC_INDEX_NO_OVERRIDE=1`）生成
@@ -107,7 +110,10 @@ barebones unsigned（u16/u32/u64）、float8 系列与 complex32；本实现的 
    `permute`、`at::empty`、linearize、gather，**从不调用** `at::index` /
    `self.index` / `aten::index`，无覆盖自递归。
 4. **autograd**：backward 由 `IndexBackward` 公式提供（独立于 CPU kernel 注册），
-   梯度值/形状/dtype 已与 true-aten 对拍验证。
+   梯度值/形状/dtype 已与 true-aten 对拍验证，并有套件专项回归
+   （`tests/test_autograd.py` 16 项）。注意 `torch.ops.hpc_index.*` 直调无
+   autograd 公式——requires_grad 输入的梯度被 fallback 静默丢弃（断链
+   CppFunction），训练用 `x[...]`。
 
 ## 7. 语义红线（回归测试不可破坏）
 

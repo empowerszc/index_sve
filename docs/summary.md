@@ -12,7 +12,7 @@
 | **做了什么** | 在鲲鹏 920F（aarch64 SVE512）上，把 PyTorch CPU 的 `x[张量下标]`（`aten::index.Tensor`）换成等语义的自研实现；`import index_sve` 即全局生效，**用户代码零改动** |
 | **为什么值得做** | AI4S 模型 profiler：14 个模型的 index 累计 **27270ms**，是热点算子；spconv 取特征、消息传递 `h[src]`、mask 筛选全走它 |
 | **多快** | 整行/整块取数（spconv、消息传递主形态）1 线程 **2.4-4.6x**；真实权重块 1t **13x**；短调用 **2.6-4.3x**；全形态 ≥1.11x |
-| **多可靠** | 13 套件 **127/127** 测试 + **44 用例**两进程 true-aten 对拍；语义与 aten 逐条对齐（含错误消息逐字一致） |
+| **多可靠** | 14 套件 **143/143** 测试（含 autograd 专项回归）+ **44 用例**两进程 true-aten 对拍；语义与 aten 逐条对齐（含错误消息逐字一致） |
 | **哪里不快** | 6 个家族、多数 ≤10-18%（1B/小工作量/非连续 mask 等），过半是 aten 同样撞的硬件墙，见 §7 |
 | **怎么退回** | `HPC_INDEX_NO_OVERRIDE=1`（进程级逃生门）；**按性能自动回退刻意不做**，完整理由见 §8 |
 | **边界** | CPU 张量 only；`torch.compile` 默认绕过（有 opt-in 开关）；换机器需重标定阈值，见 §9 |
@@ -189,7 +189,7 @@ dataset 模块顶部 import `index_sve`。（Python/PyTorch 通用规则，未�
 
 ## 5. 怎么证明的：基准方法与正确性
 
-**一句话：共享机器上可信的测法是两进程交替 + 中位数；正确性靠 127 项测试
+**一句话：共享机器上可信的测法是两进程交替 + 中位数；正确性靠 143 项测试
 + 44 用例 true-aten 两进程对拍。**
 
 - **为什么不能裸跑分**：测试机是共享箱（5+ 用户），绝对时间漂移可达
@@ -199,13 +199,15 @@ dataset 模块顶部 import `index_sve`。（Python/PyTorch 通用规则，未�
 - **覆盖矩阵**：31 场景 × 1/2/4/8/16/32/36 线程（RESULTS §2）+ 真实 workload
   对拍（RESULTS §2.5/§3.8）。
 - **正确性两层**：
-  - 13 套件 127/127（覆盖激活态）：注册/normalize/各 dtype × 下标矩阵、
-    错误消息逐字、SVE 分支门控、9 个模型场景等；
+  - 14 套件 143/143（覆盖激活态）：注册/normalize/各 dtype × 下标矩阵、
+    错误消息逐字、SVE 分支门控、9 个模型场景、autograd 专项回归等；
   - **值级对拍必须两进程**——覆盖激活后 `x[i]` 也走本算子，同进程内无法
     自证（"对拍陷阱"）。`tests/verify_against_aten.py --mode both` 自动跑
     两进程：无覆盖进程生成 true-aten 参考，覆盖进程比对，44 用例全过
     （含 K≥1024、桶化、M1 raw、多索引、mask、广播、非连续 stride）。
-- 注：套件里暂无 autograd 专项回归用例；梯度对拍记录在 `semantics.md` §6.4
+- **autograd 已有专项回归**（`tests/test_autograd.py`，16 项：前向记录/grad_fn、
+  梯度 vs `index_add_` 独立参考、负索引/重复/mask/多索引/非连续/gradcheck、路由
+  计数器证明带 grad 前向穿透本算子）；两进程梯度对拍记录在 `semantics.md` §6.4
   （§10 训练场景有详细说明）。
 
 ## 6. 性能测试结果
@@ -358,9 +360,10 @@ dataset 模块顶部 import `index_sve`。（Python/PyTorch 通用规则，未�
 - **autograd 为什么不坏**：dispatcher 链是 `AutogradCPU（记录）→ CPU（我们）
   → 底层`。覆盖只替换 CPU 键；`x[i]` 的求导公式（`IndexBackward`）挂在独立的
   `Autograd` 键上，仍由 ATen 提供——前向记录正常、梯度数值/形状/dtype 有
-  与 true-aten 的对拍记录（`semantics.md` §6.4）。**诚实注记**：仓库测试
-  套件（127 项）暂无 autograd 专项回归用例，接续工作可补一个（这是回归
-  保险项，不是性能项）。
+  与 true-aten 的对拍记录（`semantics.md` §6.4），并有套件专项回归保险
+  （`tests/test_autograd.py` 16 项：梯度 vs `index_add_` 独立参考、gradcheck、
+  路由计数器证明带 grad 前向穿透本算子）。**直调注意**：`torch.ops.hpc_index.*`
+  无 autograd 公式，梯度会被 fallback 静默丢弃——训练务必用 `x[...]`。
 - **不会变快的**：backward 本身（aten 原生内核，不在本项目范围）；GPU 上的
   取数；写路径 `index_put_` / scatter（不同算子）。
 - **DataLoader 多进程**：fork 继承注册；spawn 需在 worker 侧 import
