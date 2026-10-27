@@ -208,14 +208,19 @@ def test_ops_entry_no_autograd():
     # torch.ops.hpc_index.* 只注册了 CPU 键、无 autograd 公式：直调时 fallback
     #（warn 模式）建一个断链的 CppFunction——下游 backward 不报错，但梯度
     # 被静默丢弃、不回传 x。训练场景必须用 x[...]（aten::index 的
-    # AutogradCPU 链完整）。
+    # AutogradCPU 链完整）。三个直调入口同源：torch.ops、__init__.py 的
+    # index()（转发 torch.ops）、pybind 调试出口 _hpc_index.index
+    #（op.call 同经 dispatcher）。
     x = torch.randn(16, requires_grad=True)
     i = torch.tensor([0, 3])
-    y = torch.ops.hpc_index.index(x, [i])
-    torch.testing.assert_close(y, x.detach().index_select(0, i))
-    assert y.requires_grad               # 图被建（断链节点）
-    (y * 2).sum().backward()
-    assert x.grad is None                # 但梯度不回传——直调不可用于训练
+    for y in (torch.ops.hpc_index.index(x, [i]),
+              index_sve.index(x, [i]),
+              C.index(x, [i])):
+        torch.testing.assert_close(y, x.detach().index_select(0, i))
+        assert y.requires_grad               # 图被建（断链节点）
+        (y * 2).sum().backward()
+        assert x.grad is None                # 但梯度不回传——直调不可用于训练
+        x.grad = None
 
 
 if __name__ == "__main__":

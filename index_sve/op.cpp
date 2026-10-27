@@ -454,7 +454,7 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
                     std::vector<c10::optional<at::Tensor>> indices) {
     static auto op = c10::Dispatcher::singleton()
         .findSchemaOrThrow("hpc_index::index", "")
-        .typed<at::Tensor(const at::Tensor&, c10::List<c10::optional<at::Tensor>>)>();
+        .typed<at::Tensor(const at::Tensor&, const c10::List<c10::optional<at::Tensor>>&)>();
     return op.call(self, c10::List<c10::optional<at::Tensor>>(indices));
   });
   m.def("linearize_spec", [](const at::Tensor& self,
