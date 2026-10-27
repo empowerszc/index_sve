@@ -215,21 +215,23 @@ mask 经 T8 后 1.3-4.2x；
 
 ## 7. 演进方向（后续再看从这里开始）
 
-> 2026-10-27 收尾时的建议排序。P1/P2 是最后两个"可修的"劣化家族（其余
-> <1x 项为硬上限或使用侧问题）；P3 是验证项，其结果决定后续投入是否值得。
-> 各项根因推导见 `degradation-analysis.md` §5.9。
+> 2026-10-27 收尾时的建议排序（优先级代号用 **R**，避免与场景代号
+> P1/P2/P3 冲突，代号总表见 `degradation-analysis.md` §1.1-1.2）。R1/R2
+> 是最后两个"可修的"劣化家族（其余 <1x 项为硬上限或使用侧问题）；R3 是
+> 验证项，其结果决定后续投入是否值得。各项根因推导见
+> `degradation-analysis.md` §5.9。
 
 | 优先级 | 项目 | 预期收益 | 工作量 | 详见 |
 |---|---|---|---|---|
-| **P1** | 1D 小源跳过 `gather_bucket_pure_raw` 前置值域扫描（并入 gather 单遍） | K=8192/65536 小源 36-38t 0.90-0.95x → ≥1x（省 ~15µs / 总 42-53µs，fork-join 占 30-50%） | 小 | degradation §5.8-C/§5.9.2、§8-1 |
-| **P2** | 非连续 mask 的 T8 stride 扩展（计数/压实按 mask stride 读，去 nonzero 物化） | 0.86-0.98x → 1.2-1.5x（8t 实测可省 ~1ms） | 中 | degradation §5.8-D、§8-2 |
-| **P3** | 端到端 AI4S 模型复测 | 验证 T0-T15 累计收益是否传导到真实负载（决策项） | 中 | performance §3/§4.1 |
-| P4 | f64+i32 下标经 `svunpklo` 加宽走 8B gather | ≈持平 → 小幅正收益 | 小 | degradation §8-3 |
-| P5 | M1 值域桶化（T2 阶段 2）：`gather_rowcopy_raw` 做下标值域分析 | 高重复下标场景再提升 | 中 | optimizations §3.5 |
-| P6 | 4B 大 K 大值域：按 cache line 分桶/排序 | 受 64B 行放大硬上限，只有改访问结构有效 | 大 | degradation §5.9.3 |
-| P7 | `small_multi_index` 扩广播/非连续索引（修正 `all_full_contig` + 复用偏移预计算） | 覆盖面，非性能 | 中 | — |
-| P8 | dtype 白名单扩展（barebones u16/u32/u64、float8、complex32） | 覆盖面（当前抛 NotImplementedError） | 小-中 | semantics §4 |
-| P9 | `HPC_INDEX_COMPILE=1` 真实模型端到端验证 | 决定是否默认开启 | 中 | torch-compile §6 |
+| **R1** | 1D 小源跳过 `gather_bucket_pure_raw` 前置值域扫描（并入 gather 单遍） | K=8192/65536 小源 36-38t 0.90-0.95x → ≥1x（省 ~15µs / 总 42-53µs，fork-join 占 30-50%） | 小 | degradation §5.8-C/§5.9.2、§8-1 |
+| **R2** | 非连续 mask 的 T8 stride 扩展（计数/压实按 mask stride 读，去 nonzero 物化） | 0.86-0.98x → 1.2-1.5x（8t 实测可省 ~1ms） | 中 | degradation §5.8-D、§8-2 |
+| **R3** | 端到端 AI4S 模型复测 | 验证 T0-T15 累计收益是否传导到真实负载（决策项） | 中 | performance §3/§4.1 |
+| R4 | f64+i32 下标经 `svunpklo` 加宽走 8B gather | ≈持平 → 小幅正收益 | 小 | degradation §8-3 |
+| R5 | M1 值域桶化（T2 阶段 2）：`gather_rowcopy_raw` 做下标值域分析 | 高重复下标场景再提升 | 中 | optimizations §3.5 |
+| R6 | 4B 大 K 大值域：按 cache line 分桶/排序 | 受 64B 行放大硬上限，只有改访问结构有效 | 大 | degradation §5.9.3 |
+| R7 | `small_multi_index` 扩广播/非连续索引（修正 `all_full_contig` + 复用偏移预计算） | 覆盖面，非性能 | 中 | — |
+| R8 | dtype 白名单扩展（barebones u16/u32/u64、float8、complex32） | 覆盖面（当前抛 NotImplementedError） | 小-中 | semantics §4 |
+| R9 | `HPC_INDEX_COMPILE=1` 真实模型端到端验证 | 决定是否默认开启 | 中 | torch-compile §6 |
 
 **不建议再投入**：1B/complex（64B 行放大是硬上限，aten 同为标量，换指令
 无解）；纯转置 run=1 低线程尾部（8t 0.84x，需独立"固定 col_off SVE

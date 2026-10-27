@@ -44,6 +44,9 @@ T5（1 线程回归修复）见 `optimizations.md` §9。
 
 ## 3. 模型场景结论（T11 基线，node 5，25 iters 中位数）
 
+> 场景/负载代号（S1/P1/P2/P3/S4、M1-M6、A1/shortq…）与形状记号
+> （A/B/K/C/E）的白话含义见 `degradation-analysis.md` §1.1 代号速查。
+
 | 场景 | 1 线程 | 36 线程 |
 |---|---|---|
 | S1 spconv features[inp_idx] C=64 | **4.46x** | 8.37x |

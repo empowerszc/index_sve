@@ -239,6 +239,10 @@ fastindex 的 `make_index_info` 与 index_sve 的 `normalize_index` 都复刻 AT
 
 ### 10. 优先级建议
 
+> 注：本表 P0-P5 是**本文档内部**的差异点排序，与模型场景代号 P1/P2/P3
+> （h[src] 等，见 `degradation-analysis.md` §1.1）及演进路线 R1-R9
+> （`status.md` §7）均无关。
+
 | 优先级 | 差异点 | 预期收益 | 改动量 |
 |---|---|---|---|
 | **P0** | #1 strided-rows 非连续尾维内核 | 转置/非连续形态从逐元素标量 → 分块 memcpy，预计 1.3-2x | 中（新增一个内核 + 路由） |
