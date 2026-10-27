@@ -133,6 +133,10 @@ HPC_INDEX_NO_OVERRIDE=1 python your_script.py   # import 不再改 aten::index.T
 # 或直接调 torch.ops.hpc_index.index(x, [i])
 ```
 
+直调仅推理/对拍用：`torch.ops.hpc_index.*` 无 autograd 公式，requires_grad
+输入的梯度会被 fallback 静默丢弃——训练必须用 `x[...]`
+（integration.md §0 条目 2，行为由 tests/test_autograd.py 钉住）。
+
 ## 基准结论（摘要）
 
 鲲鹏 920F，node 5（38 核），aten/hpc 同进程交替中位数。当前 31 场景

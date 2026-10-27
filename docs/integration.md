@@ -67,7 +67,8 @@ mask、N-D 下标）都改走本算子**，无需改调用点。已验证：
 | `HPC_INDEX_COMPILE` | 0 | `=1` 时启用 `torch.compile` 支持（fake + aten fallback + 独立 cache 目录，T10；须在 import 前设置） |
 
 `HPC_INDEX_NO_OVERRIDE` 的用途：
-- 只想用 `torch.ops.hpc_index.index` 本体、不改全局 `x[...]` 的部署；
+- 只想用 `torch.ops.hpc_index.index` 本体、不改全局 `x[...]` 的部署（该形态
+  无 autograd 公式，梯度静默不回传，仅推理/对拍适用——见 §0 条目 2）；
 - 基准/测试需要 `x[i]` 引用仍指向 true aten（覆盖激活后 `x[i]` 会自洽化，
   无法对拍——见 semantics.md §6 的"覆盖下对拍陷阱"）。
 

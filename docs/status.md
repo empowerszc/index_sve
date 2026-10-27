@@ -6,7 +6,8 @@
 > 更新规则：每轮实质变更后更新本文（测试数、commit 号、性能结论、路由）。
 
 > **30 秒现状**：T15 完成；补测 autograd 专项回归（`test_autograd.py`
-> 16/16），14 套件 **143/143** 全 PASS、真 aten 对拍 44/44。T15 修复 T13 残余高线程空档：2D A=16
+> 16/16），14 套件 **143/143** 全 PASS、真 aten 对拍 44/44；修复 pybind
+> 调试出口 typed 签名错并全文档传播直调丢梯度警告。T15 修复 T13 残余高线程空档：2D A=16
 > K=8192/65536 raw 放行（32-38t 0.73/0.76x → **1.26-2.17x**，hpc 绝对时间
 > 砍半）；K=1024 并行阈值线程缩放（38t 1.46x → 2.17x，与 K=1023 拉平）；
 > f32/i32+i64 下标大源（>512KB）直连单遍 SVE（K=10M idx64 8t 1.32→
@@ -49,6 +50,7 @@ CPU 键覆盖，autograd 不受影响）。构建/运行契约见 `README.md` �
 | T14 | `small_single_index` 短行 memcpy 阈值 A>=4 → A>=2（realpath 对拍发现 shortq A=3 0.84x） | 428bafd | ✅ |
 | T15 | 中等行宽 raw 放行 `A<=64 && B*K<=65536`（2D A=16 K=8192 32/36t 0.73/0.76x）；f32/i32+i64 下标大源（>512KB）直连单遍 SVE `pure_gather_sve_4b_i64idx`（uzp1 收窄复用 u32index）；`small_single` 并行阈值 `max(16384, 512×nt)`（38t K=1024 边界） | 428bafd | ✅ |
 | 补测 | autograd 专项回归 `test_autograd.py`（16 项：梯度 vs `index_add_` 独立参考、负索引/重复/mask/多索引/非连续/gradcheck、路由计数器、`torch.ops` 直调无 autograd 公式） | 24cd8b3 | ✅ |
+| 修复 | pybind 调试出口 `_hpc_index.index` typed 句柄补 `const&`（自初始 commit 即抛签名错，零调用方未暴露；测试扩三直调入口断言） | 0397eb5 | ✅ |
 
 ## 3. 路由现状（op.cpp `index_impl`）
 

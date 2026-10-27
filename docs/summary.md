@@ -334,6 +334,7 @@ dataset 模块顶部 import `index_sve`。（Python/PyTorch 通用规则，未�
 | CPU 张量上的 `x[i]` / `x[:, i]` / `x[i, j]` / `x[mask]` / N-D / `out=` 变体 | **全部走本算子，无绕过**（覆盖的是 dispatcher 的 CPU 键本身，覆盖注册后不存在旁路） |
 | 非 CPU 张量（CUDA 等） | 走 aten 原生内核（覆盖只注册 CPU 键——范围外，非"回退"） |
 | `torch.compile` 默认 | Inductor 内联绕过（慢 2.6x）；`HPC_INDEX_COMPILE=1` opt-in 后回到本算子（§4.5） |
+| 直调 `torch.ops.hpc_index.index` / `index_sve.index`（不走 `x[...]`） | 走本算子本体，但**不经 aten::index 的 AutogradCPU 链**——无 autograd 公式，requires_grad 输入的梯度被静默丢弃；仅推理/对拍用，训练必须 `x[...]`（行为由 `tests/test_autograd.py` 钉住） |
 | `HPC_INDEX_NO_OVERRIDE=1` | 逃生门：全程原生 aten（用户主动） |
 | barebones dtype（u16/u32/u64、float8、complex32） | **不回退，抛 `NotImplementedError`**——dispatch 白名单未含（演进项 R8，覆盖缺口非性能缺口） |
 | 索引张量在 meta/CUDA | 抛与 aten 同文的错误（行为对齐） |

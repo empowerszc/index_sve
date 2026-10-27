@@ -571,7 +571,7 @@ gather_strided_rows_raw :979 · gather_mask :1021 · 计数函数 :1092-1093
 
 | 导出 | 行号 | 用途 |
 |---|---|---|
-| `index(self, indices)` | :453 | 绕过 __getitem__ 直达 dispatcher（对拍/计时不走 Python 切片层） |
+| `index(self, indices)` | :453 | 绕过 __getitem__ 直达 dispatcher（对拍/计时不走 Python 切片层；无 autograd 公式，直调丢梯度——训练用 `x[...]`） |
 | `linearize_spec(self, indices)` | :460 | 返回物化后的 int64 偏移数组——看 linearize 到底算了什么 |
 | `debug_spec(self, indices)` | :467 | **调试路由第一步**：完整 IndexSpec（B/K/A/row_off/col_off/after_contiguous/indices…） |
 | `mask_fused_count` | :474 | mask 快路径命中次数 |
