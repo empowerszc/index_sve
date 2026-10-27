@@ -400,7 +400,8 @@ linearize 通用路径。修复后 1.01-1.57x（正确结果），并补了两�
 ### 5.8 T13 后残余退化：多因素定位
 
 T13 只影响多索引且 `n<=65536` 的入口；31 场景里多索引 100k 不进新路径，
-大 K/RowCopy 也不受影响。T13 后仍 <1x 的持续项按机理分为五类：
+大 K/RowCopy 也不受影响。T13 后仍 <1x 的持续项按机理分类如下
+（A-F 来自矩阵定位，E2/G 为后续聚焦复测与 T14 realpath 对拍补充）：
 
 | 类别 | 单元（1-16t） | 当前比值 | 绝对时间/线程 | 可修性 |
 |---|---|---|---|---|
@@ -792,6 +793,10 @@ HPC_INDEX_NO_OVERRIDE=1 HPC_AFFINITY=190-227 \
 # 小 K 两进程
 HPC_AFFINITY=190-227 HPC_THREADS=1,2,4,8,16,32,36 \
   HPC_REPS=2 HPC_ITERS=150 python benchmarks/bench_smallk_driver.py
+
+# 真实 workload 对拍（§5.8-G / RESULTS §2.5）
+HPC_AFFINITY=190-227 HPC_THREADS=1,8,16,38 HPC_REPS=3 \
+  python benchmarks/bench_realpath_driver.py
 
 # 绝对带宽、阈值扫描、非连续 mask 分解（§5.5/§6.3/§6.4）
 HPC_AFFINITY=190-227 python benchmarks/degrade_probe.py

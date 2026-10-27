@@ -68,24 +68,30 @@
 8. `tests/test_mask_fused.py`（mask 单遍）；
 9. `tests/test_smallk.py`（小 K 精简路径）；
 10. `tests/test_compile_optin.py`（`HPC_INDEX_COMPILE=1`）；
-11. 两进程 true-aten 对拍（semantics.md §6，含 K>=1024 与非连续 stride 用例）。
+11. `tests/test_strided_rows.py`（非连续尾维 run 块拷贝，T12）；
+12. `tests/test_rowcopy_routes.py`（raw 路由 / 大 K 回退 / f32+i64 路由 / 阈值缩放，T15）；
+13. `tests/test_small_multi.py`（多索引小 K 快路径，T13）；
+14. 两进程 true-aten 对拍（semantics.md §6，含 K>=1024 与非连续 stride 用例）。
 
-全部通过 = 102/102（覆盖激活态）。
+全部通过 = 127/127（覆盖激活态）；对拍 44/44。
 
 ## 6. 已知可优化项（后续工作）
 
 - ~~**P3 mask 多线程**~~：T8 已用单遍 compaction 修复（RESULTS §3.11）。
 - **4B 大 K 随机 gather**：受 64B 行放大/DRAM 延迟限制（SVE 与标量持平）；
   可试预取加深/软件流水，或按 cache line 分桶排序（kernels.md §2）。
+  T15 后 i64 下标且源>512KB 已走直连 SVE（8t 2.22x）；i32 下标仍受此限。
 - **dtype 白名单 gap**：barebones `uint16/uint32/uint64`、float8 系列、complex32
   目前抛 `NotImplementedError`（ATen 支持）；需要扩展 dispatch 宏并补回归，
   见 semantics.md §4。
-- **小规模并行阈值**：每线程 <64KB 效率明显下降、<8KB 基本无收益（1D K=8192
-  在 36t 相对 1t 0.76x，绝对时间仅 58µs）；可按“每线程 ≥64KB”限制有效线程数，
-  延迟受限的 1D gather 可放宽到 16KB，见 degradation §6.3。
+- ~~**小规模并行阈值**~~：T15 已修——并行阈值按线程数缩放
+  `max(16384, 512×nt)`（K=1024 高线程 1.84→2.83-4.57x）。使用侧建议
+  （小张量不要开满线程）仍有效，见 degradation §6.3。
 - **M1 值域桶化（T2 阶段 2，未做）**：M1 大块路径当前是 skip-linearize 直接
   rowcopy，未对下标做值域分析（keys[order] 等若值域小可再桶化）。文档见
   优化任务建议 T2 阶段 2；`gather_rowcopy_raw` 已为后续接入留好入口。
+
+完整优先级表、预期收益与根因交叉引用见 `status.md` §7（演进方向）。
 
 已完成（T4 后不再需要）：~~int32 线性化临时缓冲~~ —— `linearize.cpp` 已改为
 int32 直接写（不再分配 K×8B int64 再转换）。

@@ -46,8 +46,8 @@ CPU 键覆盖，autograd 不受影响）。构建/运行契约见 `README.md` �
 | T11 | 线程矩阵方法学修正（libomp ICV 同步）、`gather_direct` A==1 紧凑循环、2B/1B/complex 单遍、非连续 stride 正确性修复、1t A>=4 恢复 raw rowcopy | fc26cf8 | ✅ |
 | T12 | fastindex 差异补齐：strided-rows、≤64B memcpy、A<16 raw、B==1、grain 64、多索引 A≥4（≥16t）raw | 6603406 | ✅ |
 | T13 | 多索引小 K 入口快路径：跳过 normalize、偏移预计算、dom==1 fill、逐行 memcpy；n≤65536 | a91d566 | ✅ |
-| T14 | `small_single_index` 短行 memcpy 阈值 A>=4 → A>=2（realpath 对拍发现 shortq A=3 0.84x） | （未提交） | ✅ |
-| T15 | 中等行宽 raw 放行 `A<=64 && B*K<=65536`（2D A=16 K=8192 32/36t 0.73/0.76x）；f32/i32+i64 下标大源（>512KB）直连单遍 SVE `pure_gather_sve_4b_i64idx`（uzp1 收窄复用 u32index）；`small_single` 并行阈值 `max(16384, 512×nt)`（38t K=1024 边界） | （未提交） | ✅ |
+| T14 | `small_single_index` 短行 memcpy 阈值 A>=4 → A>=2（realpath 对拍发现 shortq A=3 0.84x） | 428bafd | ✅ |
+| T15 | 中等行宽 raw 放行 `A<=64 && B*K<=65536`（2D A=16 K=8192 32/36t 0.73/0.76x）；f32/i32+i64 下标大源（>512KB）直连单遍 SVE `pure_gather_sve_4b_i64idx`（uzp1 收窄复用 u32index）；`small_single` 并行阈值 `max(16384, 512×nt)`（38t K=1024 边界） | 428bafd | ✅ |
 
 ## 3. 路由现状（op.cpp `index_impl`）
 

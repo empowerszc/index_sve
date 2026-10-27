@@ -52,8 +52,8 @@ T6-T11 依次修复 index_out/autograd、mask 单遍、小 K 路径、compile op
 | T11 | 线程数同步 + 路由/正确性修复 | `sync_omp_threads()`；`gather_direct` A==1 紧凑循环；2B/1B/complex 单遍；1t A>=4 raw rowcopy；非连续 stride 修复 | fc26cf8 |
 | T12 | fastindex 差异补齐 | `strided_rows_raw` run 块拷贝；`copy_contig_sve` ≤64B memcpy；A<16 raw；B==1 快路径；grain 下限 64；多索引 A>=4 raw（≥16t） | 6603406 |
 | T13 | 多索引小 K 入口快路径 | `small_multi_index`：绕过 normalize、偏移预校验、dom==1 fill、逐行 memcpy；n≤65536 | a91d566 |
-| T14 | 短行 memcpy 放宽 | `small_single_index` 行拷贝 memcpy 阈值 `A>=4` → `A>=2`（A=3 标量循环每行 ~2x 于 memcpy，realpath 对拍发现） | （未提交） |
-| T15 | 中等行宽 raw（小 K）+ f32+i64 单遍 SVE + 阈值线程缩放 | raw rowcopy 放行 `A<=64 && B*K<=65536`（大 K 回归，见 §19）；1D f32/i32+i64 下标多线程改走专用单遍 SVE 内核（uzp1 收窄复用 u32index）；`small_single` 并行阈值 `max(16384, 512×nt)` | （未提交） |
+| T14 | 短行 memcpy 放宽 | `small_single_index` 行拷贝 memcpy 阈值 `A>=4` → `A>=2`（A=3 标量循环每行 ~2x 于 memcpy，realpath 对拍发现） | 428bafd |
+| T15 | 中等行宽 raw（小 K）+ f32+i64 单遍 SVE + 阈值线程缩放 | raw rowcopy 放行 `A<=64 && B*K<=65536`（大 K 回归，见 §19）；1D f32/i32+i64 下标多线程改走专用单遍 SVE 内核（uzp1 收窄复用 u32index）；`small_single` 并行阈值 `max(16384, 512×nt)` | 428bafd |
 
 ## 3. 逐项详解
 
@@ -212,7 +212,8 @@ aten/hpc 的 median。4B f32 K=10M 大值域随机 gather 仍是硬件上限（1
 
 ## 6. 验证
 
-- 当前全 10 个测试套件 **102/102 通过**（T5 时点为 6 套件 75/75）。
+- （T8 时点）全 10 个测试套件 **102/102 通过**（T5 时点为 6 套件 75/75；
+  T15 时点为 13 套件 **127/127**，见 §19 验证）。
 - 正确性对拍：两进程法（无覆盖进程生成 true-aten 参考，覆盖进程比对），
   工具 `tests/verify_against_aten.py --mode both`（**44/44**），含 K>=1024、
   桶化、M1 raw、T5 单遍、多索引、mask、非连续 stride 用例。
