@@ -115,6 +115,37 @@ Warning: Overriding a previously registered kernel for the same operator and the
 - 提供环境的 `setvars.sh` + LD_LIBRARY_PATH 到部署脚本；
 - 用 `torch._C._dispatch_dump_table()` 验证 CPU key 已到覆盖（调试用）。
 
+### 6.1 宿主程序已是多进程/多线程（实测 2026-10-27，节点 5 定点）
+
+**结论：没有算子层面的冲突。** 覆盖、路由、OpenMP team、grain 全部是进程内
+状态，多进程天然隔离——本项目所有正式数字本就在 5+ 用户共享箱（事实上的
+多进程环境）上测得。T11 起每次内核入口把 torch 线程数同步给扩展的 libomp
+（`sync_omp_threads`），所以 `torch.set_num_threads` / `OMP_NUM_THREADS` 的
+线程预算对扩展真实生效。需要管理的是**超订**（PyTorch 通用问题，非本算子
+特有，aten 同样中招）：
+
+| 宿主形态 | 结论 |
+|---|---|
+| 多进程（DataLoader / torchrun / 服务多 worker） | 无共享状态，仅硬件竞争；守则：进程数 × 每进程线程数 ≤ 核数 |
+| 进程内 k 线程并发调 `x[idx]` | 有超订代价（下表）；把真实预算告诉 torch——`set_num_threads(≈ 核数/k)`，扩展会跟随 |
+| **宿主 C++ OpenMP region 内调 torch** | **唯一应避免的形态**：ATen 的嵌套守卫按 runtime 生效——宿主 region 在 libgomp、本算子在 libomp，嵌套关系跨 runtime 不可见 → 静默超订（宿主线程数 × nt）；同 runtime 则被守卫强制串行。必须在 region 内调用时先 `set_num_threads(1)` |
+| fork 的 DataLoader worker | 继承注册；OpenMP pool 经 atfork 处理，常规用法安全（spawn 需 worker 侧 import，summary.md §4.6） |
+
+实测（`x[idx]` 200k 行 × C=64 f32，共 24 次调用，`bench_embed_threads.py`）：
+
+| 配置 | 结果 | 读法 |
+|---|---|---|
+| nt=36，单线程顺序 | 1.7 ms/调用 | 基线 |
+| nt=36，4 宿主线程（4×36=144 线程压 38 核） | 14.6 ms/调用，**劣化 8.6x** | 超订代价；aten 同配置同现象（总时间劣化 2.60x vs 本算子 2.14x，单轮共享箱数字看趋势） |
+| nt=9，4 宿主线程（4×9≈核数） | 总时间为同 nt 顺序的 0.59x | 预算说真话后，宿主并行正常工作 |
+| nt=1，4 宿主线程 | 聚合加速 3.72x | 小调用/高并发宿主的正确姿势（GIL 在 op 内释放，串行内核干净叠加） |
+
+另注：`adaptive_grain` 自适应的是**工作量 × torch 线程数**（chunk 防任务
+风暴，下限 64），不是系统负载——它感知不到其他进程/线程的占用。调用大
+（K·A 大、并行摊得开）优先内部并行（高 nt、宿主侧串行批处理）；调用小
+（fork-join 占比高）优先宿主并行 + 低 nt（`small_*` 路径的串行阈值
+`max(16384, 512×nt)` 正是为此设计的）。
+
 ## 7. 慢场景 fallback 决策（已评估，结论：不改）
 
 针对"本算子性能差于 aten::index 时回退到原生 aten::index"的诉求，做了一轮完整
