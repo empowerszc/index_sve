@@ -9,6 +9,7 @@
 | [summary.md](summary.md) | **项目汇总（给同事的系统介绍）**：背景（AI4S 热点 27270ms）、aten::index 机制与慢因、六类改进手段、使用方法（含 torch.compile 重载）、基准方法与正确性、性能测试结果（通用 + AI4S 专项）、劣化根因、为何不做性能级回退、绕过/边界清单、训练适用性、FAQ | 第一次接触项目、要与他人系统讨论的读者 |
 | [glossary.md](glossary.md) | **术语与代号速查（唯一名词入口）**：技术术语表、场景/负载代号（S1/P1/M1-M6/A1/shortq…）、形状记号、代号冲突警示 | 读任何文档遇到看不懂的名词/代号时查 |
 | [architecture.md](architecture.md) | 三段流水线整体架构、控制流、dispatch 树、数据布局 | 架构理解、代码走读 |
+| [code-walkthrough.md](code-walkthrough.md) | **源码走读（拿着代码读）**：文件清单与阅读顺序、一次 `x[idx]` 的完整旅程（真实函数名+行号）、IndexSpec 逐字段与 B-K-A 算例、op/normalize/linearize/gather 逐段精读、index_into 路由表、并行约定、十个不变量、函数→行号速查、pybind 调试出口 | 要读懂/修改源码的读者 |
 | [semantics.md](semantics.md) | 与 ATen `aten::index.Tensor` 的语义对齐点与**有意差异**、错误信息、dtype 覆盖 | 正确性审查、回归测试 |
 | [kernels.md](kernels.md) | SVE512 各内核（8B/4B gather、rowcopy、scalar）实现细节 + 优化轮新路径（M1 raw rowcopy、T3 fused、T4 桶化、T12 strided/multi raw、T13 small_multi、T15-C 大源 4B 直连 SVE）、预取、NT 开关 | 性能优化、内核修改 |
 | [performance.md](performance.md) | 基准方法论、模型场景结果表、**胜出场景的硬件根因（§4.3：rowcopy/gather MLP/遍数消除/固定开销/桶化/串行边界）**、已知硬件限制、如何复测 | 性能评估、验收、想知道"为什么快"的读者 |
@@ -38,6 +39,8 @@
   §2 → [degradation-analysis.md](degradation-analysis.md)（先看 §0 结论与 §5 逐案）；
   短调用 / 真实 workload 收益另跑 `bench_realpath_driver.py`（见
   [benchmarks.md](benchmarks.md) §3 覆盖矩阵）。
+- **要读源码**：[code-walkthrough.md](code-walkthrough.md)（按文件与行号走读全部核心
+  源码，含路由表与调试出口）→ 遇到"为什么这样设计"回 [architecture.md](architecture.md)。
 - **要改内核/调优**：[kernels.md](kernels.md) → [architecture.md](architecture.md)
   → [optimizations.md](optimizations.md) §4 路由 → [degradation-analysis.md](degradation-analysis.md)
   §7 微架构证据 → [fallback-analysis.md](fallback-analysis.md)

@@ -33,6 +33,9 @@ backward 不受影响。
 - 只想用：本节 → [快速开始](#快速开始) → [已知限制](#已知限制--注意事项)。
 - 想看性能：`benchmarks/RESULTS.md` §2 → `docs/degradation-analysis.md`
   （劣化硬件根因 §5.9；胜出根因 `docs/performance.md` §4.3）。
+- 想读代码：[`docs/code-walkthrough.md`](docs/code-walkthrough.md)——按真实文件与
+  行号走读全部核心源码（入口/路由/归一化/内核族谱/并行约定），配
+  `debug_spec` 等调试出口，一个下午可读完。
 - 想改内核：`docs/kernels.md` → `docs/architecture.md` → `docs/optimizations.md`
   → `docs/index_sve_vs_fastindex_gap_20261023.md`（fastindex 差异与待补项）。
 - 想接续开发：`docs/status.md` §7（演进方向优先级表 R1-R9：R1 小源扫描
