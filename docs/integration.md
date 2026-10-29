@@ -3,6 +3,13 @@
 本文档说明本算子如何接入 torch 运行时、环境要求，以及集成时要注意的全局
 副作用。
 
+> **这篇讲什么**：`import` 之后发生了什么、哪些环境变量能关掉覆盖、宿主程序
+> 多线程/多进程时要注意什么、慢场景为什么不自动 fallback。
+> **读完你能回答**：默认覆盖哪些调用？`HPC_INDEX_NO_OVERRIDE` 和
+> `HPC_INDEX_COMPILE` 怎么互斥？嵌入多线程宿主会超订吗？遇到慢形态怎么办？
+> **本篇代号**：A6（覆盖手段）、T11（线程同步）、R10（当前轮次）、M1-M6/shortq
+> （负载）。术语见 [glossary.md](glossary.md)。
+
 > **TL;DR**：`import index_sve` 即默认接管所有 CPU `aten::index.Tensor`；
 > 不想被接管就设 `HPC_INDEX_NO_OVERRIDE=1`（必须在 import 前）。`torch.compile`
 > 默认绕过所有运行时内核，要 opt-in 设 `HPC_INDEX_COMPILE=1`。两个变量互斥。
@@ -132,7 +139,7 @@ Warning: Overriding a previously registered kernel for the same operator and the
 |---|---|
 | 多进程（DataLoader / torchrun / 服务多 worker） | 无共享状态，仅硬件竞争；守则：进程数 × 每进程线程数 ≤ 核数 |
 | 进程内 k 线程并发调 `x[idx]` | 有超订代价（下表）；把真实预算告诉 torch——`set_num_threads(≈ 核数/k)`，扩展会跟随 |
-| **宿主 C++ OpenMP region 内调 torch** | **唯一应避免的形态**：ATen 的嵌套守卫按 runtime 生效——宿主 region 在 libgomp、本算子在 libomp，嵌套关系跨 runtime 不可见 → 静默超订（宿主线程数 × nt）；同 runtime 则被守卫强制串行。必须在 region 内调用时先 `set_num_threads(1)` |
+| **宿主 C++ OpenMP region 内调 torch** | **唯一应避免的形态**：aten 的嵌套守卫按 runtime 生效——宿主 region 在 libgomp、本算子在 libomp，嵌套关系跨 runtime 不可见 → 静默超订（宿主线程数 × nt）；同 runtime 则被守卫强制串行。必须在 region 内调用时先 `set_num_threads(1)` |
 | fork 的 DataLoader worker | 继承注册；OpenMP pool 经 atfork 处理，常规用法安全（spawn 需 worker 侧 import，summary.md §4.6） |
 
 实测（`x[idx]` 200k 行 × C=64 f32，共 24 次调用，`bench_embed_threads.py`）：
@@ -155,13 +162,13 @@ Warning: Overriding a previously registered kernel for the same operator and the
 针对"本算子性能差于 aten::index 时回退到原生 aten::index"的诉求，做了一轮完整
 调查，结论是**不实现 fallback**。记录理由供日后复读：
 
-- **慢场景（当前）**：只有六个家族 <1x——空 mask 4-38t 0.42-0.66x（aten 并行
-  早退，绝对差 1.5-2ms）、1B 0.91-0.99x、complex 0.92-0.95x、非连续 mask
-  0.79-0.98x、S4 0.77-0.92x、噪声单格；逐格清单见 RESULTS §2.9.1。其余
-  31 场景 × 8 档全部 ≥1.00x。4B 大 K 随机 gather 的绝对带宽仍受 64B 行放大 +
-  DRAM 延迟限制（§8.4），这是物理上限而非实现差距。
-  RowCopy/8B PureGather 是可靠收益（1t S1/P1 2.89-2.98x、8t 3.0-3.3x）；
-  `x[:,i]` 当前 1t 2.00x（T11 前 0.4-0.7x，A==1 紧凑循环修复）。
+- **慢场景（当前）**：只有五个可复现家族 + 噪声级单格（另计）<1x——空 mask
+  4-38t 0.42-0.66x（aten 并行早退，绝对差 1.5-2ms）、1B 0.91-0.99x、complex
+  0.92-0.95x、非连续 mask 0.79-0.98x、S4 0.77-0.92x；逐格清单见 RESULTS
+  §2.9.1。其余 31 场景 × 8 档全部 ≥1.00x。4B 大 K 随机 gather 的绝对带宽仍受
+  64B 行放大 + DRAM 延迟限制（§8.4），这是物理上限而非实现差距。
+  RowCopy/8B PureGather 是可靠收益（代表值见 `performance.md` §3；`x[:,i]` 已由
+  T11 的 A==1 紧凑循环修复，历史值见该文附录）。
 - **Python-wrapper fallback 不可取**：实测 `torch.library.get_kernel` +
   `with_keyset` + `call_boxed` 能正确回退且 autograd 安全（无递归），但任何
   Python 层包装会给**每次** `x[...]` 调用增加 ~45µs（小 op 13.7µs→63µs，

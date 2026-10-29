@@ -4,8 +4,19 @@
 `-msve-vector-bits=512` 编译（VL=512-bit，`svcntb()==64`），运行时用
 `sve_512_ok()` 门控。
 
-> **数字口径**：文中出现的性能数字是**对应轮次的历史实测**（多为 T11/T13/T15），
-> 用于说明"这个内核为什么快"；**当前值一律以 `benchmarks/RESULTS.md` §2.9 为准**。
+> **这篇讲什么**：每个 SVE 内核在什么条件下被选中、内部怎么实现、实测快在哪或
+> 卡在哪。
+> **读完你能回答**：为什么 A 大走 RowCopy、A==1 走 PureGather？4B gather 为什么
+> 有硬上限？哪些 dtype 只能落标量？改路由时必须守住哪些门槛？
+> **本篇代号**：A/B/K（索引几何）、T0-T15（优化轮）、R10（当前轮次）、
+> NT（non-temporal）。白话表见 [glossary.md](glossary.md)。
+
+> **数字口径**：文中的性能数字是**对应轮次的历史实测**（多为 T11/T13/T15），
+> 用于说明“这个内核为什么快”，每段都标了轮次；**当前值一律以
+> `benchmarks/RESULTS.md` §2.9 为准**。
+>
+> **读法**：每节按「条件 → 实现 → 实测」三段读；先看 §0 的选择表，再按需跳到
+> 具体内核。
 >
 > **一句话**：内核选择只由三个量决定——**A**（每次访问连续元素数）、**K**
 > （索引元素数）、**B**（索引广播出的前导行数）。A 大走 RowCopy，A==1 走
@@ -18,7 +29,24 @@
 > = 值域小（≤2048）时先建“值→行”查表，把随机 gather 变成顺序查表；
 > **linearize** = 多维下标换一维偏移。
 
-### 内核选择速查
+## 目录
+
+- [0. 内核选择速查](#0-内核选择速查先看这张表)
+- [1. 8B 元素 gather（f64/i64）](#1-8b-元素-gatherf64i64)
+- [2. 4B 元素 gather（f32/i32）](#2-4b-元素-gatherf32i32)
+- [3. 行拷贝 RowCopy（A>1 连续块）](#3-行拷贝-rowcopya1-连续块)
+- [4. 标量回退 dispatch_scalar](#4-标量回退-dispatch_scalar)
+- [5. 快速路径 gather_direct（K<1024）](#5-快速路径-gather_directk1024)
+- [6. 预取与 NT 决策](#6-预取与-nt-决策task-8-结论)
+- [7. 线程并行](#7-线程并行)
+- [8. 修改内核时的门槛清单（防回归）](#8-修改内核时的门槛清单防回归)
+- [9. T8 mask 单遍压实 gather_mask](#9-t8-mask-单遍压实-gather_maskgathercpp)
+- [10. T9 小 K 单整数下标精简路径](#10-t9-小-k-单整数下标精简路径opcpp)
+
+## 0. 内核选择速查（先看这张表）
+
+三个量先记住：**A** = 每次访问的连续元素数（行宽），**K** = 索引元素数，
+**B** = 索引前的前导行数。下表按“从上到下优先”读：
 
 | 条件 | 走哪个 | 为什么 |
 |---|---|---|
@@ -48,8 +76,8 @@ pure_gather_sve_8b_f64 / pure_gather_sve_8b_s64
 - 尾数用 `svwhilelt_b64(i, n)` 半掩码向量。
 - NT 变体：`svldnt1_gather_u64index_f64` + `svstnt1_f64`（HPC_INDEX_NT=1）。
 
-**性能**：8B gather 是 1D/大随机 gather 的主要收益来源。T11 定点复测（node 5，
-1D f64 K=2M）hpc 绝对带宽 1/2/4/8/16/32t = 0.61/1.08/2.09/3.91/6.87/6.80 GB/s，
+**实测**（T11）：8B gather 是 1D/大随机 gather 的主要收益来源。T11 定点复测（node 5，
+1D f64 K=2M）本算子绝对带宽 1/2/4/8/16/32t = 0.61/1.08/2.09/3.91/6.87/6.80 GB/s，
 相对 aten 1.03-1.26x；K=10M 时 32/36t 为 9.1-9.2 GB/s（aten 4.5-4.8 GB/s）。旧文档"4-38 线程稳定 5.0 GB/s"的线程标签不可信，已由
 RESULTS §2 的修正矩阵取代（`torch.set_num_threads` 对扩展生效问题见 §7）。
 
@@ -108,7 +136,7 @@ f64 8B 路径不受影响。
 - **小源与 1 线程不走**：小源标量更快（L1 命中 ~7.1ns/元素 vs SVE 微码/
   发射下限 ~18ns，双内核复现）；1 线程仍走 `gather_single_1d` 标量单遍。
   交叉点 ≈L2，机理见 degradation §5.9；
-- 实测：1D f32 K=10M idx64 8t **2.22x**（hpc 绝对时间 -40%），8-36t
+- 实测：1D f32 K=10M idx64 8t **2.22x**（本算子绝对时间 -40%），8-36t
   1.44-2.22x（optimizations §19、degradation §5.9）。
 
 ## 3. 行拷贝 RowCopy（A>1 连续块）
@@ -288,7 +316,7 @@ linearize 同样预提取 + nb==1 快路径
   `v * indexed_strides[j]`。
 - N-D 下标按 `broadcast_shape` 混合进制解码（bfactor），**非** `k*stride(0)`
   （A7 修复 —— 若回归成简单 stride 会破坏 N-D 下标语义）。
-- 等价 ATen `Indexer` 的逐元素遍历，故无需线性化临时缓冲。
+- 等价 aten `Indexer` 的逐元素遍历，故无需线性化临时缓冲。
 - **T11 A==1 快路径**（`gather_direct` 入口，`K<1024`）：`A==1 && 单索引 &&
   全长连续 && after_contiguous` 时先把
   K 个下标校验/归一化一次到小缓冲，再跑无检查的紧凑循环。`x[:,i]`（B 大、K 小）
@@ -307,7 +335,7 @@ linearize 同样预提取 + nb==1 快路径
   `grain.h`：`max(1, min(n, 65536, n/(nt*8)))`）；`-fopenmp` 必须（否则
   `parallel_for` 串行化，历史根因见 architecture.md §7）。
 - 线程数：T11 起内核入口调用 `omp_set_num_threads(at::get_num_threads())`，
-  `torch.set_num_threads(t)` 对扩展生效。扩展链接 BiSheng libomp、ATen 链接
+  `torch.set_num_threads(t)` 对扩展生效。扩展链接 BiSheng libomp、aten 链接
   libgomp，二者 ICV 独立；此前只设 torch 的线程数时，扩展实际用 libomp 默认
   team（本机 affinity 38），导致 2-36t 的旧数据标签失效（RESULTS §3.6.1/§3.9）。
 - 鲲鹏 920F：608 核 / 32 NUMA，单节点 38 核。共享箱上 608 线程数字噪声大，

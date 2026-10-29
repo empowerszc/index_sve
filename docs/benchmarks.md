@@ -4,7 +4,16 @@
 `tests/`，不要把这里的脚本当功能测试用。`bench_regression.py` 也只标记
 **性能**回归（比值 <0.90），不验证结果正确性。
 
+> **这篇讲什么**：每个 benchmark 脚本测什么、该用哪个、环境变量怎么设、结果怎么
+> 和功能测试区分。
+> **读完你能回答**：验收该跑哪个脚本？小 K 为什么要两进程？`HPC_AFFINITY`
+> 怎么用？哪些脚本只作历史参考？
+> **本篇代号**：M1-M6/shortq/A1（真实负载）、S1/P1（基准场景）、R10（当前轮次）。
+> 术语见 [glossary.md](glossary.md)。
+
 ## 1. 一句话总览
+
+下表按“正式基准 / 组件脚本 / 历史参考”三类读；不确定时先用 `bench_threads.py`。
 
 | 文件 | 类型 | 作用 | 何时用 |
 |---|---|---|---|
@@ -51,7 +60,7 @@
 ## 3. 真实 workload 覆盖与预测力
 
 **路径对称性问题**：除 `bench_smallk_real.py` / `bench_realpath.py` 外，其余脚本的
-hpc 侧都是 `hpc_index()` pybind 直呼，绕过了 dispatcher。大 K 下固定开销占比
+本算子侧都是 `hpc_index()` pybind 直呼，绕过了 dispatcher。大 K 下固定开销占比
 可忽略，比值可信；**短调用（单次几微秒级）的比值会偏乐观**，必须以两进程
 真实 `x[idx]` 对拍（`bench_realpath_driver.py` / `bench_smallk_driver.py`）为准。
 

@@ -3,6 +3,12 @@
 本算子承诺**语义等价于 torch 2.10.0 的 `aten::index.Tensor`（CPU 参考实现）**，
 逐字节对齐。本文档列出对齐点与**有意的差异**，以及正确性验证方法。
 
+> **这篇讲什么**：哪些行为必须和 aten 完全一致、哪些是故意不同、怎么证明一致。
+> **读完你能回答**：错误文案为什么能逐字对齐？哪些 dtype 不支持？int32 下标
+> 为什么不升 int64？改代码时哪几条红线不能碰？
+> **本篇代号**：D1（有意差异编号）、A6/A7（手段编号）、T0-T15（优化轮）。
+> 术语见 [glossary.md](glossary.md)。
+
 > **怎么读**：§1-§3 是“和 aten 有哪些必须一致的规则”，§4 是 dtype 范围（含一个
 > 已知 gap），§5 是“故意不同但不影响结果”的点，§6 是怎么验证，§7 是改代码时
 > 绝不能破坏的红线。
@@ -15,11 +21,11 @@
 
 ## 1. 入口行为
 
-| 输入条件 | 行为 | ATen 参考 |
+| 输入条件 | 行为 | aten 参考 |
 |---|---|---|
 | 空下标列表 | 抛 `at least one index must be provided` | 相同 |
 | 下标数 > self.dim() | 抛 `too many indices for tensor of dimension {d} (got {n})` | 相同（`d` 为维度数，`n` 为下标数） |
-| 下标 dtype 白名单 | {int64, int32, uint8, bool} | ATen `checkIndexTensorTypes(allow_int=true)` |
+| 下标 dtype 白名单 | {int64, int32, uint8, bool} | aten `checkIndexTensorTypes(allow_int=true)` |
 | 白名单外 dtype | 抛 `tensors used as indices must be long, int, byte or bool tensors` | 相同 |
 | byte mask | 同 bool 处理 + deprecation 警告 | 相同 |
 | mask 形状不匹配 | 抛 `The shape of the mask {..} at index {j} does not match ...` | 相同 |
@@ -30,7 +36,7 @@
 
 ## 2. 归一化等价性
 
-`normalize_index` 镜像 ATen `TensorAdvancedIndexingUtils` 的：
+`normalize_index` 镜像 aten `TensorAdvancedIndexingUtils` 的：
 - `make_info` 语义（dims_before/dims_after、连续子空间转置、None 展开）；
 - `has_contiguous_subspace` / `transpose_to_front`（行列各自连续）；
 - mask → `nonzero()` + `select(1, j)` 并维护 `srcIdx`；
@@ -54,7 +60,7 @@
 index {v} is out of bounds for dimension {j} with size {s}
 ```
 
-其中 `j` 是**下标序号**（归一化/转置后的 defined-index 顺序，与 ATen
+其中 `j` 是**下标序号**（归一化/转置后的 defined-index 顺序，与 aten
 `Indexer` 相同），`s` 为该维大小。负数越界同样抛此信息（`v < -size`）。测试
 `tests/test_errors.py` 断言逐字格式。
 
@@ -64,7 +70,7 @@ index {v} is out of bounds for dimension {j} with size {s}
 `AT_DISPATCH_ALL_TYPES_AND_COMPLEX_AND3(kHalf, kBFloat16, kBool)`：
 f32/f64/i32/i64/i16/i8/u8/bool/half/bf16/complex64/complex128。
 
-**已知 gap（非 T11 引入）**：torch 2.10 的 ATen CPU `index` 还支持
+**已知 gap（非 T11 引入）**：torch 2.10 的 aten CPU `index` 还支持
 barebones unsigned（u16/u32/u64）、float8 系列与 complex32；本实现的 dispatch
 未包含这些类型，会抛 `NotImplementedError: "hpc_index_..." not implemented for
 'UInt16'`。它们不在 AI4S 模型路径上，暂未扩展；若需要，应把 8 处 dispatch
@@ -74,7 +80,7 @@ barebones unsigned（u16/u32/u64）、float8 系列与 complex32；本实现的 
 
 | # | 差异 | 影响 | 理由 |
 |---|---|---|---|
-| D1 | int32 下标**不升 int64**，保持 int32 贯穿 | 值与 aten 完全一致；性能上允许 4B SVE 分支直接消费 | ATen 在 `make_info` 升成 int64（值不变）；本算子选择保持以省转换 |
+| D1 | int32 下标**不升 int64**，保持 int32 贯穿 | 值与 aten 完全一致；性能上允许 4B SVE 分支直接消费 | aten 在 `make_info` 升成 int64（值不变）；本算子选择保持以省转换 |
 | D2 | 越界错误消息不追加非广播形状列表（`normalize.cpp` 一处） | 仅报文本少一段形状说明，**首句**逐字相同 | minor；已在测试中标注 |
 | D3 | 覆盖的是 CPU dispatch key（默认开启） | 全局 `x[...]` 行为被改 | 设计目标（A6）——零改动接入 |
 
@@ -127,7 +133,7 @@ barebones unsigned（u16/u32/u64）、float8 系列与 complex32；本实现的 
 
 ## 7. 语义红线（回归测试不可破坏）
 
-- 错误消息逐字等于 ATen（`index {v} is out of bounds for dimension {j} with size {s}`）。
+- 错误消息逐字等于 aten（`index {v} is out of bounds for dimension {j} with size {s}`）。
 - **输出 stride/内存格式与 aten 逐维一致**（`aten_out_strides` 复刻
   TensorIterator 置换恢复）：channels_last/cl3d/3D 置换 self 的行索引族
   （含 mask、2D 索引、切片混合、newaxis、ellipsis）输出保持原布局；连续
