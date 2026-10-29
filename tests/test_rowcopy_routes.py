@@ -146,6 +146,119 @@ def test_small_single_thread_scaled_threshold():
         torch.set_num_threads(old)
 
 
+def test_cl4d_row_index_routes_rowcopy_raw():
+    # R10：cl self 行索引的输出保持 cl（aten 语义），且源/出尾块同为 dense 置换
+    # （(C,H,W)/(1,WC,C)），行块 memcpy 语义等价——直写 out，消除 tmp+copy_。
+    # 修复前走 gather_fused 进 tmp（cl 的 col_off 全为 +32 跨步、max_run=1，
+    # strided_rows 不接管；计数器不增）。1t/8t 双档钉住路由：直写守卫在
+    # dispatch 顶部、线程数无关，防后续守卫重排引入 1t/多线程分叉。
+    x = torch.randn(4096, 32, 14, 14).to(memory_format=torch.channels_last)
+    rows = torch.randint(0, 4096, (2048,), dtype=torch.int64)
+    xc = x.contiguous()
+    ref = xc[rows]
+    old = torch.get_num_threads()
+    try:
+        for nt in (1, 8):
+            torch.set_num_threads(nt)
+            before = C.rowcopy_raw_count()
+            y = x[rows]
+            torch.testing.assert_close(y, ref)
+            assert y.is_contiguous(memory_format=torch.channels_last), y.stride()
+            assert y.stride() == (6272, 1, 448, 32), y.stride()
+            assert C.rowcopy_raw_count() == before + 1, \
+                f"nt={nt}: cl4d row index should block-copy direct into cl out"
+    finally:
+        torch.set_num_threads(old)
+
+
+def test_cl4d_mask_routes_rowcopy_raw():
+    # R10 mask 族：mask 覆盖 dim0、K>=1024 → normalize 展开为单索引，同直写路由。
+    x = torch.randn(4096, 32, 14, 14).to(memory_format=torch.channels_last)
+    m = torch.zeros(4096, dtype=torch.bool)
+    m[torch.randperm(4096)[:2048]] = True
+    xc = x.contiguous()
+    ref = xc[m]
+    old = torch.get_num_threads()
+    try:
+        torch.set_num_threads(8)
+        before = C.rowcopy_raw_count()
+        y = x[m]
+        torch.testing.assert_close(y, ref)
+        assert y.stride() == (6272, 1, 448, 32), y.stride()
+        assert C.rowcopy_raw_count() == before + 1, "cl4d mask should block-copy direct into cl out"
+    finally:
+        torch.set_num_threads(old)
+
+
+def test_cl3d_perm_row_index_direct_values():
+    # R10 linearize 臂：A=3072 落在 [64,4096)（raw 形态条件不满足）→
+    # linearize+gather_index 的 rowcopy_sve 直写。值/stride 断言即可钉住
+    # 路由正确性（误入 col_off 类路径会块内错位、值被打乱）。
+    x = torch.randn(4096, 96, 32).permute(0, 2, 1)  # (4096,32,96) strides (3072,1,32)
+    rows = torch.randint(0, 4096, (2048,), dtype=torch.int64)
+    ref = x.contiguous()[rows]
+    old = torch.get_num_threads()
+    try:
+        torch.set_num_threads(8)
+        y = x[rows]
+        torch.testing.assert_close(y, ref)
+        assert y.stride() == (3072, 1, 32), y.stride()
+    finally:
+        torch.set_num_threads(old)
+
+
+def test_cl4d_sliced_tail_excluded():
+    # 排除：尾块被切片（w∈[1,3) stride 32 有洞）非 dense 置换 → 不可整行 memcpy，
+    # 必须回退 tmp+copy_（计数器不增）。K/A/线程均满足，唯一排除原因是尾块非 dense。
+    x = torch.randn(4096, 32, 14, 14).to(memory_format=torch.channels_last)
+    t = torch.randint(0, 4096, (2048,), dtype=torch.int64)
+    xc = x.contiguous()
+    ref = xc[t, 1:3]
+    old = torch.get_num_threads()
+    try:
+        torch.set_num_threads(8)
+        before = C.rowcopy_raw_count()
+        y = x[t, 1:3]
+        torch.testing.assert_close(y, ref)
+        assert C.rowcopy_raw_count() == before, "sliced cl tail is not dense; must not block-copy direct"
+    finally:
+        torch.set_num_threads(old)
+
+
+def test_cl4d_small_k_excluded():
+    # 排除：K<1024（小张量路径域）不参与直写资格。
+    x = torch.randn(4096, 32, 14, 14).to(memory_format=torch.channels_last)
+    rows = torch.randint(0, 4096, (512,), dtype=torch.int64)
+    xc = x.contiguous()
+    ref = xc[rows]
+    old = torch.get_num_threads()
+    try:
+        torch.set_num_threads(8)
+        before = C.rowcopy_raw_count()
+        y = x[rows]
+        torch.testing.assert_close(y, ref)
+        assert C.rowcopy_raw_count() == before, "K<1024 stays on small-tensor path"
+    finally:
+        torch.set_num_threads(old)
+
+
+def test_cl4d_half_excluded():
+    # 排除：非 f32/f64 dtype（rowcopy_sve/linearize 臂 dtype 集）不参与直写。
+    x = torch.randn(4096, 32, 14, 14).to(memory_format=torch.channels_last).half()
+    rows = torch.randint(0, 4096, (2048,), dtype=torch.int64)
+    xc = x.contiguous()
+    ref = xc[rows]
+    old = torch.get_num_threads()
+    try:
+        torch.set_num_threads(8)
+        before = C.rowcopy_raw_count()
+        y = x[rows]
+        torch.testing.assert_close(y, ref)
+        assert C.rowcopy_raw_count() == before, "f16 cl self must not use direct rowcopy"
+    finally:
+        torch.set_num_threads(old)
+
+
 if __name__ == "__main__":
     sys.path.insert(0, __file__.rsplit("/", 1)[0])
     import _harness

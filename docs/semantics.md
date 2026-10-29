@@ -26,7 +26,7 @@
 | size-0 被索引维 | 抛 `index is out of bounds for dimension with size 0` | 相同 |
 | 索引不在 CPU（meta/CUDA） | 抛 `indices should be either on cpu or on the same device as the indexed tensor (cpu)` | 相同（T6 前会 SIGSEGV） |
 | `out=` 变体（`index.Tensor_out`） | 写入调用方 out；形状不符 resize；非连续 out 计算到临时张量再 copy | 相同 |
-| 输出分配（非 out 变体） | `empty_strided` 按 TensorIterator 置换恢复（`aten_out_strides`）；非连续输出先算入连续 tmp 再 `copy_`。连续 self 恒连续；channels_last/类 cl 置换 self 的行索引族保持原布局；连续 self 上的转置 2D 索引可为非连续 | 相同（TensorIterator 分配语义；专项文档 [output-layout.md](output-layout.md)） |
+| 输出分配（非 out 变体） | `empty_strided` 按 TensorIterator 置换恢复（`aten_out_strides`）；连续 self 恒连续，channels_last/类 cl 置换 self 的行索引族保持原布局。写入：连续 out 原内核直写；非连续 out 经 `rowcopy_direct_ok` 资格判定（源/出尾块同 dense 置换等条件，output-layout.md §8）走行块直写，不满足则 tmp+`copy_` | 相同（TensorIterator 分配语义；专项文档 [output-layout.md](output-layout.md)） |
 
 ## 2. 归一化等价性
 
@@ -80,7 +80,7 @@ barebones unsigned（u16/u32/u64）、float8 系列与 complex32；本实现的 
 
 ## 6. 正确性验证方法
 
-1. **测试套件**（168/168 通过，覆盖激活态，15 个文件；T6 后 test_index_out 7、T8 后 test_mask_fused 9、T9 后 test_smallk 7、T10 后 test_compile_optin 3、T12 后 test_strided_rows 6、T13 后 test_small_multi 11、补测 test_autograd 16、输出布局修复后 test_output_layout 25）：
+1. **测试套件**（174/174 通过，覆盖激活态，15 个文件；T6 后 test_index_out 7、T8 后 test_mask_fused 9、T9 后 test_smallk 7、T10 后 test_compile_optin 3、T12 后 test_strided_rows 6、T13 后 test_small_multi 11、补测 test_autograd 16、输出布局修复后 test_output_layout 25、R10 后 test_rowcopy_routes 14）：
    - `test_smoke.py` — 基本注册/调用；
    - `test_normalize.py` — spec 字段结构断言（dims_before/dims_after、transpose、
      mask 展开、after_contiguous）；
@@ -105,9 +105,10 @@ barebones unsigned（u16/u32/u64）、float8 系列与 complex32；本实现的 
      - `tests/verify_against_aten.py`（glue 入口 + kernel 语义矩阵，
        `--mode both` 自动跑两进程，small/large/all 三套 shape，含 K>=1024、
        桶化、M1 raw、T5 单遍、多索引、mask、广播、非连续 stride 等 44 用例）；
-     - `tests/verify_e2e.py`（**E2E 全链路**差分 120 例：真实 Python 语法
+     - `tests/verify_e2e.py`（**E2E 全链路**差分 124 例：真实 Python 语法
        `x[...]`×布局×dtype/K/N/A 边界×autograd 梯度×模型 mini-workload
-       前向+反向，g5 布局×形态专项 30 例，比对值+shape+dtype+**stride**；
+       前向+反向，g5 布局×形态专项 30 例 + g5big 大 K 直写 4 例，比对
+       值+shape+dtype+**stride**；
        `--mode both --threads` 追加 1/4/38t 一致性矩阵）。参考写 git-ignored
        `agent_space/`。
    - **`None` 占位语义**：传入 op 的索引列表里 `None` 是"跳过维"占位
@@ -132,6 +133,11 @@ barebones unsigned（u16/u32/u64）、float8 系列与 complex32；本实现的 
   （含 mask、2D 索引、切片混合、newaxis、ellipsis）输出保持原布局；连续
   self 恒连续；连续 self + 转置 2D 索引为非连续。`tests/test_output_layout.py`
   25 例 + `verify_e2e.py` g5 组钉住。
+- **R10 直写路由**（`rowcopy_direct_ok` + `IndexSpec::rowcopy_direct`）：
+  置位后 `index_into` 只允许纯块拷贝内核（`gather_rowcopy_raw`/`rowcopy_sve`），
+  绝不能落入 col_offset 类路径（对置换 out 是块内错位）；
+  `tests/test_rowcopy_routes.py` 计数器断言钉住（直写 2 例含 1t/8t 双档 +
+  排除 3 例 + cl3d linearize 臂 1 例）。
 - int32 下标保留不转 int64。
 - f32 且 `self.numel() >= 2^31` 必须走标量（防 int32 越界）。
 - `x[None]` 不进本算子（`TensorIndexing.h` 走 unsqueeze）；`x[tensor(0-dim int)]`

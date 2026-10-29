@@ -18,6 +18,7 @@
 | `bench_realpath_driver.py` | **正式基准** | 交替启动 aten/hpc 两个子进程，真实路径全 case 对拍（含短调用、高频单元素） | 短调用 / 真实 workload 收益结论的首选依据 |
 | `bench_regression.py` | 回归扫描 | 多形态性能回归扫描，默认 1/8/32t，比值 <0.90 打 `REGRESS` | 改内核后快速看有没有明显性能回退 |
 | `bench_ai4s.py` | 专项基准 | AI4S workload 形态（M1-M6）线程扫描，不是功能测试 | 评估 AI4S 场景收益/回归 |
+| `bench_cl_family.py` | **专项基准** | cl/置换布局行索引族前后对照：`aten`/`hpc` 两进程交替（覆盖是进程级开关），cl4d 行/掩码、cl3d 置换、contig4d 箱态对照组 | R10 直写（output-layout.md §8）等布局相关优化的验收/复现（RESULTS §2.9.2） |
 | `bench_embed_threads.py` | 专项基准 | 宿主多线程并发调用 `x[idx]` 的超订实验：固定总工作量，对比单线程顺序与 k 线程并发，NT/K/CALLS 环境变量扫描 | 嵌入多线程/多进程宿主程序的部署评估（integration.md §6.1） |
 | `bench_t1.py` | 优化轮专项 | M2 短行 A-sweep（A=2..64），看行宽对 rowcopy 的影响 | 调整 rowcopy 阈值/短行路径时用 |
 | `bench_t2.py` | 优化轮专项 | M1 权重块（A=1024/2048/4096/65536，含 ≤16KB/行真实尺寸）线程扫描 | 调整大块 rowcopy / raw 路径时用 |

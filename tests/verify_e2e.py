@@ -318,6 +318,25 @@ def build_cases():
     add("g5_strided_row", b_g5b, lambda i: i["x3"][::2][i["rows3"]])
     add("g5_expand_row", b_g5b, lambda i: i["x2"].unsqueeze(0).expand(4, -1, -1)[i["rows3"]])
 
+    # 大 K（>=1024）直写路径：上面 g5 用例全为小 K（走回退 tmp+copy_），
+    # 这组才真正穿过 R10 rowcopy_direct（行索引 raw/linearize 两臂、mask、cl5d）。
+    def b_g5big(seed=0):
+        g = _g(seed)
+        cl = torch.randn(64, 32, 7, 7, generator=g).to(memory_format=torch.channels_last)
+        clraw = torch.randn(16, 32, 14, 14, generator=g).to(memory_format=torch.channels_last)
+        clm = torch.randn(2048, 32, 3, 3, generator=g).to(memory_format=torch.channels_last)
+        cl5 = torch.randn(2000, 3, 4, 5, 6, generator=g).to(memory_format=torch.channels_last_3d)
+        m = torch.zeros(2048, dtype=torch.bool)
+        m[torch.randperm(2048, generator=g)[:1500]] = True
+        return {"cl": cl, "clraw": clraw, "clm": clm, "cl5": cl5, "m": m,
+                "rows": torch.randint(0, 64, (1500,), generator=g),
+                "rowsr": torch.randint(0, 16, (1500,), generator=g),
+                "rows5": torch.randint(0, 2000, (1500,), generator=g)}
+    add("g5big_cl4d_row", b_g5big, lambda i: i["cl"][i["rows"]])            # A=1568 linearize 臂
+    add("g5big_cl4d_row_raw", b_g5big, lambda i: i["clraw"][i["rowsr"]])    # A=6272 raw 臂
+    add("g5big_cl4d_mask", b_g5big, lambda i: i["clm"][i["m"]])            # mask 展开族 K=1500
+    add("g5big_cl5d_row", b_g5big, lambda i: i["cl5"][i["rows5"]])         # cl3d 布局 A=360
+
     # ============ G6 E2E 模型 mini-workload（前向+反向全对拍） ============
     def m_spconv(seed=0):
         g = _g(seed)
@@ -473,7 +492,7 @@ def run_check(args):
 def run_threads_matrix(args):
     """并行正确性：同一 case 在 1/4/38 线程下结果必须一致（race 检测）。"""
     import index_sve  # noqa: F401
-    big = [c for c in build_cases() if c[0].startswith(("g3_", "g6_"))]
+    big = [c for c in build_cases() if c[0].startswith(("g3_", "g6_", "g5big_"))]
     bad = []
     for name, build, fn in big:
         outs = []

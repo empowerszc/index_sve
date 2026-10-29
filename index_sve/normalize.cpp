@@ -147,14 +147,12 @@ IndexSpec normalize_index(const at::Tensor& self,
 
   IndexSpec spec;
   spec.transposed_self = tself;
-  int64_t dims_before = 0, dims_after = 0, dims_indexed = 0;
+  int64_t dims_before = 0, dims_indexed = 0;
   std::vector<int64_t> replacement_shape;
   for (const auto dim : c10::irange(expanded.size())) {
     if (!expanded[dim].defined()) {
       if (dims_indexed == 0) {
         dims_before++;
-      } else {
-        dims_after++;
       }
     } else {
       dims_indexed++;
@@ -178,7 +176,7 @@ IndexSpec normalize_index(const at::Tensor& self,
 
   // 非转置时 before 维位于 [0, dims_before)，转置后 dims_before==0，两类布局统一处理
   std::vector<int64_t> before_sizes, after_sizes;
-  for (const auto dim : c10::irange(expanded.size())) {
+  for (const int64_t dim : c10::irange(expanded.size())) {
     if (dim < dims_before) {
       before_sizes.push_back(tself.size(dim));
     } else if (dim < dims_before + dims_indexed) {

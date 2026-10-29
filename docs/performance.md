@@ -160,6 +160,7 @@ T5 用单遍标量（`gather_single_1d` / 1 线程短行 fused）+ fused/lineari
 | 固定开销消除 | 小 K x[idx] K<=1024（T9/T13）、shortq（T14） | 全线程 1.83-2.6x | 软件层（绕 normalize/迭代器构建） |
 | 值域局部性 | M3 桶化（range2048，值域≤2048） | 1t 1.4-2.6x（优化前 0.2x） | 系统结构（随机读 → 顺序源读+散射） |
 | 串行边界免疫 | K≈1024 高线程（T15 阈值）、shortq K=512-1023 | 2.83-4.57x | 并行编程（小工作量退串行） |
+| 置换布局行拷贝（R10） | cl4d/cl3d 行索引与掩码 K2048（RESULTS §2.9） | 8t 1.35-2.63x（cl4d 1.45-2.54x，与连续行拉平） | 同整行拷贝 + 系统结构（尾块 dense 置换使 memcpy 语义等价，省 tmp+copy_ 一趟输出带宽；aten 走 TI 通用散写） |
 
 #### 整行拷贝为什么赢得最狠（1t 3-4.6x）
 
@@ -176,6 +177,16 @@ T5 用单遍标量（`gather_single_1d` / 1 线程短行 fused）+ fused/lineari
 4. **raw 不等于无条件赢**（T15 教训）：大 K 冷源下 raw 的逐行地址链压低
    MLP，慢 12-32%；小 K 省 fork-join 才赢。最终路由
    `A>=4096||A<16||(A<=64&&B*K<=65536)`（degradation §5.9.4）。
+
+#### 置换布局（channels_last）为什么也能整行拷贝（R10，2026-10-29）
+
+cl 尾块 (C,H,W)/(1,WC,C) 是 **dense 置换**——源行（self 的一个 n 块）与
+cl 输出行（out 的一个 k 块）都是整块 dense 内存，且逻辑→内存置换相同；
+rowcopy 纯块拷贝（不经 col_off）对"源/出同置换"**语义等价**，可直接写进
+非连续 out。实测 cl4d 行索引与连续行索引差仅 5-8%（1.30 vs 1.21ms）。
+资格判定（`rowcopy_direct_ok`）逐次校验该等价（源尾块 dense 置换 + out
+尾块逐维同 stride + out 前导块行主序），不成立即回退 tmp+copy_——切片
+cl/expand/flip 天然排除。机制见 `output-layout.md` §8。
 
 #### gather 的 8/16 路 MLP（大源 1D，内核段 ~1.9x）
 

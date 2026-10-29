@@ -11,7 +11,7 @@
 | [architecture.md](architecture.md) | 三段流水线整体架构、控制流、dispatch 树、数据布局 | 架构理解、代码走读 |
 | [code-walkthrough.md](code-walkthrough.md) | **源码走读（拿着代码读）**：文件清单与阅读顺序、一次 `x[idx]` 的完整旅程（真实函数名+行号）、IndexSpec 逐字段与 B-K-A 算例、op/normalize/linearize/gather 逐段精读、index_into 路由表、并行约定、十个不变量、函数→行号速查、pybind 调试出口 | 要读懂/修改源码的读者 |
 | [semantics.md](semantics.md) | 与 ATen `aten::index.Tensor` 的语义对齐点与**有意差异**、错误信息、dtype 覆盖 | 正确性审查、回归测试 |
-| [output-layout.md](output-layout.md) | **输出内存布局修复（2026-10-29）**：channels_last/置换 self 上输出布局背离 aten 的 E2E bug——现象实测表、TensorIterator 置换恢复机制（源码行号）、一分钟自检探针、其他版本移植指南、性能代价与优化方向 | 排查同类 bug、持有旧版本要修复的 agent |
+| [output-layout.md](output-layout.md) | **输出内存布局修复 + R10 直写（2026-10-29）**：channels_last/置换 self 上输出布局背离 aten 的 E2E bug——现象实测表、TensorIterator 置换恢复机制（源码行号）、一分钟自检探针、其他版本移植指南（§5）；R10 行块直写（§8：dense 置换等价性、资格判定、0.30-0.42x→1.45-2.54x 实测） | 排查同类 bug、持有旧版本要修复的 agent、做布局相关优化 |
 | [kernels.md](kernels.md) | SVE512 各内核（8B/4B gather、rowcopy、scalar）实现细节 + 优化轮新路径（M1 raw rowcopy、T3 fused、T4 桶化、T12 strided/multi raw、T13 small_multi、T15-C 大源 4B 直连 SVE）、预取、NT 开关 | 性能优化、内核修改 |
 | [performance.md](performance.md) | 基准方法论、模型场景结果表、**胜出场景的硬件根因（§4.3：rowcopy/gather MLP/遍数消除/固定开销/桶化/串行边界）**、已知硬件限制、如何复测 | 性能评估、验收、想知道"为什么快"的读者 |
 | [benchmarks.md](benchmarks.md) | **benchmarks/ 目录指南**：逐脚本用途、公共环境变量、典型命令、真实 workload 覆盖与预测力矩阵、与功能测试的区别 | 想知道"该跑哪个基准、结果能不能外推"的读者 |

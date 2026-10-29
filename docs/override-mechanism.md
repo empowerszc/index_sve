@@ -96,8 +96,9 @@ autograd 完全正常（梯度值/形状/dtype 已与 true-aten 对拍验证，�
 2. **两进程 true-aten 对拍**：无覆盖进程（`HPC_INDEX_NO_OVERRIDE=1`）生成参考，
    覆盖进程比较——覆盖激活后 `x[i]` 已走本算子，**同一进程内无法再对拍**
    （semantics.md §6.2 的"覆盖下对拍陷阱"）。
-3. **全量测试**：143/143 在覆盖激活态通过（错误消息逐字、K<=4096 小 K 路径、
-   N-D 下标、mask 融合路径、autograd 专项回归 `tests/test_autograd.py` 16 项
+3. **全量测试**：174/174 在覆盖激活态通过（错误消息逐字、K<=4096 小 K 路径、
+   N-D 下标、mask 融合路径、autograd 专项回归 `tests/test_autograd.py` 16 项、
+   输出布局专项 `tests/test_output_layout.py` 25 项
    等；两进程梯度对拍记录见 semantics.md §6.4）。
 
 ## 6. 为什么是 `aten::index.Tensor` 而不是别的

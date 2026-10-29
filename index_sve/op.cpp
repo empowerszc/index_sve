@@ -8,6 +8,7 @@
 #include <atomic>
 #include <cstring>
 #include <cstdlib>
+#include <algorithm>
 #ifdef _OPENMP
 #include <omp.h>
 #endif
@@ -47,6 +48,24 @@ std::atomic<uint64_t> g_single_1d_sve{0};
 // 核心路由：out 已由调用方确定为正确 shape/dtype/device（functional 分配或 out 变体校验）。
 void index_into(const at::Tensor& self, const IndexSpec& spec, at::Tensor& out) {
   const bool g_nt = non_temporal_enabled();
+
+  // R10 直写路由：资格由 index_impl 的 rowcopy_direct_ok 核实（源/出尾块同 dense
+  // 置换 + out 前导块行主序）。此后只允许纯块拷贝内核——raw 形态条件满足走
+  // gather_rowcopy_raw，否则 linearize+gather_index（其 rowcopy_sve 守卫同样承认
+  // rowcopy_direct）；绝不能落入 col_off 类路径（对置换 out 是错位写入）。
+  if (spec.rowcopy_direct) {
+    if (spec.A >= 4096 || spec.A < 16 ||
+        (spec.A <= 64 && spec.B * spec.K <= 65536)) {
+      gather_rowcopy_raw(spec, out, g_nt);
+      return;
+    }
+    const bool use_i32 = self.numel() < (1LL << 31) &&
+        (out.scalar_type() == at::kFloat || out.scalar_type() == at::kInt);
+    at::Tensor idx = at::empty({spec.K}, self.options().dtype(use_i32 ? at::kInt : at::kLong));
+    linearize(spec, idx);
+    gather_index(spec, idx, out, g_nt);
+    return;
+  }
 
   if (spec.K < 1024) {                 // 小张量快速路径（spec §6 阈值）
     gather_direct(spec, out);
@@ -461,6 +480,64 @@ std::vector<int64_t> aten_out_strides(const IndexSpec& spec) {
   return strides;
 }
 
+// R10：非连续输出的行块直写资格。self 尾块（transposed_self 的 after 维）与
+// out 尾块为同一 dense 置换、out 前导块（before+replacement 维）行主序时，
+// rowcopy 纯块拷贝（不经 col_off）两侧语义等价——结果直接写进 out，省掉
+// tmp+copy_ 一趟输出带宽（cl4d 行索引修复轮实测 0.30-0.42x 的根因）。
+// 任一条件不满足都回退 tmp+copy_（正确性优先，cl/置换家族外部行为不变）。
+bool rowcopy_direct_ok(const IndexSpec& spec,
+                       const std::vector<int64_t>& out_strides) {
+  if (spec.indices.size() != 1) return false;      // v1 只做单索引（行/mask/2D 索引）
+  if (!spec.indices[0].is_contiguous()) return false;
+  if (spec.A < 4 || spec.K < 1024) return false;   // rowcopy 门槛 + 小张量路径域
+  const auto st = spec.transposed_self.scalar_type();
+  if (st != at::kFloat && st != at::kDouble) return false;  // linearize 臂 dtype 集
+#ifdef __ARM_FEATURE_SVE
+  if (svcntb() != 64) return false;               // linearize 臂需 rowcopy_sve
+#endif
+  const at::Tensor& ts = spec.transposed_self;
+  const int64_t dims_before =
+      spec.indexed_dims.empty() ? 0 : spec.indexed_dims.front();
+  const int64_t dims_after =
+      ts.dim() - dims_before - static_cast<int64_t>(spec.indexed_dims.size());
+  const int64_t ndim = static_cast<int64_t>(spec.out_shape.size());
+  if (dims_after <= 0 || ndim < dims_after + 1) return false;
+
+  // 1) self 尾块是 dense 置换：(stride,size) 按 stride 升序恰为行主序前缀积链。
+  //    切片（有洞）、expand（stride 0）、flip（负 stride）、重叠置换都被此链拒绝。
+  std::vector<std::pair<int64_t, int64_t>> tail;
+  for (int64_t d = dims_before + static_cast<int64_t>(spec.indexed_dims.size());
+       d < ts.dim(); ++d) {
+    tail.emplace_back(ts.stride(d), ts.size(d));
+  }
+  std::sort(tail.begin(), tail.end());
+  int64_t acc = 1;
+  for (const auto& [strd, size] : tail) {
+    if (strd != acc || size <= 0) return false;
+    acc *= size;
+  }
+  if (acc != spec.A) return false;
+
+  // 2) out 尾块与 self 尾块逐维同 stride（aten 置换恢复的典型结果，逐次校验不假设）。
+  //    与 1) 联合推出 out 整体 dense。
+  for (int64_t i = 0; i < dims_after; ++i) {
+    if (out_strides[ndim - dims_after + i] !=
+        ts.stride(dims_before + static_cast<int64_t>(spec.indexed_dims.size()) + i)) {
+      return false;
+    }
+  }
+
+  // 3) out 前导块行主序：从最内（贴尾块）向外 stride==acc（size-1 退化维跳过）。
+  //    这保证内核的 dst[p*A]（p = r*K + k，r 枚举 before 维）恰为 out 正确偏移。
+  int64_t racc = spec.A;
+  for (int64_t d = ndim - dims_after - 1; d >= 0; --d) {
+    if (spec.out_shape[d] == 1) continue;
+    if (out_strides[d] != racc) return false;
+    racc *= spec.out_shape[d];
+  }
+  return true;
+}
+
 }  // namespace
 
 at::Tensor index_impl(const at::Tensor& self,
@@ -475,8 +552,13 @@ at::Tensor index_impl(const at::Tensor& self,
   if (small_single_index(self, vec, out)) return out;
   if (small_multi_index(self, vec, out)) return out;
   auto spec = normalize_index(self, vec);
-  out = at::empty_strided(spec.out_shape, aten_out_strides(spec), self.options());
+  auto out_strides = aten_out_strides(spec);
+  out = at::empty_strided(spec.out_shape, out_strides, self.options());
   if (out.is_contiguous()) {
+    index_into(self, spec, out);
+  } else if (rowcopy_direct_ok(spec, out_strides)) {
+    // R10：源/出尾块同 dense 置换 → 行块 memcpy 直写，省掉 tmp+copy_ 一趟输出带宽。
+    spec.rowcopy_direct = true;
     index_into(self, spec, out);
   } else {
     // 非连续输出（aten 语义：channels_last/类 cl 置换 self 的输出保持原布局）：

@@ -4,7 +4,8 @@
 > **一句话**：非连续/置换布局（channels_last 等）self 上的 `x[idx]`，值全对，
 > 但输出被恒分配为 NCHW 连续；aten 的输出由 TensorIterator **置换恢复**分配，
 > 会保持 self 的布局。E2E channels_last 模型（CNN/AMP）每次 `x[idx]` 都会
-> 静默打断格式传播链。本修复在 `index_impl` 主路径复刻 aten 的分配算法。
+> 静默打断格式传播链。本修复在 `index_impl` 主路径复刻 aten 的分配算法
+> （§5），并同日落地 R10 直写消除 tmp+copy_ 的带宽代价（§8）。
 
 ## 1. 现象与实测对照
 
@@ -104,7 +105,8 @@ torch + 包 import）与 `tests/verify_e2e.py`（两进程差分，值+shape+str
 2. `out = at::empty_strided(spec.out_shape, aten_out_strides(spec), self.options())`。
 3. 写入：`out.is_contiguous()` → 原内核直写（行为与性能零变化）；否则先算入
    连续 tmp 再 `out.copy_(tmp)`（与 `index_out_impl` 的非连续 out 防线同模式；
-   内核保持行主序写不变）。
+   内核保持行主序写不变）。这是**可移植的最小正确修复**；本仓库同日已进一步
+   实现直写优化（§8），移植时按需取舍。
 
 守卫自查：若你的版本 `small_single_index`/`small_multi_index`/
 `mask_fast_path` 没有 `self.is_contiguous()`（或等价）守卫，它们也接非连续
@@ -118,18 +120,20 @@ self 时 aten 恒连续输出，无需改动。
 
 - `tests/test_output_layout.py`：**25/25**（修复前 12/25——13 项失败即本 bug 面；
   25 个期望 stride 值先在无覆盖进程对 true aten 逐一核实后钉入）。
-- `tests/verify_e2e.py --mode both --threads`：**120/120** 两进程差分全绿
-  （修复前 104/120；值+shape+dtype+stride 全比对），线程一致性矩阵
-  1/4/38t **ALL OK**。g5 布局×形态专项 30 例覆盖 §1 全部行。
-- 15 套件 **168/168**（新增 test_output_layout 后，原 143/143 无回归）。
+- `tests/verify_e2e.py --mode both --threads`：**124/124** 两进程差分全绿
+  （修复轮 120/120；R10 轮追加 4 例 g5big 大 K 直写用例。修复前 104/120；
+  值+shape+dtype+stride 全比对），线程一致性矩阵 1/4/38t **46 例 ALL OK**。
+  g5 布局×形态专项 30 例覆盖 §1 全部行，g5big 4 例穿过 §8 直写路径。
+- 15 套件 **174/174**（新增 test_output_layout 后原 143/143 无回归；R10 轮
+  test_rowcopy_routes 8→14 后全绿）。
 - `verify_against_aten.py --shape-set all`：**44/44** 无回归。
 
-## 7. 性能影响与后续方向
+## 7. 性能影响（布局修复轮实测，2026-10-29 上午）
 
-同轮交替实测（8t，本轮机器噪声 ±30%+——未改动的 contig4d（走
+同轮交替实测（8t，该轮机器噪声 ±30%+——未改动的 contig4d（走
 small_single 快路径）rep 间亦波动 3 倍，可作噪声标定）：
 
-| 形态 | aten | 本算子 | 比值 |
+| 形态 | aten | 本算子（tmp+copy_） | 比值 |
 |---|---|---|---|
 | col-index (1000,32) t128 | 95-118µs | 85-90µs | 1.1-1.4x（领先不变） |
 | M1 (27,64,64) K20k | 12.8-16.0ms | 2.0-2.8ms | 4.6-6.3x |
@@ -138,11 +142,51 @@ small_single 快路径）rep 间亦波动 3 倍，可作噪声标定）：
 - 连续 self 热路径：分配仍为连续、原内核直写，仅新增 `aten_out_strides`
   簿记（1-2 个 reshape 视图 + O(ndim²) 排序，µs 级），在本轮噪声带内
   不可分辨；small/mask 快路径（K<=4096 单索引等）完全不经主路径，零影响。
-- 非连续输出（cl4d/cl3d/3D 置换行索引族）：先算入连续 tmp 再 `copy_`，
-  多一趟输出带宽（上表 cl4d 行）。**后续优化方向已明确**：cl 尾块
-  (C,H,W)/(1,WC,C) 是 dense 置换——源行与 cl 输出行都是整块 dense 内存，
-  同置换时行块 `memcpy` 语义等价，可把 rowcopy 的 `after_contiguous` 守卫
-  放宽到"源/出同置换 dense"，消除该趟并反超 aten（aten 走 TensorIterator
-  通用散写）。
+  簿记成分微基准（R10 轮复测）：`empty_strided` 比 `empty` **快 9-10µs**
+  （后者多走 memory-format 建议路径），reshape 视图 ~7.4µs/索引——净中性
+  偏正。
+- 非连续输出（cl4d/cl3d/3D 置换行索引族）：tmp+copy_ 多一趟输出带宽
+  （上表 cl4d 行）。**同日已由 R10 直写消除（§8）**。
 - 对 E2E 的净效应：channels_last 模型的格式传播链恢复（下游 conv/AMP 不再
   因 `x[idx]` 静默转 NCHW），通常远大于本算子内一趟 copy_ 的代价。
+
+## 8. R10 直写优化（同日落地，消除 tmp+copy_）
+
+**原理**：cl 尾块 (C,H,W)/(1,WC,C) 是 **dense 置换**——源行（self 的一个
+n 块）与 cl 输出行（out 的一个 k 块）都是整块 dense 内存，且逻辑→内存的
+置换相同；现有 rowcopy 内核是**纯块拷贝**（`copy_contig_sve(src+off,
+dst+p*A, A)`，不经 col_off），对"源/出同置换"天然正确。直写即消除 tmp+
+copy_ 的一趟输出带宽（aten 走 TensorIterator 通用散写，无快路径）。
+
+**资格判定** `rowcopy_direct_ok`（op.cpp，O(ndim)，任一不满足即回退
+tmp+copy_，外部行为不变）：单索引 + 索引连续 + A>=4 + K>=1024 + f32/f64 +
+SVE512 + self 尾块 strides 全正且构成 dense 置换（sorted==前缀积链，自动
+排除切片/expand/flip）+ out 尾块与 self 尾块逐维相等 + out 前导块
+（before+replacement 维）行主序（保证内核 `dst[p*A]` 恰为正确偏移）。
+置位后 `index_into` 顶部自包含守卫只允许块拷贝内核（raw 形态走
+`gather_rowcopy_raw`，否则 linearize+`gather_index` 的 `rowcopy_sve`，
+后者守卫同样承认 `rowcopy_direct`）；**绝不能落入 col_off 类路径**（对
+置换 out 是块内错位写入）。多索引/`out=` 变体/非 f32-f64/A<4/K<1024
+均不参与（v1 范围）。
+
+**实测（2026-10-29 R10 轮，8t，两进程背靠背 3 rep × 3 轮交替）**：
+
+| 形态 | aten | 本算子（R10 直写） | 比值 |
+|---|---|---|---|
+| cl4d 行索引 K2048 | 3.05-3.30ms | 1.30-2.11ms | **1.45-2.54x** |
+| cl4d mask K2048 | 3.21-3.30ms | 1.54-2.33ms | **1.40-2.08x** |
+| cl3d 置换行索引 K2048 | 1.76-2.33ms | 0.85-1.41ms | **1.35-2.63x** |
+| contig4d 对照（未经 R10 改动） | 3.06-3.46ms | 1.21-1.95ms | 1.57-2.73x |
+
+- 对比 §7：cl4d 行索引本算子时间 8.1-10.0ms → **1.3-2.1ms**（降 4-6 倍），
+  比值 0.30-0.42x → **1.45-2.54x**（家族含 cl3d 置换 1.35-2.63x）。
+- cl 行索引与连续行索引基本拉平（1.30 vs 1.21ms、1.98 vs 1.84ms，
+  差 ~5-8%）——"dense 置换行块 memcpy 与连续行等价"得到实证。
+- 第 2 轮交替曾见 hpc 侧整体劣化 3 倍：**未经 R10 改动的 contig4d 对照组
+  同倍劣化**（1.21→4.45ms），判共享箱噪声，非代码问题；跨轮只比形态。
+
+**验证**：6 个新路由用例（tests/test_rowcopy_routes.py：直写 2 例——cl4d 行索引
+含 1t/8t 双档、cl4d mask；排除 3 例计数器断言；cl3d linearize 臂值/stride 1 例）
++ 既有 25 布局例（小 K，覆盖回退路径）+ E2E 124 例差分（新增 g5big 大 K 4 例：
+行索引 raw/linearize 两臂、mask、cl5d 穿过直写路径，值/shape/dtype/stride 对
+true aten）+ 44 对拍 + 线程矩阵 46 例全绿（R10 轮 174/174）。

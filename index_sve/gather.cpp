@@ -715,7 +715,9 @@ void gather_index(const IndexSpec& spec, const at::Tensor& idx, at::Tensor& out,
       return;
     }
     const bool rowcopy = (A > 1);
-    if (rowcopy && spec.after_contiguous && sve_512_ok() && A >= 4 &&
+    // rowcopy_direct：cl/置换 out 直写（源/出尾块同 dense 置换，块拷贝语义等价）。
+    if (rowcopy && (spec.after_contiguous || spec.rowcopy_direct) && sve_512_ok() &&
+        A >= 4 &&
         (out.scalar_type() == at::kFloat || out.scalar_type() == at::kDouble)) {
       if (non_temporal) {
         if (idx32) {

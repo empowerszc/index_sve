@@ -68,7 +68,7 @@ x[idx] ─► dispatcher（aten::index.Tensor 的 CPU 键已被 op.cpp:444 覆�
 | index_sve/register_aten.py | 11 | 历史兼容层：install() 已是空实现（§9） | |
 | index_sve/compile_support.py | 98 | torch.compile 的 opt-in 三步（§9） | |
 | setup.py（仓库 index_sve/ 根） | — | 构建入口 `python setup.py build_ext --inplace`（BiSheng 工具链、`-fopenmp`、SVE512；选项见源文件） | |
-| tests/（14 个文件） | — | 143 项功能/对拍/路由/autograd 测试；改路由后必跑（跑法见 README） | |
+| tests/（15 个文件） | — | 174 项功能/对拍/路由/布局/autograd 测试；改路由后必跑（跑法见 README） | |
 
 **推荐阅读顺序**（每步给一个"读完应能回答"的检查点）：
 
