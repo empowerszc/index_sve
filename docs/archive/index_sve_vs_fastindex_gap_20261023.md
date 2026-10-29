@@ -1,9 +1,15 @@
-# fastindex 能力差异清单与 index_sve 当前仓库审计
+# fastindex 能力差异清单与 index_sve 当前仓库审计（已归档）
+
+> **归档（2026-10-29）**：本文是 T13 时点（`a91d566`）的能力差异审计**快照**，
+> 已移入 `docs/archive/`。**当前进度以 `status.md` §2（变更日志）与 §5.1（性能）
+> 为准，当前数字见 `benchmarks/RESULTS.md` §2.9**；文中"已落地/待补"的表述只
+> 代表当时状态。保留理由：§19.1（纯转置 run=1 慢因）等深度分析仍被
+> kernels.md / status.md / fallback-analysis.md 引用。
 
 > **日期**：2026-10-23
 > **快照注意**：本文审计基于 `a91d566`（T13 时点），文中"#2/#8 已落地"等
 > 表述是当时状态；#1 strided-rows 等 T12 项亦已在其后落地。**当前进度以
-> [status.md](status.md) §2 为准**，本文的价值在 §19.1（纯转置 run=1 慢因）
+> [status.md](../status.md) §2 为准**，本文的价值在 §19.1（纯转置 run=1 慢因）
 > 等仍被引用的深度分析与 fastindex 能力对照。
 > **当前仓库**：`index_sve` @ `a91d566`
 > **外部输入**：另一 agent 提供的《fastindex 能力差异清单》（Part I，原文保留）
@@ -51,7 +57,7 @@
 
 ### 0. 术语表（与 index_sve 文档同一套）
 
-通用术语与场景/负载代号（S1/P1/M1…）见 [`glossary.md`](glossary.md)；
+通用术语与场景/负载代号（S1/P1/M1…）见 [`glossary.md`](../glossary.md)；
 下表只列本对比特有的读法约定：
 
 | 术语 | 含义 |

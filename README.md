@@ -37,7 +37,7 @@ backward 不受影响。
   行号走读全部核心源码（入口/路由/归一化/内核族谱/并行约定），配
   `debug_spec` 等调试出口，一个下午可读完。
 - 想改内核：`docs/kernels.md` → `docs/architecture.md` → `docs/optimizations.md`
-  → `docs/index_sve_vs_fastindex_gap_20261023.md`（fastindex 差异与待补项）。
+  → `docs/archive/index_sve_vs_fastindex_gap_20261023.md`（fastindex 差异与待补项）。
 - 想接续开发：`docs/status.md` §7（演进方向优先级表 R1-R9：R1 小源扫描
   合并、R2 mask stride、R3 端到端验证，含预期收益与根因交叉引用）。
 - 想集成/排障：`docs/integration.md` → `docs/override-mechanism.md` → `docs/status.md`。
@@ -84,15 +84,17 @@ index_sve/
 │   ├── linearize.{h,cpp} # 线性化 + 越界检查，int32 保持（直接写 int32）
 │   ├── grain.h           # 自适应并行粒度（T0）
 │   ├── gather.{h,cpp}    # SVE gather/rowcopy/scalar + gather_direct + M1 raw / T3 fused / T4 桶化
-├── tests/                # 123 测试（smoke/normalize/correctness/errors/sve/model/index_out/mask/smallk/compile/strided/routes/smallmulti）
+├── tests/                # 15 套件 174 测试（smoke/normalize/correctness/errors/sve/model/index_out/mask/smallk/compile/strided/routes/smallmulti/autograd/layout/output-layout）
 ├── benchmarks/           # bench_index.py（原始矩阵）、bench_pinned.py/bench_gate.py（定点核复测）
 │   │                     # bench_t1.py/bench_t2.py/bench_ai4s.py（优化轮专项）、bench_regression.py（回归扫描）
 │   │                     # bench_threads.py（全线程矩阵 1-38t）
 │   │                     # bench_smallk_real.py / bench_smallk_driver.py（小 K 两进程对拍）
 │   │                     # bench_realpath.py / bench_realpath_driver.py（真实 workload 两进程对拍：M5/shortq/A1/M1/M2）
+│   │                     # bench_cl_family.py（cl/置换布局行索引族 aten/hpc 两进程对拍）
 │   │                     # degrade_probe.py（阈值/mask 分解）、memprobe.c（内存系统探针）
-│   └── RESULTS.md        # 完整基准报告（§2.8 2026-10-29 全线程档矩阵；§2.4 T13 对照；§2.1 T11 基线；§3 历史轮次）
-└── docs/                 # 本系列文档
+│   └── RESULTS.md        # 完整基准报告（§2 轮次索引：§2.9 R10 = 当前；§2.1-2.8 = 历史；§3 更早轮次）
+├── docs/                 # 本系列文档（索引 docs/index.md；历史快照 docs/archive/）
+└── tools/                # check_doc_anchors.py（文档 file:NNN 行号锚点校验）
 ```
 
 ## 快速开始
@@ -123,7 +125,7 @@ import index_sve          # 之后 x[idx] 等全部走本算子（首次 import 
 
 x = torch.randn(50_000, 64)
 i = torch.randint(0, 50_000, (1_000_000,), dtype=torch.int32)
-y = x[i]                  # SVE 行拷贝路径，1 线程实测 ~4x
+y = x[i]                  # SVE 行拷贝路径，1 线程实测 ~3x
 ```
 
 只想要算子本体、不覆盖 aten：
@@ -139,46 +141,46 @@ HPC_INDEX_NO_OVERRIDE=1 python your_script.py   # import 不再改 aten::index.T
 
 ## 基准结论（摘要）
 
-鲲鹏 920F，node 5（38 核），aten/hpc 同进程交替中位数。当前 31 场景
-× 8 线程（1-38t）矩阵见 `benchmarks/RESULTS.md` §2.8（2026-10-29 轮；
-AI4S workload 全档表格见 `docs/summary.md` §6.2；T13 轮 §2.4 仍作对照），
-逐 case 分析见 `docs/degradation-analysis.md` §5.8/§5.9。
+鲲鹏 920F，node 5（38 核），aten/hpc 同进程交替中位数。**当前数据唯一出处 =
+`benchmarks/RESULTS.md` §2.9**（R10 轮，2026-10-29 下午：31 场景 × 8 线程 +
+realpath + cl 家族专项）；AI4S 全档表格见 `docs/summary.md` §6.2；逐 case 分析见
+`docs/degradation-analysis.md` §5.8/§5.9、当前 <1x 清单见 RESULTS §2.9.1。
 
-| 场景 | 1 线程 | 36 线程 |
-|---|---|---|
-| S1 spconv features[inp_idx] C=64 | **3.14x** | 7.96x |
-| P1 h[src] i64 C=64 | **2.93x** | 7.01x |
-| P2 pos[src] A=3 | **1.76x** | 3.16x |
-| P3 x[mask] C=16 | **1.76x** | 3.80x |
-| S4 x[perm] f64 | **1.27x** | 1.24x |
-| `x[:,i]` C=64 | **2.00x** | 2.07x |
-| rowcopy A=4 / A=16 | **1.61x / 2.09x** | 2.59x / 3.06x |
-| 1D f32/f64 K=2M | 1.07x / 1.34x | 3.48x / 1.81x |
-| half / bf16 | 1.43x / 1.42x | 2.04x / 2.92x |
+| 场景 | 1 线程 | 8 线程 | 38 线程 |
+|---|---|---|---|
+| S1 spconv features[inp_idx] C=64 | **2.98x** | 3.03x | 4.48x |
+| P1 h[src] i64 C=64 | **2.89x** | 3.26x | 4.02x |
+| P2 pos[src] A=3 | **1.77x** | 1.65x | 4.47x |
+| P3 x[mask] C=16 | **1.77x** | 1.23x | 8.62x |
+| S4 x[perm] f64 | **1.26x** | 0.86x | 0.92x |
+| `x[:,i]` C=64 | **2.00x** | 1.41x | 2.85x |
+| rowcopy A=4 / A=16 | **1.53x / 2.07x** | 1.14x / 1.81x | 8.65x / 3.00x |
+| 1D f32/f64 K=2M | 1.07x / 1.34x | 1.58x / 1.60x | 4.74x / 2.73x |
+| half / bf16 | 1.49x / 1.43x | 1.34x / 1.36x | 3.09x / 5.18x |
+| cl4d 行索引 / cl4d mask（K=2048，专项） | — | **1.45-2.54x / 1.40-2.08x** | — |
 
-- **RowCopy 是主要收益**：S1/P1 1-8t 2.9-3.6x（轮间至 4.6x，1t 比值随箱态
-  漂移 ~1.4x）；A=4/A=16 块 1t 1.6x/2.1x（T11 轻载轮曾测 2.4x/3.6x；高线程
-  含 aten 退化放大）。SVE `ld1/st1` 整块拷贝，正中 spconv 规则表 / 图消息路径。
-- **小 K `x[idx]`**（两进程真实路径，T15 构建）：K≤1024 为 **1.83-2.36x**；
-  2D A=16 K=8192/65536 32-38t **1.26-2.17x**（T15 raw 放行，原 0.73/0.76x，
-  hpc 绝对时间砍半）；K=1024 与 K=1023 全线程拉平（并行阈值线程缩放）；
-  1D K=8192/65536 高线程 0.90-0.95x（小源保持标量，残留为前置 bucket
-  扫描 ~15µs）。
-- **真实 workload 对拍**（两进程 `x[idx]` 全链路，RESULTS §2.5/§2.8，
-  2026-10-29 轮全 8 档）：M1 权重块（≤16KB/行）1t **12.9-13.6x**、4t
-  10.1-11.1x（单格噪声除外）、8t 4.1-5.5x；M5 标量循环 / A1 单元素高频本轮
-  轻载 1.65-2.6x（§2.5 重载轮 2.6-3.8x，µs 级随箱态漂移）；shortq A=2-4
-  **2.1-3.4x**（剔 K=1023×A≥3 高线程 aten 病理格；T14 修复 A=3 短行标量
-  拷贝 0.84→2.6x）；M2 全形态 ≥1.09x（38t 带宽饱和）。
-- **仍 <1x 的持续项**（2026-10-29 轮）：非连续 1D mask 0.79-0.98x（T8 只
-  支持连续 mask）、int8/uint8 8/16t 0.92-0.98x（64B 行只用 1B，aten 同为
-  标量）、complex 1t/2t 0.95x（无 SVE；4-16t 本轮 1.68-1.71x，aten complex
-  路径轮间波动）、S4 8/16t 0.91/0.80x（小工作量 fork-join 固定成本）、
-  `x[i,j]` 8/16t 本轮 1.18/1.06x（T13 轮 0.97/0.92x，小规模强扩展轮间
-  波动）、1D K=65536 小源 32-38t 0.90-0.92x（T15 判明小源标量更快，残留为
-  前置 bucket 扫描；大源已修，K=10M idx64 8t 1.97x）。另有 mask empty
-  （空掩码）4-38t 0.51-0.73x 为本轮新观察项（绝对差 ~0.3µs，待聚焦复测，
-  RESULTS §2.8）。逐项原因见 `degradation-analysis.md` §5.8/§5.9。
+- **RowCopy 是主要收益**：S1/P1 1t 2.89-2.98x、8t 3.0-3.3x（轮间 2.9-4.6x，
+  1t 比值随箱态漂移 ~1.4x）；A=4/A=16 块 1t 1.5x/2.1x（T11 轻载轮曾测
+  2.4x/3.6x；高线程含 aten 退化放大）。SVE `ld1/st1` 整块拷贝，正中 spconv
+  规则表 / 图消息路径。
+- **channels_last / 置换布局（R10 新增）**：cl4d 行索引 8t **1.45-2.54x**、
+  cl3d 置换 1.35-2.63x，与连续行索引拉平（RESULTS §2.9.2）——修布局正确性时
+  引入的 tmp+copy_ 代价已消除。
+- **小 K `x[idx]`**：R10 轮 shortq（K=64-512，两进程真实路径）**2.55-4.16x**；
+  K≤1024 的 T15 轮数据 1.83-2.36x 仍作对照；2D A=16 K=8192/65536 32-38t
+  **1.26-2.17x**（T15 raw 放行，原 0.73/0.76x）；1D K=8192/65536 小源高线程
+  0.90-0.95x（小源保持标量，残留为前置 bucket 扫描 ~15µs）。
+- **真实 workload 对拍**（两进程 `x[idx]` 全链路，RESULTS §2.9.4，1/8/16/38t）：
+  M1 权重块（≤16KB/行）1t **12.7-13.6x**、8t 5.0-5.9x、38t 1.22-1.47x；M5 标量
+  循环 / A1 单元素高频 2.41-3.42x（µs 级随箱态）；shortq **2.46-4.21x**（剔
+  K=1023×A≥3 高线程 aten 病理格）；M2 全形态 ≥1.06x（38t 带宽饱和）。
+- **仍 <1x 的六个家族**（RESULTS §2.9.1，逐格可复算）：空 mask 4-38t
+  0.42-0.66x（aten 并行早退，**绝对差 1.5-2ms**，观察项）、非连续 1D mask
+  0.79-0.98x（T8 只支持连续 mask）、int8/uint8 4-16t 0.91-0.99x（64B 行只用
+  1B，aten 同为标量）、complex 1-16t 0.92-0.95x（无 SVE 内核）、S4 f64
+  0.77-0.92x（小工作量 fork-join）、噪声级单格 4 格（≥0.88x）。另有 1D 小源
+  高线程 0.90-0.95x（T15 判明标量更快，待 R1）。逐项原因见
+  `degradation-analysis.md` §5.8/§5.9、`fallback-analysis.md` 文首速查。
 - **4B 大 K 随机 pure gather 的硬限制**：64B cache line 放大 + DRAM 延迟；
   同构建 A/B 实测 SVE 4B 与标量持平（8MB 1.85 vs 1.86 ms、256MB 7.46 vs
   7.45 ms），**不是 SVE 指令 MLP 缺陷**（RESULTS §3.7；早期 0.75 vs 3.4 GB/s

@@ -13,17 +13,25 @@
 | [semantics.md](semantics.md) | 与 ATen `aten::index.Tensor` 的语义对齐点与**有意差异**、错误信息、dtype 覆盖 | 正确性审查、回归测试 |
 | [output-layout.md](output-layout.md) | **输出内存布局修复 + R10 直写（2026-10-29）**：channels_last/置换 self 上输出布局背离 aten 的 E2E bug——现象实测表、TensorIterator 置换恢复机制（源码行号）、一分钟自检探针、其他版本移植指南（§5）；R10 行块直写（§8：dense 置换等价性、资格判定、0.30-0.42x→1.45-2.54x 实测） | 排查同类 bug、持有旧版本要修复的 agent、做布局相关优化 |
 | [kernels.md](kernels.md) | SVE512 各内核（8B/4B gather、rowcopy、scalar）实现细节 + 优化轮新路径（M1 raw rowcopy、T3 fused、T4 桶化、T12 strided/multi raw、T13 small_multi、T15-C 大源 4B 直连 SVE）、预取、NT 开关 | 性能优化、内核修改 |
-| [performance.md](performance.md) | 基准方法论、模型场景结果表、**胜出场景的硬件根因（§4.3：rowcopy/gather MLP/遍数消除/固定开销/桶化/串行边界）**、已知硬件限制、如何复测 | 性能评估、验收、想知道"为什么快"的读者 |
+| [performance.md](performance.md) | 基准方法论、**当前轮（R10）模型场景结果表**、**胜出场景的硬件根因（§4.3：rowcopy/gather MLP/遍数消除/固定开销/桶化/串行边界）**、已知硬件限制、如何复测 | 性能评估、验收、想知道"为什么快"的读者 |
 | [benchmarks.md](benchmarks.md) | **benchmarks/ 目录指南**：逐脚本用途、公共环境变量、典型命令、真实 workload 覆盖与预测力矩阵、与功能测试的区别 | 想知道"该跑哪个基准、结果能不能外推"的读者 |
-| [degradation-analysis.md](degradation-analysis.md) | **性能退化与线程扩展分析**：修正后的 1/2/4/8/16/32/36 线程矩阵、逐 case 微架构定位（x[:,i]、2B/1B、非连续 mask、小规模并行）、perf 方法、**§5.9 残余劣化的硬件根因（微架构/系统结构/并行编程）**、优化优先级 | 想知道"哪个线程数慢、为什么慢"的读者 |
-| [optimizations.md](optimizations.md) | **T0-T15 优化/修复轮记录**：自适应粒度、rowcopy A>=4、M1 skip-linearize、融合单遍、小值域桶化、1 线程单遍、跨设备校验、mask 单遍压实、小 K 精简路径、compile opt-in、T12-T15（strided run 块/multi raw/raw 放宽/4B 直连 SVE）；变更、路由、实测数据、复测 | 想了解"做了哪些优化"的读者 |
-| [fallback-analysis.md](fallback-analysis.md) | **慢场景/回退路径深度分析**：为什么某些形态慢（4B 随机 gather 的 64B 行放大 + DRAM 延迟、两遍模型、串行阶段、无内核 dtype）、受限于什么、为何不做 fallback、判定速查表 | 想搞清"为什么慢、能不能修"的读者 |
+| [degradation-analysis.md](degradation-analysis.md) | **性能退化与线程扩展分析**（矩阵为 T15 时点历史，§0 有当前对照）：1/2/4/8/16/32/36 线程矩阵、逐 case 微架构定位（x[:,i]、2B/1B、非连续 mask、小规模并行）、perf 方法、**§5.9 残余劣化的硬件根因（微架构/系统结构/并行编程）**、优化优先级 | 想知道"哪个线程数慢、为什么慢"的读者 |
+| [optimizations.md](optimizations.md) | **T0-T15 优化/修复轮记录（编年史，非状态文档）**：自适应粒度、rowcopy A>=4、M1 skip-linearize、融合单遍、小值域桶化、1 线程单遍、跨设备校验、mask 单遍压实、小 K 精简路径、compile opt-in、T12-T15（strided run 块/multi raw/raw 放宽/4B 直连 SVE）；变更、路由、实测数据、复测 | 想了解"做了哪些优化"的读者 |
+| [fallback-analysis.md](fallback-analysis.md) | **慢场景/回退路径深度分析**（文首有当前 <1x 速查；已修项标【历史·已修】）：为什么某些形态慢（4B 随机 gather 的 64B 行放大 + DRAM 延迟、两遍模型、串行阶段、无内核 dtype）、受限于什么、为何不做 fallback、判定速查表 | 想搞清"为什么慢、能不能修"的读者 |
 | [integration.md](integration.md) | 默认覆盖 `aten::index.Tensor` 机制、运行时环境契约、逃逸开关、慢场景 fallback 决策（不改） | 集成部署、排障 |
 | [torch-compile.md](torch-compile.md) | **与 `torch.compile` 的关系**：Inductor 内联导致覆盖失效、三份实现对比、强制 fallback 让 compile 用回本算子（实测 2.6x→1.07-1.3x）、缓存/私有 API/FakeTensor 坑、`HPC_INDEX_COMPILE=1` opt-in 落地 | 需要在 compile/export 场景部署的读者 |
 | [override-mechanism.md](override-mechanism.md) | **Dispatcher 劫持机制详解**：如何覆盖 aten::index、autograd 为何不受影响、递归/唯一性边界、验证方法 | 想搞清"怎么做到的"的读者 |
 | [porting.md](porting.md) | 移植到其他 aarch64/SVE 变体、非 512-bit VL、其他 torch 版本 | 移植维护 |
 | [status.md](status.md) | **当前进展快照**：完成的工作、路由现状、性能结论、已知限制、**演进方向（§7 优先级表，接续开发从这看）** | 新读者/agent 快速上手 |
-| [index_sve_vs_fastindex_gap_20261023.md](index_sve_vs_fastindex_gap_20261023.md) | **fastindex 能力差异清单 + 当前仓库逐条审计**：strided-rows、offset 融合、grain 下限、`_offset` 变体、int32/mask、slice、小行宽；原文与实测状态对照 | 规划下一轮优化、核对能力覆盖 |
+
+### 归档（archive/）
+
+被后续轮次整体取代的快照文档。保留可追溯性，**不代表当前状态**；归档规则见
+[archive/README.md](archive/README.md)。
+
+| 文档 | 内容 | 归档日 / 取代者 |
+|---|---|---|
+| [index_sve_vs_fastindex_gap_20261023.md](archive/index_sve_vs_fastindex_gap_20261023.md) | fastindex 能力差异清单 + T13 时点仓库审计：strided-rows、offset 融合、grain 下限、`_offset` 变体、int32/mask、slice、小行宽 | 2026-10-29 / `status.md` §2、RESULTS §2.9；§19.1 深度分析仍被引用 |
 
 ### 背景参考（reference/）
 
@@ -45,16 +53,17 @@
 - **要改内核/调优**：[kernels.md](kernels.md) → [architecture.md](architecture.md)
   → [optimizations.md](optimizations.md) §4 路由 → [degradation-analysis.md](degradation-analysis.md)
   §7 微架构证据 → [fallback-analysis.md](fallback-analysis.md)
-  → [index_sve_vs_fastindex_gap_20261023.md](index_sve_vs_fastindex_gap_20261023.md)
-  （fastindex 能力差异与待补项）。
+  → [archive/index_sve_vs_fastindex_gap_20261023.md](archive/index_sve_vs_fastindex_gap_20261023.md)
+  （fastindex 能力差异与待补项，历史快照）。
 - **集成 / 排障 / 与 compile 共存**：[integration.md](integration.md)
   → [override-mechanism.md](override-mechanism.md) → [torch-compile.md](torch-compile.md)。
 - **移植到别的 CPU/torch**：[porting.md](porting.md) → [kernels.md](kernels.md) §1-§3。
 
-> **数字口径**：性能结论以 `benchmarks/RESULTS.md` §2（31 场景 × 1/2/4/8/16/32/36t）、
-> §2.5（真实 workload 对拍，1/8/16/38t）与 [degradation-analysis.md](degradation-analysis.md)
-> 为准。§2 之前任何标着 2-36t 的旧数据都受“libomp/libgomp 双 ICV”影响（详见
-> degradation §3.1），只保留 1t/38t 或作为历史记录。
+> **数字口径（一条规则）**：**当前值唯一出处 = `benchmarks/RESULTS.md` §2.9**
+> （31 场景 × 1/2/4/8/16/32/36/38t + realpath + cl 家族专项）。§2 顶部的轮次索引表
+> 标明每小节是哪个轮次、是否当前；其它文档只写结论 + 指针，不复制全矩阵。
+> §2 之前任何标着 2-36t 的旧数据还受"libomp/libgomp 双 ICV"影响（degradation §3.1），
+> 只作历史记录。
 
 ## 速览
 
@@ -68,6 +77,7 @@ aten::index.Tensor ──► index_impl(self, indices)
         │                 ├─ 单整数下标 && K<=4096 && 连续 ? small_single_index()  (T9)
         │                 ├─ 多索引同 shape/连续 && n<=65536 ? small_multi_index()  (T13)
         │                 ├─ normalize_index()     对齐 ATen make_info
+        │                 ├─ rowcopy_direct ? raw 块拷贝 / linearize+gather_index  (R10：cl/置换 out 直写，禁止 col_off 路径)
         │                 ├─ K < 1024 ? gather_direct()      (快速路径，无线性化；A==1 预校验紧凑循环)
         │                 ├─ M1 ? gather_rowcopy_raw()       (单索引 A>1 && (≥4096||<16||(≤64&&B·K≤65536)))
         │                 ├─ 非连续尾维有 ≥4 run ? strided_rows_raw()  (T12)
@@ -95,7 +105,22 @@ aten::index.Tensor ──► index_impl(self, indices)
 
 ## 维护约定
 
-- `status.md` 每轮实质变更后更新（测试数、commit、性能结论、路由）。
+**数据时效（最重要）**
+
+1. **当前值唯一出处 = `benchmarks/RESULTS.md` §2.9**。任何文档写"当前"数字都必须
+   与它同源；改数值先改 RESULTS，其他地方只放摘要 + 指针。
+2. **任何实测表格前必须有"数据轮次"行**：`> 数据轮次：<轮次>（<commit/日期>）｜当前`
+   或 `｜历史（当前见 §x.y）`。没有轮次标注的数字视为不可引用。
+3. **已修复项固定前缀 `【历史·已修】`**，且只能标在确实不再出现的形态上；仍 <1x 的
+   形态不许标已修。判据是 RESULTS §2.9.1 的逐格清单。
+4. **整篇被取代的快照进 `docs/archive/`**，文首写归档日/取代者/保留理由，规则见
+   `archive/README.md`。局部历史数据不搬，留在原文档标 `【历史·<轮次>】`。
+
+**其它**
+
+- `status.md` 每轮实质变更后更新（§2 变更日志、§5.1 当前性能、§3 路由）。
 - 归因类结论（尤其 4B gather）以**同构建 A/B** 为准；旧的独立探针数字只作历史
   背景，不得再作为因果依据（见 `fallback-analysis.md` §3.1、RESULTS §3.7）。
+- 行号锚点：改完源码跑 `python tools/check_doc_anchors.py`（逐条校验 `file:NNN`
+  是否还落在含对应符号的行上，漂移即报错）。
 - `reference/` 为背景资料，不承诺与当前实现逐行同步；实现细节以其他文档/源码为准。

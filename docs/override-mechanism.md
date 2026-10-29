@@ -22,7 +22,7 @@ key 指向的实现换成我们自己的**——在扩展的 C++ 初始化里用
 
 ## 2. 三步注册过程
 
-### Step 1 — 注册自己的算子（op.cpp:38-43）
+### Step 1 — 注册自己的算子（op.cpp:603-607）
 
 ```cpp
 TORCH_LIBRARY(hpc_index, m) {

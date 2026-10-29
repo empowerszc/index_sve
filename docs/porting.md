@@ -85,7 +85,7 @@
 - **dtype 白名单 gap**：barebones `uint16/uint32/uint64`、float8 系列、complex32
   目前抛 `NotImplementedError`（ATen 支持）；需要扩展 dispatch 宏并补回归，
   见 semantics.md §4。
-- ~~**小规模并行阈值**~~：T15 已修——并行阈值按线程数缩放
+- ~~**小规模并行阈值**~~：T15【历史·已修】——并行阈值按线程数缩放
   `max(16384, 512×nt)`（K=1024 高线程 1.84→2.83-4.57x）。使用侧建议
   （小张量不要开满线程）仍有效，见 degradation §6.3。
 - **M1 值域桶化（T2 阶段 2，未做）**：M1 大块路径当前是 skip-linearize 直接

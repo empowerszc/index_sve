@@ -155,12 +155,13 @@ Warning: Overriding a previously registered kernel for the same operator and the
 针对"本算子性能差于 aten::index 时回退到原生 aten::index"的诉求，做了一轮完整
 调查，结论是**不实现 fallback**。记录理由供日后复读：
 
-- **慢场景**：历史 1D f32/i32 大 K（K=10M）纯 gather 在 ≥8 线程为 0.18-0.7x，
-  那是旧构建/共享箱数据；T11 修正矩阵（RESULTS §2）中 1-16t 为 1.06-1.16x，
-  32/36t 2.3-3.9x（部分来自 aten 在带宽饱和后变慢）。绝对带宽仍受 64B 行放大 +
-  DRAM 延迟限制（§8.4）。P3 mask 高线程已由 T8 单遍融合修复（1.3-4.2x）。
-  RowCopy/8B PureGather 是可靠收益（1t 2.4-4.5x，2-16t 3-4.6x）。`x[:,i]` 在
-  T11 前 1-32t 只有 0.4-0.7x，A==1 紧凑循环后为 1.1-2.0x（1t 2.0x）。
+- **慢场景（当前）**：只有六个家族 <1x——空 mask 4-38t 0.42-0.66x（aten 并行
+  早退，绝对差 1.5-2ms）、1B 0.91-0.99x、complex 0.92-0.95x、非连续 mask
+  0.79-0.98x、S4 0.77-0.92x、噪声单格；逐格清单见 RESULTS §2.9.1。其余
+  31 场景 × 8 档全部 ≥1.00x。4B 大 K 随机 gather 的绝对带宽仍受 64B 行放大 +
+  DRAM 延迟限制（§8.4），这是物理上限而非实现差距。
+  RowCopy/8B PureGather 是可靠收益（1t S1/P1 2.89-2.98x、8t 3.0-3.3x）；
+  `x[:,i]` 当前 1t 2.00x（T11 前 0.4-0.7x，A==1 紧凑循环修复）。
 - **Python-wrapper fallback 不可取**：实测 `torch.library.get_kernel` +
   `with_keyset` + `call_boxed` 能正确回退且 autograd 安全（无递归），但任何
   Python 层包装会给**每次** `x[...]` 调用增加 ~45µs（小 op 13.7µs→63µs，
@@ -177,7 +178,7 @@ Warning: Overriding a previously registered kernel for the same operator and the
 ## 8. 与 torch.compile 的关系
 
 `torch.compile` 默认会把 `aten::index` 内联成 Inductor 自己生成的 kernel，运行时
-不再有 dispatcher 调用，**CPU 覆盖不生效**（实测慢 2.6x）。已验证强制 fallback
+不再有 dispatcher 调用，**CPU 覆盖不生效**（该轮实测慢 2.6x）。已验证强制 fallback
 可让 compile 重新走回本算子（1.07-1.3x）；已实现为 opt-in：import 前设
 `HPC_INDEX_COMPILE=1`（与 `HPC_INDEX_NO_OVERRIDE=1` 冲突会报错）。机制、缓存/
 私有 API/FakeTensor 坑见 [torch-compile.md](torch-compile.md) §6。

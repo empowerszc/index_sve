@@ -4,6 +4,9 @@
 `-msve-vector-bits=512` 编译（VL=512-bit，`svcntb()==64`），运行时用
 `sve_512_ok()` 门控。
 
+> **数字口径**：文中出现的性能数字是**对应轮次的历史实测**（多为 T11/T13/T15），
+> 用于说明"这个内核为什么快"；**当前值一律以 `benchmarks/RESULTS.md` §2.9 为准**。
+>
 > **一句话**：内核选择只由三个量决定——**A**（每次访问连续元素数）、**K**
 > （索引元素数）、**B**（索引广播出的前导行数）。A 大走 RowCopy，A==1 走
 > PureGather，K 小走 `gather_direct`/`small_single_index`。
@@ -163,7 +166,7 @@ strided_rows_raw<T, IdxT, NT>（入口：gather_strided_rows_raw，op.cpp 短路
   A=1024 时从 1024 次标量拷贝变成 64 次 64B 拷贝。实测 1t 2.23x、8t 1.71x。
 - **run=1 不启用**：纯转置（tail 64、stride 20000）没有连续后缀，块拷贝只能退化
   为逐元素；保留 `gather_fused`，原因见
-  `index_sve_vs_fastindex_gap_20261023.md` §19.1。
+  `docs/archive/index_sve_vs_fastindex_gap_20261023.md` §19.1。
 
 ### 3.3 多索引 raw rowcopy（T12）
 
@@ -341,6 +344,6 @@ gather_mask(self, mask)  // op.cpp mask_fast_path 调用
 整行拷贝（T14：A=3 的 3 次迭代标量循环每行耗时 ~2x 于 memcpy（shortq 实测
 35µs vs 16µs，A=2 仅 ~1.1x）），`n*A < max(16384, 512×线程数)` 时串行（T15 起按
 线程数缩放：38t 下 16384 元素的 fork-join 净亏 ~10µs；并行任务开销大于收益；只看 n
-会让 2D A=16 K=4096 误判为串行，8-36t 掉到 0.55-0.66x，T11 已修）。绕过
+会让 2D A=16 K=4096 误判为串行，8-36t 掉到 0.55-0.66x，T11【历史·已修】）。绕过
 `normalize_index` 的 vector 分配/transpose 分析与 `gather_direct` 的内层
 `at::Tensor` 访问。`K>4096` 仍走 SVE/桶化主路径。

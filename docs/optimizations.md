@@ -7,8 +7,12 @@ T6-T11 依次修复 index_out/autograd、mask 单遍、小 K 路径、compile op
 线程数方法学；对应性能数据见 `benchmarks/RESULTS.md` §3.8、§2 与
 `performance.md` §3-§4。
 
+> **本文是编年史**：逐轮记录"当时为什么改、怎么改、改完是多少"。**它不是状态
+> 文档**——当前状态看 `status.md` §5（性能）与 §3（路由）、当前数字唯一出处
+> `benchmarks/RESULTS.md` §2.9。本文的数值只在该轮时点成立，跨轮只比形态。
+>
 > **怎么读**：§1-§3 是“为什么改”；§2 是一页 commit 索引；§4 是最终路由优先级
-> （改代码前先看）；§5 是汇总数字；§6-§7 是验证与复测；§9 起按轮次（T5-T11）
+> （改代码前先看）；§5 是汇总数字；§6-§7 是验证与复测；§9 起按轮次（T5-T15）
 > 记录问题、改动、实测。**历史性能表（T0-T10）中 2-36t 的标签不可用**：旧扩展
 > 用 libomp 默认 team，`torch.set_num_threads` 改的是 libgomp（详见
 > `degradation-analysis.md` §3.1）；只有 1t/38t 与 T11 之后的数据有效。
@@ -538,7 +542,7 @@ complex 1t 0.95x、S4/multi 8/16t 0.91-0.98x、1D K=65536 16-36t 0.81-0.88x、
 
 放弃项：纯转置 run=1（无连续后缀，块拷贝不可用）、多索引 1-8t（raw 慢
 9-23%）、`_offset`（0-2.3%）、mask int32 转换、slice 提前回退。系统原因见
-`index_sve_vs_fastindex_gap_20261023.md` §19。
+`docs/archive/index_sve_vs_fastindex_gap_20261023.md` §19。
 
 ### 验证
 
@@ -695,3 +699,13 @@ smallk 官方复测见 RESULTS §2.3（T15 构建）。
   两进程 true-aten 对拍 **44/44**。
 - realpath 全形态路由不变（A1 K=1、M1 A=1024/2048/4096、M2 B·K=10 万均不在
   新路由范围），§2.5 T14 数据继续有效。
+
+## 20. 之后的轮次（不在本文范围）
+
+T15 之后还有两轮，本文未收录（各自有专项文档与 RESULTS 小节）：
+
+- **布局修复**（`5eaa3b1`）：输出内存布局与 aten 逐维一致，见
+  `output-layout.md` §1-§7。
+- **R10 直写**（`330d268`）：cl/置换布局行块直写，见 `output-layout.md` §8 与
+  RESULTS §2.9.2。
+- 两轮的当前性能结论：RESULTS §2.9，状态快照 `status.md` §5.1。
