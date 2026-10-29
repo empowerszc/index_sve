@@ -5,6 +5,13 @@ CPU 张量的高级索引调用（`x[idx]`、`x[:, i]`、`x[i, j]`、bool mask�
 下标）都自动改走本算子，无需修改任何调用点。本文档讲清楚这背后的 PyTorch
 **Dispatcher（调度器）**机制、边界与验证方法。
 
+> **这篇讲什么**：为什么覆盖 CPU 插槽就能接管所有高级索引、为什么 autograd 不受
+> 影响、这个方案成立的前提和边界是什么。
+> **读完你能回答**：`TORCH_LIBRARY_IMPL(aten, CPU)` 改了什么？backward 为什么仍走
+> aten？递归/重复注册怎么避免？怎么验证覆盖生效？
+> **本篇代号**：A6（覆盖手段）、dispatch key / boxed / schema（Dispatcher 概念）。
+> 术语见 [glossary.md](glossary.md)。
+
 > **读前须知**：本文假设你知道“算子（operator）”和“内核（kernel）”的区别。
 > PyTorch 里一个算子可以有多份内核，Dispatcher 根据 **dispatch key**（CPU、
 > CUDA、Autograd、Conjugate...）选一份执行。**schema** 是算子的参数/返回值
@@ -75,7 +82,7 @@ kernel，不依赖 CPU key 的实现。dispatcher 链为：
 AutogradCPU → CPU（我们的实现）→ 底层
 ```
 
-forward 走到我们；backward 的梯度散射仍是 ATen 自己的公式。所以测试中
+forward 走到我们；backward 的梯度散射仍是 aten 自己的公式。所以测试中
 autograd 完全正常（梯度值/形状/dtype 已与 true-aten 对拍验证，并有套件专项
 回归 `tests/test_autograd.py` 16 项——其中路由计数器断言证明带 grad 前向
 真的落到本算子内核；见 semantics.md §6）。
