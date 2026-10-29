@@ -370,6 +370,97 @@ bool small_single_index(const at::Tensor& self,
   return true;
 }
 
+// aten::index 的输出分配复刻：TensorIterator 对 operands（restrided self +
+// reshape/broadcast 后的 index 张量）按 stride 做 should_swap 插入排序得 perm，
+// 再按 perm 序 dense 分配（aten/src/ATen/TensorIterator.cpp :232
+// reorder_dimensions、:574 allocate_or_resize_outputs，NOTE [Computing output
+// strides]；operands 构造见 TensorAdvancedIndexing.cpp :595 restride_src /
+// :616 reshape_indexer）。连续 self 恒得连续输出；channels_last / 类 cl 置换
+// self 的行索引输出保持原布局——E2E 格式传播链依赖此行为。
+std::vector<int64_t> aten_out_strides(const IndexSpec& spec) {
+  const int64_t ndim = static_cast<int64_t>(spec.out_shape.size());
+  std::vector<int64_t> strides(ndim, 0);
+  int64_t st = 1;
+  for (int64_t d = ndim - 1; d >= 0; --d) {
+    strides[d] = st;
+    st *= spec.out_shape[d];
+  }
+  if (ndim <= 1) return strides;  // TI: ndim<=1 时 perm 恒等 → 连续
+
+  const at::Tensor& ts = spec.transposed_self;
+  const int64_t R = static_cast<int64_t>(spec.broadcast_shape.size());
+  const int64_t dims_before = spec.indexed_dims.empty() ? 0 : spec.indexed_dims.front();
+  const int64_t dims_indexed = static_cast<int64_t>(spec.indexed_dims.size());
+  const int64_t dims_after = ts.dim() - dims_before - dims_indexed;
+
+  // 各 operand 的 stride_bytes（TI 跨 operand 按字节比较）。operand 0 =
+  // restrided self：before 维保留 stride、replacement 维置 0、after 维保留。
+  std::vector<std::vector<int64_t>> ops;
+  const int64_t self_es = ts.element_size();
+  std::vector<int64_t> self_sb(ndim);
+  {
+    int64_t p = 0;
+    for (int64_t d = 0; d < dims_before; ++d, ++p) self_sb[p] = ts.stride(d) * self_es;
+    for (int64_t r = 0; r < R; ++r, ++p) self_sb[p] = 0;
+    for (int64_t d = dims_before + dims_indexed; d < ts.dim(); ++d, ++p)
+      self_sb[p] = ts.stride(d) * self_es;
+  }
+  ops.push_back(std::move(self_sb));
+
+  for (const at::Tensor& idx : spec.indices) {
+    std::vector<int64_t> shape(dims_before, 1);
+    shape.insert(shape.end(), idx.sizes().begin(), idx.sizes().end());
+    shape.insert(shape.end(), dims_after, 1);
+    const at::Tensor reshaped = idx.reshape(shape);
+    const int64_t es = idx.element_size();
+    std::vector<int64_t> sb(ndim, 0);
+    for (int64_t d = 0; d < ndim; ++d) {
+      // TI compute_strides：operand 该维尺寸 1 而 out 该维 >1 视作广播 → 0
+      if (reshaped.size(d) != 1 || spec.out_shape[d] == 1)
+        sb[d] = reshaped.stride(d) * es;
+    }
+    ops.push_back(std::move(sb));
+  }
+
+  auto should_swap = [&](int64_t dim0, int64_t dim1) {
+    for (const auto& sb : ops) {
+      const int64_t s0 = sb[dim0], s1 = sb[dim1];
+      if (s0 == 0 || s1 == 0) continue;  // 广播维 → 交给下一 operand
+      if (s0 < s1) return -1;
+      if (s0 > s1) return 1;
+      if (spec.out_shape[dim0] > spec.out_shape[dim1]) return 1;  // 平局按 shape
+    }
+    return 0;
+  };
+
+  std::vector<int64_t> perm(ndim);
+  for (int64_t i = 0; i < ndim; ++i) perm[i] = ndim - 1 - i;  // iota(rbegin, 0)
+  for (int64_t i = 1; i < ndim; ++i) {
+    int64_t pos = i;
+    for (int64_t j = i - 1; j >= 0; --j) {
+      const int cmp = should_swap(perm[j], perm[pos]);
+      if (cmp > 0) {
+        std::swap(perm[j], perm[pos]);
+        pos = j;
+      } else if (cmp < 0) {
+        break;
+      }
+    }
+  }
+
+  bool inverted = true;  // perm 恰为逆序 → 连续快路径
+  for (int64_t j = 0; j < ndim; ++j) {
+    if (perm[j] != ndim - 1 - j) { inverted = false; break; }
+  }
+  if (inverted) return strides;
+  st = 1;
+  for (int64_t pos = 0; pos < ndim; ++pos) {  // compatible_stride 按 perm 序
+    strides[perm[pos]] = st;
+    st *= spec.out_shape[perm[pos]];
+  }
+  return strides;
+}
+
 }  // namespace
 
 at::Tensor index_impl(const at::Tensor& self,
@@ -384,8 +475,16 @@ at::Tensor index_impl(const at::Tensor& self,
   if (small_single_index(self, vec, out)) return out;
   if (small_multi_index(self, vec, out)) return out;
   auto spec = normalize_index(self, vec);
-  out = at::empty(spec.out_shape, self.options());
-  index_into(self, spec, out);
+  out = at::empty_strided(spec.out_shape, aten_out_strides(spec), self.options());
+  if (out.is_contiguous()) {
+    index_into(self, spec, out);
+  } else {
+    // 非连续输出（aten 语义：channels_last/类 cl 置换 self 的输出保持原布局）：
+    // 内核按行主序写 tmp 后 copy_，与 index_out_impl 的非连续防线同模式。
+    at::Tensor tmp = at::empty(spec.out_shape, self.options());
+    index_into(self, spec, tmp);
+    out.copy_(tmp);
+  }
   return out;
 }
 

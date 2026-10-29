@@ -5,17 +5,18 @@
 
 > 更新规则：每轮实质变更后更新本文（测试数、commit 号、性能结论、路由）。
 
-> **30 秒现状**：T15 完成；补测 autograd 专项回归（`test_autograd.py`
-> 16/16），14 套件 **143/143** 全 PASS、真 aten 对拍 44/44；修复 pybind
-> 调试出口 typed 签名错并全文档传播直调丢梯度警告；AI4S workload 完成全线程
-> 档复测（31 场景 + realpath 两进程对拍 × 1/2/4/8/16/32/36/38 全 8 档，
-> RESULTS §2.8，summary §6.2 全档表）。T15 修复 T13 残余高线程空档：2D A=16
-> K=8192/65536 raw 放行（32-38t 0.73/0.76x → **1.26-2.17x**，hpc 绝对时间
-> 砍半）；K=1024 并行阈值线程缩放（38t 1.46x → 2.17x，与 K=1023 拉平）；
-> f32/i32+i64 下标大源（>512KB）直连单遍 SVE（K=10M idx64 8t 1.32→
-> **2.22x**）。此前 T14 修复 realpath 对拍唯一 <1x 项（shortq A=3
-> 0.84x → 2.6x）；T13 多索引小 K 快路径（K=512/A=1 0.74→1.6-2.0x，
-> A=64 1t 0.67→3.4x）与 T12 strided-rows 不变。
+> **30 秒现状**：输出内存布局修复完成（2026-10-29，专项文档
+> [output-layout.md](output-layout.md)）：channels_last/置换 self 上
+> `x[idx]` 值对但输出恒 NCHW 连续、aten 由 TensorIterator 置换恢复保持
+> 原布局——E2E 差分 `verify_e2e.py` 以 stride 比对抓到（波及 16/120 例）。
+> 修复：`aten_out_strides` 完整复刻 TensorIterator 输出分配（restrided
+> self/reshape 索引 stride_bytes + should_swap 插入排序含平局规则），
+> 非连续输出先算入连续 tmp 再 `copy_`。15 套件 **168/168**、E2E 差分
+> **120/120** + 线程矩阵 ALL OK、true-aten 对拍 44/44。同轮交替：热形态
+> 领先不变（col-index 1.1-1.4x、M1 4.6-6.3x）；cl4d 行索引 0.30-0.42x
+> 为 tmp+copy_ 已知代价（优化方向：cl 尾块 dense 置换、行块 memcpy 直写，
+> §7 R10）。此前 T15 完成 autograd 专项 143/143、AI4S 全线程档复测
+> （RESULTS §2.8）。
 >
 > **本文怎么用**：这是“快照”，不追求完整推导；数字以 `benchmarks/RESULTS.md`
 > §2 为准，原因分析看 `degradation-analysis.md`，路由看 §3 与
@@ -54,6 +55,7 @@ CPU 键覆盖，autograd 不受影响）。构建/运行契约见 `README.md` �
 | 补测 | autograd 专项回归 `test_autograd.py`（16 项：梯度 vs `index_add_` 独立参考、负索引/重复/mask/多索引/非连续/gradcheck、路由计数器、`torch.ops` 直调无 autograd 公式） | 24cd8b3 | ✅ |
 | 修复 | pybind 调试出口 `_hpc_index.index` typed 句柄补 `const&`（自初始 commit 即抛签名错，零调用方未暴露；测试扩三直调入口断言） | 0397eb5 | ✅ |
 | 基准 | AI4S workload 全线程档复测（31 场景 + realpath 两进程对拍 × 1/2/4/8/16/32/36/38 全 8 档，RESULTS §2.8；summary §6.2 全档表；新观察项 mask empty/complex64 待聚焦复测） | 557cdbf | ✅ |
+| 修复 | 输出内存布局与 aten 逐维一致：`aten_out_strides` 复刻 TensorIterator 置换恢复（strides/should_swap 平局规则），`empty_strided` 分配 + 非连续 tmp→`copy_`；新增 `test_output_layout.py`（25 例，期望值为无覆盖进程实测钉入）+ `verify_e2e.py`（E2E 两进程差分 120 例，值+shape+dtype+stride 比对 + 线程矩阵）；专项文档 output-layout.md | （本轮） | ✅ |
 
 ## 3. 路由现状（op.cpp `index_impl`）
 
@@ -78,22 +80,32 @@ A==1 || (连续 && A>=4 && f32/f64) → linearize + gather_index（SVE/桶化/sc
 
 > 线程数：T11 起入口 `sync_omp_threads()` 把 libomp team 同步为
 > `at::get_num_threads()`，`torch.set_num_threads(t)` 对扩展生效。
+>
+> 输出分配（2026-10-29 起）：主路径（上述树中 normalize 之后的所有分支）
+> 经 `aten_out_strides` 按 TensorIterator 置换恢复语义分配输出
+> （`empty_strided`），连续 self 恒连续、cl/置换 self 行索引族保持原布局；
+> 非连续输出先算入连续 tmp 再 `copy_`。三个快路径（mask/small_single/
+> small_multi）均有 `self.is_contiguous()` 守卫，输出恒连续不受影响。
+> 机制与移植指南见 `output-layout.md`。
 
 详细说明见 `architecture.md` §1 与 `optimizations.md` §9。
 
 ## 4. 测试
 
-- **143/143 通过**：test_correctness 25、test_errors 6、test_model 9、
+- **168/168 通过**：test_correctness 25、test_errors 6、test_model 9、
   test_normalize 9、test_smoke 2、test_sve 25、test_index_out 7、test_mask_fused 9、
   test_smallk 7、test_compile_optin 3、test_strided_rows 6、test_rowcopy_routes 8
   （T15 增至 8：raw 路由/大 K 回退/f32+i64 路由/阈值缩放）、test_small_multi 11、
-  test_autograd 16（autograd 专项回归，24cd8b3）。
-- 复跑：`for t in tests/test_smoke.py tests/test_normalize.py tests/test_correctness.py tests/test_errors.py tests/test_sve.py tests/test_model.py tests/test_index_out.py tests/test_mask_fused.py tests/test_smallk.py tests/test_compile_optin.py tests/test_strided_rows.py tests/test_rowcopy_routes.py tests/test_small_multi.py tests/test_autograd.py; do python $t; done`
+  test_autograd 16（autograd 专项回归，24cd8b3）、test_output_layout 25
+  （输出布局专项，期望 stride 为无覆盖进程实测真值钉入）。
+- 复跑：`for t in tests/test_smoke.py tests/test_normalize.py tests/test_correctness.py tests/test_errors.py tests/test_sve.py tests/test_model.py tests/test_index_out.py tests/test_mask_fused.py tests/test_smallk.py tests/test_compile_optin.py tests/test_strided_rows.py tests/test_rowcopy_routes.py tests/test_small_multi.py tests/test_autograd.py tests/test_output_layout.py; do python $t; done`
 - 注意：测试同一进程串行跑，1 线程用例必须 `try/finally` 恢复
   `torch.get_num_threads()`（test_sve.py 内已如此）。
 - **true-aten 值级对拍**（覆盖下测试自洽，须两进程法）：
-  `python tests/verify_against_aten.py --mode both`（44/44，参考写
-  `agent_space/`）。详见 semantics.md §6.2。
+  `python tests/verify_against_aten.py --mode both`（44/44）；E2E 全链路
+  `python tests/verify_e2e.py --mode both --threads`（120/120，真实
+  `x[...]` 语法 × 布局 × autograd × 模型 workload，比对含 stride；
+  参考写 `agent_space/`）。详见 semantics.md §6.2 与 output-layout.md §3。
 
 ## 5. 性能结论（pin node 5，interleaved median）
 
@@ -250,6 +262,7 @@ mask 经 T8 后 1.3-4.2x；
 | R7 | `small_multi_index` 扩广播/非连续索引（修正 `all_full_contig` + 复用偏移预计算） | 覆盖面，非性能 | 中 | — |
 | R8 | dtype 白名单扩展（barebones u16/u32/u64、float8、complex32） | 覆盖面（当前抛 NotImplementedError） | 小-中 | semantics §4 |
 | R9 | `HPC_INDEX_COMPILE=1` 真实模型端到端验证 | 决定是否默认开启 | 中 | torch-compile §6 |
+| **R10** | cl/置换布局直写内核：源/出尾块同 dense 置换时行块 memcpy 语义等价，放宽 rowcopy 的 `after_contiguous` 守卫 | cl4d 行索引 0.30-0.42x → 反超 aten（省一趟输出带宽；aten 走 TensorIterator 通用散写） | 中 | output-layout.md §7 |
 
 **不建议再投入**：1B/complex（64B 行放大是硬上限，aten 同为标量，换指令
 无解）；纯转置 run=1 低线程尾部（8t 0.84x，需独立"固定 col_off SVE

@@ -212,16 +212,23 @@ for t in tests/test_smoke.py tests/test_normalize.py tests/test_correctness.py \
          tests/test_errors.py tests/test_sve.py tests/test_model.py \
          tests/test_index_out.py tests/test_mask_fused.py tests/test_smallk.py \
          tests/test_compile_optin.py tests/test_strided_rows.py \
-         tests/test_rowcopy_routes.py tests/test_small_multi.py tests/test_autograd.py; do python $t; done
+         tests/test_rowcopy_routes.py tests/test_small_multi.py tests/test_autograd.py \
+         tests/test_output_layout.py; do python $t; done
 ```
 
-全部通过 = 143/143（覆盖激活态；test_correctness 25、test_errors 6、test_model 9、
+全部通过 = 168/168（覆盖激活态；test_correctness 25、test_errors 6、test_model 9、
 test_normalize 9、test_smoke 2、test_sve 25、test_index_out 7、test_mask_fused 9、
 test_smallk 7、test_compile_optin 3、test_strided_rows 6、test_rowcopy_routes 8
-（T15 增至 8）、test_small_multi 11、test_autograd 16）。
+（T15 增至 8）、test_small_multi 11、test_autograd 16、test_output_layout 25）。
 覆盖下测试是自洽的（`x[i]` 也走
 本算子），值级真对拍用两进程法（无覆盖进程生成 true-aten 参考，覆盖进程比对）：
 
 ```bash
-python tests/verify_against_aten.py --mode both    # 44/44，参考写 agent_space/（git-ignored）
+python tests/verify_against_aten.py --mode both    # 44/44，kernel 语义矩阵
+python tests/verify_e2e.py --mode both --threads   # 120/120，E2E 全链路（真实语法×布局×
+                                                   # autograd×模型 workload，比对含 stride；
+                                                   # --threads 追加线程一致性矩阵）
 ```
+
+输出内存布局与 aten 逐维一致的语义与修复说明见
+[docs/output-layout.md](docs/output-layout.md)。
