@@ -3,10 +3,20 @@
 为鲲鹏 920F（Kunpeng 920F, aarch64, SVE2 VL=512-bit）实现的 `aten::index.Tensor`
 语义替代算子。**`import index_sve` 后，进程中所有 CPU 张量的高级索引调用
 （`x[idx]`、`x[:, i]`、`x[i, j]`、bool mask、N-D 整数下标等）自动改走本算子**，
-无需修改任何调用点。语义与 torch 2.10 的 ATen 参考实现逐字节对齐，autograd
+无需修改任何调用点。语义与 torch 2.10 的 aten 参考实现逐字节对齐，autograd
 backward 不受影响。
 
-## 先读：术语与结果口径（30 秒）
+> **这篇讲什么**：`index_sve` 是什么、为什么快、怎么用、当前性能边界在哪。
+> **读完你能回答**：它替掉了什么？`import` 后发生了什么？主要收益来自哪类索引？
+> 哪些形态仍不如 aten？怎么构建、测试、在需要时关掉覆盖？
+> **本篇代号**：S1/P1/P2/P3/S4（基准场景）、M1/M2/M5/A1/shortq（真实负载）、
+> A/B/K（索引几何）、R10（2026-10-29 布局直写轮，与路线图 R1-R9 无关）。
+> 一句话解释见下表，完整表见 [docs/glossary.md](docs/glossary.md)。
+
+## 30 秒：术语与结果口径
+
+先记住下面几个词，读后面任何文档都够用；完整的术语与场景/负载代号表见
+[docs/glossary.md](docs/glossary.md)。
 
 | 名词 | 一句话解释 |
 |---|---|
@@ -14,12 +24,13 @@ backward 不受影响。
 | **RowCopy** | 一次取一整行/一段连续内存（`A>=4`），用 SVE 的 `ld1/st1` 整块搬，最快 |
 | **PureGather** | 一次只取一个元素（`A==1`），随机地址，受 64B cache line 放大限制 |
 | **linearize** | 把“第几行、第几列”换算成一维元素偏移，并做越界/负数检查 |
+| **A / B / K** | A=每次访问的连续元素数；B=索引前的前导行数；K=索引元素数；三者决定走 RowCopy、纯 gather 还是小 K 快路径 |
 | **SVE / VL** | ARM 可伸缩向量指令 / 向量长度；本机 VL=512-bit（16×f32 或 8×f64） |
 | **cache line（缓存行）** | CPU 和内存搬数据的最小单位，64B；随机取 4B 也要搬 64B |
 | **ICV** | OpenMP 的“线程数”配置；libomp 和 libgomp 各有一份，互不相通 |
-| **ratio（加速比）** | 本文统一用 `aten 时间 / 本算子时间`；**>1 表示比 torch 快** |
+| **加速比** | 统一用 `aten 时间 / 本算子时间`；**>1 表示比 aten 快**（旧文档里的 `ratio` 同义） |
 
-**结果怎么读**：`1.26x` = 快 26%，`0.87x` = 慢 13%。高线程（32/36t）的比值有时
+**结果怎么读**：`1.26x` = 快 26%，`0.87x` = 慢 13%。高线程（32/36/38t）的比值有时
 很高，一部分原因是 aten 在带宽饱和后自己变慢，所以文档同时给出绝对 GB/s；
 判断真实收益要看“低/中线程比值 + 绝对带宽”，而不是只看最大比值。
 
@@ -40,19 +51,20 @@ backward 不受影响。
   → `docs/archive/index_sve_vs_fastindex_gap_20261023.md`（fastindex 差异与待补项）。
 - 想接续开发：`docs/status.md` §7（演进方向优先级表 R1-R9：R1 小源扫描
   合并、R2 mask stride、R3 端到端验证，含预期收益与根因交叉引用）。
+  注意 `R10` 是 2026-10-29 布局直写轮，不是路线图项。
 - 想集成/排障：`docs/integration.md` → `docs/override-mechanism.md` → `docs/status.md`。
 
 ## 设计要点
 
-- 三段流水线：**归一化 normalize**（对齐 ATen `make_info`，保留 int32 下标）→
+- 三段流水线：**归一化 normalize**（对齐 aten `make_info`，保留 int32 下标）→
   **线性化 linearize**（一次遍历完成越界检查 + 负数归一 + 元素偏移）→
   **gather**（SVE512 向量 gather / 行拷贝 / 标量回退）。
 - SVE512 路径：8B 元素（f64/i64）`svld1_gather_u64index_*`，4B 元素（f32/i32）
   `svld1_gather_u32index_*`，连续 A 元素块 `svld1/st1` 行拷贝，均带 `pf+16`
   预取（`svprfd/svprfw_gather_u32index`）。
 - `K<1024` 快速路径 `gather_direct`：跳过线性化，直接读原始下标 + 内联检查
-  （等价 ATen `Indexer`），支持 N-D 整数下标（broadcast_shape 混合进制解码）。
-- **优化轮（T0-T15）**：自适应并行粒度 `grain.h`；M1 单索引大块
+  （等价 aten `Indexer`），支持 N-D 整数下标（broadcast_shape 混合进制解码）。
+- **优化轮（T0-T15）**：自适应并行粒度 `grain.h`；机制 M1（单索引大块）
   `gather_rowcopy_raw` skip-linearize；T4 小值域桶化（值域 ≤2048 查表）；
   T3 `gather_fused` 融合单遍；int32 linearize 直接写 int32；T5 1 线程单遍；
   T8 mask 单遍压实；T9 小 K（≤4096）精简路径；T10 `torch.compile` opt-in；
@@ -64,7 +76,7 @@ backward 不受影响。
   raw 放行（`A<=64 && B*K<=65536`）+ f32/i32+i64 下标大源（>512KB）直连
   单遍 SVE（uzp1 收窄复用 u32index）+ `small_single` 并行阈值线程缩放。
 - 并行：`at::parallel_for`（`adaptive_grain`）。**必须 `-fopenmp` 编译**。
-  扩展链接 BiSheng libomp、ATen 链接 libgomp；T11 起入口
+  扩展链接 BiSheng libomp、aten 链接 libgomp；T11 起入口
   `sync_omp_threads()` 使 `torch.set_num_threads(t)` 对扩展生效（此前只改
   libgomp，扩展实际用 libomp 默认 team，这也是旧线程数据失真的原因）。
 - 条件回退标量 `dispatch_scalar`：2B/1B 元素（half/bf16/i16/i8/uint8/bool）、
@@ -80,7 +92,7 @@ index_sve/
 │   ├── __init__.py       # import 时安装 aten::index.Tensor / .Tensor_out CPU 覆盖（HPC_INDEX_NO_OVERRIDE=1 可跳过）
 │   ├── register_aten.py  # 兼容层；实际覆盖由 op.cpp 的 TORCH_LIBRARY_IMPL(aten,CPU) 完成
 │   ├── op.cpp            # index_impl 入口 + pybind（debug_spec/linearize_spec/idx_dtype_choice）
-│   ├── normalize.{h,cpp} # normalize_index：mask/broadcast/transpose_to_front，对齐 ATen make_info
+│   ├── normalize.{h,cpp} # normalize_index：mask/broadcast/transpose_to_front，对齐 aten make_info
 │   ├── linearize.{h,cpp} # 线性化 + 越界检查，int32 保持（直接写 int32）
 │   ├── grain.h           # 自适应并行粒度（T0）
 │   ├── gather.{h,cpp}    # SVE gather/rowcopy/scalar + gather_direct + M1 raw / T3 fused / T4 桶化
@@ -141,52 +153,44 @@ HPC_INDEX_NO_OVERRIDE=1 python your_script.py   # import 不再改 aten::index.T
 
 ## 基准结论（摘要）
 
-鲲鹏 920F，node 5（38 核），aten/hpc 同进程交替中位数。**当前数据唯一出处 =
-`benchmarks/RESULTS.md` §2.9**（R10 轮，2026-10-29 下午：31 场景 × 8 线程 +
-realpath + cl 家族专项）；AI4S 全档表格见 `docs/summary.md` §6.2；逐 case 分析见
-`docs/degradation-analysis.md` §5.8/§5.9、当前 <1x 清单见 RESULTS §2.9.1。
+鲲鹏 920F，node 5（38 核），aten 与本算子同进程交替取中位数。**当前数字唯一出处 =
+`benchmarks/RESULTS.md` §2.9**（R10 轮，2026-10-29：31 场景 × 8 线程 + realpath +
+cl 家族专项）。下表只放代表值；P2/P3/S4、`x[:,i]`、rowcopy A=4/A=16、1D、half/bf16
+等完整行见 RESULTS §2.9，逐 case 分析见 `docs/degradation-analysis.md` §5.8/§5.9。
+
+> 数据轮次：R10（2026-10-29）｜当前
 
 | 场景 | 1 线程 | 8 线程 | 38 线程 |
 |---|---|---|---|
-| S1 spconv features[inp_idx] C=64 | **2.98x** | 3.03x | 4.48x |
-| P1 h[src] i64 C=64 | **2.89x** | 3.26x | 4.02x |
-| P2 pos[src] A=3 | **1.77x** | 1.65x | 4.47x |
-| P3 x[mask] C=16 | **1.77x** | 1.23x | 8.62x |
-| S4 x[perm] f64 | **1.26x** | 0.86x | 0.92x |
-| `x[:,i]` C=64 | **2.00x** | 1.41x | 2.85x |
-| rowcopy A=4 / A=16 | **1.53x / 2.07x** | 1.14x / 1.81x | 8.65x / 3.00x |
-| 1D f32/f64 K=2M | 1.07x / 1.34x | 1.58x / 1.60x | 4.74x / 2.73x |
-| half / bf16 | 1.49x / 1.43x | 1.34x / 1.36x | 3.09x / 5.18x |
-| cl4d 行索引 / cl4d mask（K=2048，专项） | — | **1.45-2.54x / 1.40-2.08x** | — |
+| S1 spconv `features[inp_idx]` C=64 | **2.98x** | 3.03x | 4.48x |
+| P1 `h[src]` i64 C=64 | **2.89x** | 3.26x | 4.02x |
+| M1 权重块（≤16KB/行，realpath） | **12.7-13.6x** | 5.0-5.9x | 1.22-1.47x |
+| shortq（K=64-512，realpath） | — | **2.55-4.16x** | — |
+| cl4d 行索引 / mask（K=2048，专项） | — | **1.45-2.54x / 1.40-2.08x** | — |
 
-- **RowCopy 是主要收益**：S1/P1 1t 2.89-2.98x、8t 3.0-3.3x（轮间 2.9-4.6x，
-  1t 比值随箱态漂移 ~1.4x）；A=4/A=16 块 1t 1.5x/2.1x（T11 轻载轮曾测
-  2.4x/3.6x；高线程含 aten 退化放大）。SVE `ld1/st1` 整块拷贝，正中 spconv
-  规则表 / 图消息路径。
-- **channels_last / 置换布局（R10 新增）**：cl4d 行索引 8t **1.45-2.54x**、
-  cl3d 置换 1.35-2.63x，与连续行索引拉平（RESULTS §2.9.2）——修布局正确性时
-  引入的 tmp+copy_ 代价已消除。
-- **小 K `x[idx]`**：R10 轮 shortq（K=64-512，两进程真实路径）**2.55-4.16x**；
-  K≤1024 的 T15 轮数据 1.83-2.36x 仍作对照；2D A=16 K=8192/65536 32-38t
-  **1.26-2.17x**（T15 raw 放行，原 0.73/0.76x）；1D K=8192/65536 小源高线程
-  0.90-0.95x（小源保持标量，残留为前置 bucket 扫描 ~15µs）。
-- **真实 workload 对拍**（两进程 `x[idx]` 全链路，RESULTS §2.9.4，1/8/16/38t）：
-  M1 权重块（≤16KB/行）1t **12.7-13.6x**、8t 5.0-5.9x、38t 1.22-1.47x；M5 标量
-  循环 / A1 单元素高频 2.41-3.42x（µs 级随箱态）；shortq **2.46-4.21x**（剔
-  K=1023×A≥3 高线程 aten 病理格）；M2 全形态 ≥1.06x（38t 带宽饱和）。
-- **仍 <1x 的六个家族**（RESULTS §2.9.1，逐格可复算）：空 mask 4-38t
-  0.42-0.66x（aten 并行早退，**绝对差 1.5-2ms**，观察项）、非连续 1D mask
-  0.79-0.98x（T8 只支持连续 mask）、int8/uint8 4-16t 0.91-0.99x（64B 行只用
-  1B，aten 同为标量）、complex 1-16t 0.92-0.95x（无 SVE 内核）、S4 f64
-  0.77-0.92x（小工作量 fork-join）、噪声级单格 4 格（≥0.88x）。另有 1D 小源
-  高线程 0.90-0.95x（T15 判明标量更快，待 R1）。逐项原因见
-  `degradation-analysis.md` §5.8/§5.9、`fallback-analysis.md` 文首速查。
-- **4B 大 K 随机 pure gather 的硬限制**：64B cache line 放大 + DRAM 延迟；
-  同构建 A/B 实测 SVE 4B 与标量持平（8MB 1.85 vs 1.86 ms、256MB 7.46 vs
-  7.45 ms），**不是 SVE 指令 MLP 缺陷**（RESULTS §3.7；早期 0.75 vs 3.4 GB/s
-  探针归因已撤回）。小值域由 T4 桶化规避行放大；f64 8B 路径不受影响。
-- **线程数**：T11 起 `torch.set_num_threads(t)` 对扩展生效（入口同步 libomp
-  ICV）。旧 RESULTS §3.6.1/§3.9 的 2-36t 数据因两套 OpenMP 运行时失效，已作废。
+> 读法：`2.98x` = 本算子比 aten 快 1.98 倍；`0.90x` = 慢 10%。高线程比值有时被
+> aten 自身的带宽饱和放大，判断真实收益请看“低/中线程比值 + 绝对 GB/s”。
+
+- **主要收益来自整行/整块取数（RowCopy）**：S1/P1 1t 2.89-2.98x、8t 3.0-3.3x
+  （轮间 2.9-4.6x，1t 随箱态漂移）；A=4/A=16 块 1t 1.5x/2.1x。SVE `ld1/st1`
+  整块拷贝正中 spconv 规则表与图消息路径。
+- **channels_last / 置换布局（R10）**：cl4d 行索引 8t 1.45-2.54x、cl3d 置换
+  1.35-2.63x，已与连续行索引拉平（RESULTS §2.9.2）——布局修复时引入的
+  tmp+copy_ 代价已消除。
+- **小 K 与真实 workload**：shortq 2.55-4.16x（剔除病理格后 2.46-4.21x；两进程
+  真实路径）；M1 权重块 1t 12.7-13.6x；M5/A1 2.41-3.42x（µs 级随箱态）；M2 全形态
+  ≥1.06x（RESULTS §2.9.4）。K≤1024 的 T15 轮数据 1.83-2.36x 仍作对照。
+- **仍 <1x：五个可复现家族 + 噪声级单格（另计）**（RESULTS §2.9.1）：空 mask
+  4-38t 0.42-0.66x（aten 并行早退，绝对差 1.5-2ms）、非连续 1D mask 0.79-0.98x、
+  int8/uint8 4-16t 0.91-0.99x、complex 1-16t 0.92-0.95x、S4 f64 0.77-0.92x；
+  另有噪声级单格与 1D 小源高线程 0.90-0.95x。逐项根因见
+  `docs/degradation-analysis.md` §5.8/§5.9 与 `docs/fallback-analysis.md` 文首。
+- **4B 大 K 随机 gather 的硬限制**：64B cache line 放大 + DRAM 延迟；同构建 A/B
+  实测 SVE 4B 与标量持平（8MB 1.85 vs 1.86 ms、256MB 7.46 vs 7.45 ms），
+  **不是 SVE 指令 MLP 缺陷**（RESULTS §3.7；早期 0.75 vs 3.4 GB/s 探针归因已撤回）。
+  小值域由 T4 桶化规避行放大；f64 8B 路径不受影响。
+- **线程数**：T11 起 `torch.set_num_threads(t)` 对本算子生效（入口同步 libomp
+  ICV）。旧 RESULTS §3.6.1/§3.9 的 2-36t 数据因两套 OpenMP 运行时失效，只作历史。
 - 共享 608 线程箱噪声大：608 列只作参考，**以 node 5 定点矩阵为准**。
 
 ## 已知限制 / 注意事项
