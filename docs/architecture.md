@@ -3,6 +3,19 @@
 `index_sve` 实现 `aten::index.Tensor` 语义的高性能 CPU 算子，三段流水线：
 **归一化 → 线性化 → gather**。本文档走读控制流与数据布局。
 
+> **这篇讲什么**：一次 `x[idx]` 从入口到写出结果，中间经过哪三段、每段做什么、
+> 什么条件下可以跳过某一段。
+> **读完你能回答**：`normalize` 产出了什么？`B/K/A` 怎么从张量形状算出来？
+> 为什么有时走 rowcopy、有时走纯 gather？哪些路径会跳过 `linearize`？
+> **本篇代号**：B/K/A（索引几何）、S1/P1（基准场景）、T0-T15（优化轮）、
+> R10（2026-10-29 布局直写轮）。白话表见 [glossary.md](glossary.md)。
+
+**先看一个例子**：`x` 形状 `(100000, 64)` f32，`idx` 是长度 1M 的 int64，
+`y = x[idx]` 输出 `(1M, 64)`。这里 **B=1**（索引前没有额外行）、**K=1M**
+（取 1M 行）、**A=64**（每行 64 个 f32，共 256B = 4 条 cache line）。
+`normalize` 把这些信息收进 `IndexSpec`；`linearize` 把 1M 个行号换算成元素
+偏移；`gather` 按偏移整行搬 64 个 f32。A=64 且连续，正好命中 rowcopy。
+
 > **一句话**：先把用户下标“翻译”成统一描述（normalize），再决定能不能省掉
 > 线性化，最后按 A/K 选 RowCopy/PureGather/标量把数据搬出去。
 >
@@ -19,39 +32,34 @@
 
 ## 1. 入口 `index_impl`（op.cpp）
 
-```
+主干只有 6 步：
+
+```text
 index_impl(self, indices)
   1. TORCH_CHECK_INDEX(!vec.empty(), "at least one index must be provided")
   2. TORCH_CHECK_INDEX(vec.size() <= self.dim(),
        "too many indices for tensor of dimension {d} (got {n})")
-  3. sync_omp_threads()                     # libomp team = at::get_num_threads()（T11）
-  4. mask_fast_path(self, vec, out)         # 单 mask 连续：gather_mask 单遍压实（T8）
-  5. small_single_index(self, vec, out)     # 单整数下标 && K<=4096：绕过 normalize（T9）
-  5b. small_multi_index(self, vec, out)     # 多索引同 shape/连续 && n<=65536：绕过 normalize（T13）
-  6. spec = normalize_index(self, vec)      # → IndexSpec
-  7. out = at::empty(spec.out_shape, self.options())
-  8. index_into(self, spec, out)：
-       a. K < 1024 → gather_direct
-            └ A==1 单索引全长连续 → 预校验紧凑循环（T11）
-       b. M1: 单索引 && 连续 idx && after_contiguous && A>1
-              && (A>=4096 || A<16 || (A<=64 && B*K<=65536)) && f32/f64
-            → gather_rowcopy_raw（跳过 linearize，T2/T12；T15 放行小 K 中等行宽）
-       b2. 单索引 && !after_contiguous && A>1 && 连续 idx && f32/f64
-              && col_off 存在 ≥4 连续 run
-            → gather_strided_rows_raw（run 块拷贝，T12）
-       b3. 多索引 && after_contiguous && A>=4 && f32/f64 && 线程数≥16
-            → gather_rowcopy_fused（跳过 linearize，T12；n>65536 或广播/非连续）
-       c. T4 raw: 单索引 && B==1 && A==1 && 连续 idx
-            → gather_bucket_pure_raw（小值域查表）
-            └ f32/i32+i64 下标 && 源>512KB && >1 线程 → gather_single_1d_sve
-              （T15-C 单遍 SVE：uzp1 收窄后 u32index gather）
-            └ 其余无 SVE 内核 dtype 或 1 线程 → gather_single_1d（单遍标量，T5/T11）
-       d. 1 线程 && 单索引 && A>1
-            → A>=4 连续 ? gather_rowcopy_raw : gather_fused（T5/T11）
-       e. A==1 || (after_contiguous && A>=4 && f32/f64)
-            → linearize + gather_index（SVE/桶化/scalar）
-       f. 其余（A<4 或非连续小块，含 run=1 纯转置）→ gather_fused（T3）
+  3. sync_omp_threads()                  # libomp team = at::get_num_threads()（T11）
+  4. mask_fast_path(self, vec, out)      # 单 mask 连续 → gather_mask 单遍压实（T8）
+  5. small_single_index / small_multi_index
+       # 单整数 K<=4096（T9）/ 多索引同 shape 连续且 n<=65536（T13）
+  6. spec = normalize_index(self, vec)   # → IndexSpec
+     out  = at::empty(spec.out_shape, self.options())
+     index_into(self, spec, out)
 ```
+
+第 6 步的 `index_into` 再按 `B/K/A` 与 dtype 选内核，优先级从上到下：
+
+| 优先级 | 条件 | 内核 | 跳过 linearize |
+|---|---|---|---|
+| a | `K < 1024` | `gather_direct`（A==1 单索引全长连续走预校验紧凑循环，T11） | 是 |
+| b | 单索引 && 连续 idx && after_contiguous && A>1 && (A>=4096 或 A<16 或 (A<=64 且 B*K<=65536)) && f32/f64 | `gather_rowcopy_raw`（T2/T12；T15 放行小 K 中等行宽） | 是 |
+| b2 | 单索引 && !after_contiguous && A>1 && 连续 idx && f32/f64 && col_off 有 ≥4 连续 run | `gather_strided_rows_raw`（run 块拷贝，T12） | 是 |
+| b3 | 多索引 && after_contiguous && A>=4 && f32/f64 && 线程数≥16 | `gather_rowcopy_fused`（T12；n>65536 或广播/非连续） | 是 |
+| c | 单索引 && B==1 && A==1 && 连续 idx | `gather_bucket_pure_raw`（小值域查表）；f32/i32+i64 下标 && 源>512KB && >1t 时转 `gather_single_1d_sve`（T15-C）；其余转 `gather_single_1d`（T5/T11） | 是 |
+| d | 1 线程 && 单索引 && A>1 | A>=4 连续 ? `gather_rowcopy_raw` : `gather_fused`（T5/T11） | 是 |
+| e | `A==1` 或 (after_contiguous && A>=4 && f32/f64) | `linearize` + `gather_index`（SVE/桶化/scalar） | 否 |
+| f | 其余（A<4 或非连续小块，含 run=1 纯转置） | `gather_fused`（T3） | 是 |
 
 `index_out_impl` 不经过 mask/small 快路径（需支持任意 `out` 布局），校验后同样
 调用 `index_into`；非连续 `out` 先算到连续临时张量再 `copy_`。
@@ -97,16 +105,16 @@ struct IndexSpec {
 
 ## 3. 归一化 `normalize_index`（normalize.cpp）
 
-镜像 ATen `TensorAdvancedIndexingUtils`：
+镜像 aten `TensorAdvancedIndexingUtils`：
 
 1. `check_index_types` — 下标 dtype 白名单 {int64, int32, uint8, bool}（
-   ATen `checkIndexTensorTypes(allow_int=true)`）。越界 dtype（u32/f16/f8 等）报
+   aten `checkIndexTensorTypes(allow_int=true)`）。越界 dtype（u32/f16/f8 等）报
    "tensors used as indices must be long, int, byte or bool tensors"。
 2. **mask 处理** — 可融合的单 mask 已在 `op.cpp` 入口短路（T8，见 §1）；其余
    bool/byte 下标在此先 `nonzero()` 再 `select(1, j)` 成 1 列，同时
    维护 `srcIdx`（mask 展开后结果维度）。mask 的维度不对报 "The shape of the
    mask {..} at index {j} does not match the shape of the indexed tensor {..} at
-   index {0}"。byte mask 保留 ATen 的 deprecation 警告。
+   index {0}"。byte mask 保留 aten 的 deprecation 警告。
 3. **transpose_to_front** — 有连续子空间时把被索引维搬到前面（
    `has_contiguous_subspace`），保证 `indexed_dims` 前面的 dims_before 维与后面的
    dims_after 维各自连续。若无法转置（含 None 穿插打散连续子空间），`dims_before
@@ -119,7 +127,7 @@ struct IndexSpec {
 
 ### 有意差异（normalize，见 semantics.md）
 
-- ATen 在 `make_info` 把 int32 下标升成 int64；本算子**保持 int32**，线性化与
+- aten 在 `make_info` 把 int32 下标升成 int64；本算子**保持 int32**，线性化与
   4B SVE 分支直接消费（等值，省一次转换）。这是设计决策，不是语义偏差。
 
 ## 4. 线性化 `linearize`（linearize.cpp）
@@ -130,7 +138,7 @@ struct IndexSpec {
 - **负下标归一**：`v < 0 → v += size[j]`。
 - **越界检查**：`v >= size[j] || v < -size[j]` 时抛
   `"index {v} is out of bounds for dimension {j} with size {s}"`（`j` 为下标序号，
-  与 ATen `Indexer` 的报错一致）。
+  与 aten `Indexer` 的报错一致）。
 - N-D 下标按 `broadcast_shape` 混合进制（bfactor）解码成逐维坐标（A7），非简单
   `k*stride(0)`。
 - int32 保持：`use_i32` 时**直接写 int32**（不再经 K×8B int64 临时缓冲，T4
@@ -177,7 +185,7 @@ L1/L2 常驻查找表的标量随机读避免了 64B 行放大，远优于大值
 
 ## 6. 快速路径 `gather_direct`（K < 1024）
 
-跳过线性化分配，直接读原始下标 + 内联逐维检查（等价 ATen `Indexer` 遍历）。
+跳过线性化分配，直接读原始下标 + 内联逐维检查（等价 aten `Indexer` 遍历）。
 用 `row_off`/`col_off` 相同布局写 `dst[p*A + c] = src[off + col_off[c]]`。
 N-D 整数下标用 bfactor 按 `broadcast_shape` 解码元素坐标（A7 修复，勿回归成
 `k*stride(0)`）。
@@ -191,7 +199,7 @@ N-D 整数下标用 bfactor 按 `broadcast_shape` 解码元素坐标（A7 修复
   `_OPENMP` 时循环实际串行（历史根因：曾导致 B==1 大 K 从预期加速变成
   0.02-0.3x）。setup.py 已加 `-fopenmp`。
 - 线程数由调用方控制：`torch.set_num_threads()`。但扩展的 `parallel_for` 由
-  BiSheng **libomp** 执行，ATen 用 **libgomp**；T11 起 `index_impl` /
+  BiSheng **libomp** 执行，aten 用 **libgomp**；T11 起 `index_impl` /
   `index_out_impl` 入口调用 `sync_omp_threads()` 把 libomp team 同步为
   `at::get_num_threads()`，否则用户设的线程数对扩展无效（旧线程数据失真的
   根因，见 `degradation-analysis.md` §3.1）。
