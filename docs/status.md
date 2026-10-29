@@ -3,24 +3,39 @@
 本文档面向**新读者 / 其他 agent**：读完即可理解项目现状、已经做了什么、还剩
 什么。技术细节在各专题文档（见 `index.md` 索引）；这里只给结论与指针。
 
-> 更新规则：每轮实质变更后更新本文（测试数、commit 号、性能结论、路由）。
-
+> **这篇讲什么**：项目当前状态快照——已完成什么、路由怎么走、性能如何、还剩什么。
+> **读完你能回答**：现在能做什么？测试/性能到哪一步？哪些形态还慢？下一步优先级是什么？
+> **本篇代号**：R10（当前轮次）、R1-R9（路线图）、T0-T15（优化轮）、
+> S1/P1/M1/shortq（场景/负载）。见 [glossary.md](glossary.md)。
+>
 > **30 秒现状**：R10 直写完成（2026-10-29 第二轮，专项文档
-> [output-layout.md](output-layout.md) §8）：上一轮布局修复让 cl/置换 self
-> 的 `x[idx]` 输出保持原布局（正确），代价是 tmp+copy_ 一趟输出带宽
-> （cl4d 行索引 0.30-0.42x vs aten）。R10 依据"cl 尾块是 dense 置换、
-> rowcopy 纯块拷贝对源/出同置换语义等价"实现行块直写
-> （`rowcopy_direct_ok` 资格判定 + dispatch 顶部守卫，内核零改动）：
-> **cl4d 行索引 8.1-10.0ms → 1.3-2.1ms，比值 0.30-0.42x → 1.45-2.54x**；
-> cl 行索引与连续行索引基本拉平。15 套件 **174/174**、E2E 差分
-> **124/124** + 线程矩阵 46 例 ALL OK、对拍 44/44；normalize.cpp 编译警告清零。
-> 同日第一轮完成输出布局修复（复刻 TensorIterator 置换恢复）+ E2E 差分
-> harness；此前 T15/全线程档复测见 RESULTS §2.8。
+> [output-layout.md](output-layout.md) §8）。上一轮布局修复让 cl/置换 self
+> 的 `x[idx]` 输出保持原布局（正确），代价是 tmp+copy_ 一趟输出带宽；
+> R10 依据"cl 尾块是 dense 置换、rowcopy 纯块拷贝对源/出同置换语义等价"
+> 实现行块直写（`rowcopy_direct_ok` 资格判定 + dispatch 顶部守卫，内核零改动），
+> **cl4d 行索引从明显慢于 aten 提升到与连续行索引基本拉平**。
+> 15 套件 **174/174**、E2E 差分 **124/124** + 线程矩阵 46 例、对拍 44/44；
+> normalize.cpp 编译警告清零。同日第一轮完成输出布局修复 + E2E 差分 harness；
+> 此前 T15/全线程档复测见 RESULTS §2.8。
 >
 > **本文怎么用**：这是“快照”，不追求完整推导；数字以 `benchmarks/RESULTS.md`
-> §2 为准，原因分析看 `degradation-analysis.md`，路由看 §3 与
-> `architecture.md`。发现文档间冲突时，优先级：RESULTS §2 > degradation >
+> §2.9 为准，原因分析看 `degradation-analysis.md`，路由看 §3 与
+> `architecture.md`。发现文档间冲突时，优先级：RESULTS §2.9 > degradation >
 > performance > 本文。
+
+## 目录
+
+- [1. 项目一句话](#1-项目一句话)
+- [2. 已完成（按 commit 时间序）](#2-已完成按-commit-时间序)
+- [3. 路由现状（op.cpp `index_impl`）](#3-路由现状opcpp-index_impl)
+- [4. 测试](#4-测试)
+- [5. 性能结论](#5-性能结论pin-node-5interleaved-median)
+  - [5.1 当前结论](#51-当前结论r10-轮330d2682026-10-29-下午)
+  - [5.2 历史结论](#52-历史结论)
+- [6. 已知边界 / 注意事项](#6-已知边界--注意事项)
+- [7. 演进方向](#7-演进方向后续再看从这里开始)
+- [8. 复现 / 复测命令](#8-复现--复测命令)
+- [附录：历史性能结论](#附录历史性能结论)
 
 ## 1. 项目一句话
 
@@ -57,7 +72,7 @@ CPU 键覆盖，autograd 不受影响）。构建/运行契约见 `README.md` �
 | 修复 | pybind 调试出口 `_hpc_index.index` typed 句柄补 `const&`（自初始 commit 即抛签名错，零调用方未暴露；测试扩三直调入口断言） | 0397eb5 | ✅ |
 | 基准 | AI4S workload 全线程档复测（31 场景 + realpath 两进程对拍 × 1/2/4/8/16/32/36/38 全 8 档，RESULTS §2.8；summary §6.2 全档表；新观察项 mask empty/complex64 待聚焦复测） | 557cdbf | ✅ |
 | 修复 | 输出内存布局与 aten 逐维一致：`aten_out_strides` 复刻 TensorIterator 置换恢复（strides/should_swap 平局规则），`empty_strided` 分配 + 非连续 tmp→`copy_`；新增 `test_output_layout.py`（25 例，期望值为无覆盖进程实测钉入）+ `verify_e2e.py`（E2E 两进程差分 120 例，值+shape+dtype+stride 比对 + 线程矩阵）；专项文档 output-layout.md | 5eaa3b1 | ✅ |
-| R10 | cl/置换布局行块直写：`rowcopy_direct_ok` 资格判定（源/出尾块同 dense 置换 + out 前导块行主序等）+ `IndexSpec::rowcopy_direct` + dispatch 顶部守卫（只允许块拷贝内核）+ `gather.cpp` rowcopy_sve 守卫放宽；cl4d 行索引 0.30-0.42x → **1.45-2.54x**；normalize.cpp 编译警告清零；test_rowcopy_routes 增至 14（直写 2 例含 1t/8t 双档 + 排除 3 + cl3d linearize 臂 1）；verify_e2e 增至 124 例（g5big 大 K 直写 4 例，线程矩阵 46 例） | （本轮） | ✅ |
+| R10 | cl/置换布局行块直写：`rowcopy_direct_ok` 资格判定（源/出尾块同 dense 置换 + out 前导块行主序等）+ `IndexSpec::rowcopy_direct` + dispatch 顶部守卫（只允许块拷贝内核）+ `gather.cpp` rowcopy_sve 守卫放宽；cl4d 行索引从明显慢于 aten 提升到与连续行索引拉平（数值见 RESULTS §2.9.4 / output-layout.md §8）；normalize.cpp 编译警告清零；test_rowcopy_routes 增至 14（直写 2 例含 1t/8t 双档 + 排除 3 + cl3d linearize 臂 1）；verify_e2e 增至 124 例（g5big 大 K 直写 4 例，线程矩阵 46 例） | （本轮） | ✅ |
 
 ## 3. 路由现状（op.cpp `index_impl`）
 
@@ -116,40 +131,115 @@ A==1 || (连续 && A>=4 && f32/f64) → linearize + gather_index（SVE/桶化/sc
 ## 5. 性能结论（pin node 5，interleaved median）
 
 > 口径：比值 = aten ÷ 本算子。**当前值唯一出处 = `benchmarks/RESULTS.md` §2.9**：
-> §5.1 是摘要，§5.2 是逐轮历史（保留用于追溯，**不代表当前状态**）。
+> §5.1 是当前结论；§5.2 指向文末历史附录（保留用于追溯，**不代表当前状态**）。
 
 ### 5.1 当前结论（R10 轮，`330d268`，2026-10-29 下午）
 
-> 数据轮次：R10（2026-10-29 下午）｜**当前**。全矩阵见 RESULTS §2.9.1。
+> 数据轮次：R10（2026-10-29 下午）｜**当前**。数字唯一出处：RESULTS §2.9.1
+> （矩阵）、§2.9.2（cl 专项）、§2.9.4（realpath）。本节只给结论，不复制表格。
 
-| 形态 | 1t | 8t | 38t | 备注 |
-|---|---|---|---|---|
-| S1 / P1 整行 rowcopy C=64 | 2.98x / 2.89x | 3.03x / 3.26x | 4.48x / 4.02x | 收益主体 |
-| rowcopy A=4 / A=16 | 1.53x / 2.07x | 1.14x / 1.81x | 8.65x / 3.00x | 轮间 1.5-2.4x |
-| P3 连续 mask C=16 | 1.77x | 1.23x | 8.62x | T8 单遍压实 |
-| `x[:,i]` | 2.00x | 1.41x | 2.85x | T11 修复后保持（旧 0.18x） |
-| 1D pure f64 / f32 K=2M | 1.34x / 1.07x | 1.60x / 1.58x | 2.73x / 4.74x | 4B 受行放大墙 |
-| cl4d 行索引（8t 专项） | — | **1.45-2.54x** | — | R10 直写（§2.9.2） |
-| M1 权重块（realpath） | 12.7-13.6x | 5.0-5.9x | 1.22-1.47x | 集成收益主体 |
-| shortq A=2-4 K=64-512 | 2.55-4.06x | 2.46-4.16x | 2.67-4.05x | µs 级随箱态 |
-| M2 (20000,8/64/256) | 1.19-3.40x | 1.62-2.61x | 1.06-4.68x | 全档 ≥1.06x |
-
-当前 <1x（RESULTS §2.9.1，31 格逐格可复算）：
-
-- **空 mask N=1M**：2t 0.97x、4-38t 0.42-0.66x——aten 并行早退恒 ~1.44ms，
-  本算子 2.9-3.5ms，**绝对差 1.5-2ms**（§2.8 曾记 ~0.3µs，已更正）；观察项，未修。
-- **1B（int8/uint8）** 4-16t 0.91-0.99x、**complex64** 1-16t 0.92-0.95x——
-  64B 行放大 / 无 SVE 内核，既有硬墙。
-- **非连续 mask** 1-32t 0.79-0.98x——T8 只融合连续 mask（R2 待做）。
-- **S4 f64 `x[perm]`** 8/16/38t 0.77-0.92x——每线程工作量 <100KB。
-- **噪声级单格 4 格**（均 ≥0.88x）：multi/rowcopy 16t、range2048 16t、mask 1D 4t。
-
-32/36t 的 5-8x 多数是 aten 带宽饱和后自身变慢，不作收益宣传；逐 case 微架构
-分析见 `degradation-analysis.md` §5。
+- **收益主体**：整行/整块 RowCopy——S1/P1 行取数、M1 权重块、shortq 短调用；
+  代表值见 RESULTS §2.9.1/§2.9.4。
+- **纯 gather**：8B 小幅正收益；4B 大 K 接近 1x，受 64B 行放大限制。
+- **当前 <1x**：五个可复现家族 + 噪声级单格（另计）——空 mask、非连续 1D mask、
+  int8/uint8、complex64、S4 f64 小工作量；逐项根因见
+  `degradation-analysis.md` §5.8/§5.9。
+- **高线程**：32/36/38t 的高比值多数是 aten 带宽饱和后自身变慢，不作收益宣传；
+  逐 case 微架构分析见 `degradation-analysis.md` §5。
 
 ---
 
-### 5.2 【历史】逐轮结论（2026-10-22 → 2026-10-29 上午）
+### 5.2 历史结论
+
+> 逐轮历史（T11/T12/T13/T14/T15 与前一版全线程档）已移到文末
+> [附录：历史性能结论](#附录历史性能结论)；正文只留当前结论。历史数字不代表当前状态。
+
+---
+
+## 6. 已知边界 / 注意事项
+
+- 覆盖是一次性全局副作用：一个进程只能装一个 Python CPU 覆盖
+  `aten::index.Tensor`；`HPC_INDEX_NO_OVERRIDE=1` 可跳过（基准对拍用）。
+- 索引张量必须在 CPU；直接调用 `hpc_index::*` 时 meta 输入会干净报错（T6 起
+  不再 SIGSEGV；T10 后未开 compile 时为 PT2 "no Meta kernel"，开启后走 fake）。
+  真实 `x[idx]` 的 meta 行为与原生 aten 一致。`aten::index.Tensor_out` 也已覆盖。
+- 扩展链 BiSheng `libomp.so`，`LD_LIBRARY_PATH` 必须含 BiSheng lib，否则
+  import 报 `libomp.so: cannot open`（`README.md` 快速开始）。
+- **`torch.compile` 下默认不生效**：Inductor 把 `aten::index` 内联成自己生成的
+  kernel，dispatcher 覆盖被绕开（实测慢 2.6x）。设 `HPC_INDEX_COMPILE=1`（import
+  前）可 opt-in：注册 fake + 把 lowering 永久设为 fallback + 切换独立 inductor
+  cache 子目录，运行期回到 dispatcher；与 `HPC_INDEX_NO_OVERRIDE=1` 冲突会报错。
+  细节与限制见 `torch-compile.md` §6。
+- 慢形态与"为什么不 fallback"的深度分析见 `fallback-analysis.md`：核心结论是
+  4B（f32/i32）大 K 大值域 pure gather 受 64B cache line 放大 + DRAM 延迟限制
+  （SVE 4B 与标量持平，非指令 MLP；RESULTS §3.7）；**当前 <1x 的五个可复现
+  家族 + 噪声级单格（另计）**见 §5.1（1B、complex、非连续 mask、S4 f64、
+  空 mask；噪声单格另计）；`x[:,i]` 已由 T11 修复；连续 mask 走 T8 单遍压实；
+  fallback 的 Python wrapper 开销 ~45µs/调用对以 RowCopy 小张量为收益主体的
+  本算子是不可接受的全局回归。
+
+## 7. 演进方向（后续再看从这里开始）
+
+> 2026-10-27 收尾时的建议排序（优先级代号用 **R**，避免与场景代号
+> P1/P2/P3 冲突，代号总表见 `glossary.md`）。R1/R2
+> 是最后两个"可修的"劣化家族（其余 <1x 项为硬上限或使用侧问题）；R3 是
+> 验证项，其结果决定后续投入是否值得。各项根因推导见
+> `degradation-analysis.md` §5.9。
+
+| 优先级 | 项目 | 预期收益 | 工作量 | 详见 |
+|---|---|---|---|---|
+| **R1** | 1D 小源跳过 `gather_bucket_pure_raw` 前置值域扫描（并入 gather 单遍） | K=8192/65536 小源 36-38t 0.90-0.95x → ≥1x（省 ~15µs / 总 42-53µs，fork-join 占 30-50%） | 小 | degradation §5.8-C/§5.9.2、§8-1 |
+| **R2** | 非连续 mask 的 T8 stride 扩展（计数/压实按 mask stride 读，去 nonzero 物化） | 0.86-0.98x → 1.2-1.5x（8t 实测可省 ~1ms） | 中 | degradation §5.8-D、§8-2 |
+| **R3** | 端到端 AI4S 模型复测 | 验证 T0-T15 累计收益是否传导到真实负载（决策项） | 中 | performance §3/§4.1 |
+| R4 | f64+i32 下标经 `svunpklo` 加宽走 8B gather | ≈持平 → 小幅正收益 | 小 | degradation §8-3 |
+| R5 | M1 值域桶化（T2 阶段 2）：`gather_rowcopy_raw` 做下标值域分析 | 高重复下标场景再提升 | 中 | optimizations §3.5 |
+| R6 | 4B 大 K 大值域：按 cache line 分桶/排序 | 受 64B 行放大硬上限，只有改访问结构有效 | 大 | degradation §5.9.3 |
+| R7 | `small_multi_index` 扩广播/非连续索引（修正 `all_full_contig` + 复用偏移预计算） | 覆盖面，非性能 | 中 | — |
+| R8 | dtype 白名单扩展（barebones u16/u32/u64、float8、complex32） | 覆盖面（当前抛 NotImplementedError） | 小-中 | semantics §4 |
+| R9 | `HPC_INDEX_COMPILE=1` 真实模型端到端验证 | 决定是否默认开启 | 中 | torch-compile §6 |
+
+**不建议再投入**：1B/complex（64B 行放大是硬上限，aten 同为标量，换指令
+无解）；纯转置 run=1 低线程尾部（8t 0.84x，需独立"固定 col_off SVE
+gather"内核，收益面窄；gap 文档 §19.1）。
+
+**换机器注意**：多索引 raw 的 16t 阈值与 T15 各门值（源>512KB、
+512×nt）均按 920F/node5 实测标定；L2 容量、内存带宽、fork-join 成本
+不同则需重跑聚焦 A/B 再定门值。
+
+## 8. 复现 / 复测命令
+
+```bash
+# 全量测试
+for t in tests/test_smoke.py tests/test_normalize.py tests/test_correctness.py \
+         tests/test_errors.py tests/test_sve.py tests/test_model.py \
+         tests/test_index_out.py tests/test_mask_fused.py tests/test_smallk.py \
+         tests/test_compile_optin.py tests/test_strided_rows.py \
+         tests/test_rowcopy_routes.py tests/test_small_multi.py \
+         tests/test_autograd.py tests/test_output_layout.py; do python $t; done
+
+# true-aten 值级对拍（正确性，非性能）
+python tests/verify_against_aten.py --mode both
+python tests/verify_e2e.py --mode both --threads
+
+# 全线程矩阵（RESULTS §2，pin node 5 静默节点，25 iters interleaved）
+HPC_INDEX_NO_OVERRIDE=1 HPC_AFFINITY=190-227 HPC_THREADS=1,2,4,8,16,32,36,38 \
+  python benchmarks/bench_threads.py
+
+# 真实 workload 对拍（RESULTS §2.5，短调用/真实路径结论首选）
+HPC_AFFINITY=190-227 HPC_THREADS=1,8,16,38 HPC_REPS=3 \
+  python benchmarks/bench_realpath_driver.py
+
+# 回归扫描（pin node 5 静默节点，避免共享箱噪声）
+HPC_INDEX_NO_OVERRIDE=1 HPC_AFFINITY=190-227 HPC_THREADS=1,8,32 \
+  python benchmarks/bench_regression.py
+```
+
+---
+
+## 附录：历史性能结论
+
+> 数据时点：T11-T15 与 2026-10-29 上午；**历史，不代表当前状态**。当前值见
+> RESULTS §2.9，当前结论见 §5.1。保留这些表是为了追溯“当时为什么这么判断”。
 
 #### 【历史·T11】1 线程与 rowcopy
 
@@ -209,9 +299,9 @@ T13 小 K 复测（`bench_smallk_driver.py`）：1D K<=1024 为 1.47-2.38x；
 > 数据轮次：T15（`428bafd`，2026-10-26）｜历史。
 
 **T15 小 K 复测（RESULTS §2.3 新表，2026-10-26）**：2D A=16 K=8192 32-38t
-**1.26-1.30x**（hpc 73-79µs 砍半到 36-37µs；aten 绝对时间随箱态漂移，以
+**1.26-1.30x**（本算子 73-79µs 砍半到 36-37µs；aten 绝对时间随箱态漂移，以
 同轮交替比值为准）、K=65536 32-38t **2.01-2.17x**；K=1024 与 K=1023 全
-线程拉平（38t hpc 17.89 vs 17.86µs，T14 轮 38t 曾 1.46x）；1D K<=1024
+线程拉平（38t 本算子 17.89 vs 17.86µs，T14 轮 38t 曾 1.46x）；1D K<=1024
 1.83-2.36x。剩余 <1x 仅 1D 小源家族：K=8192 36/38t 0.95x、K=65536 32-38t
 0.90-0.92x——T15-C 判明小源（L1 常驻）下 4B SVE gather 微码吞吐反而低于
 标量，保持标量；残留为 `gather_bucket_pure_raw` 前置值域扫描 ~15µs（未来项）。
@@ -289,82 +379,3 @@ cache line 放大（4B 只用 4B/行）+ DRAM 延迟 + 地址翻译限制（实�
 T4 桶化在小值域规避行放大，大值域靠预取/行 gather 等待未来优化。不要据此
 推断"所有场景都 ≥1x"：`x[:,i]`/1B/complex 仍有结构性差距（见
 `degradation-analysis.md`）。
-
-## 6. 已知边界 / 注意事项
-
-- 覆盖是一次性全局副作用：一个进程只能装一个 Python CPU 覆盖
-  `aten::index.Tensor`；`HPC_INDEX_NO_OVERRIDE=1` 可跳过（基准对拍用）。
-- 索引张量必须在 CPU；直接调用 `hpc_index::*` 时 meta 输入会干净报错（T6 起
-  不再 SIGSEGV；T10 后未开 compile 时为 PT2 "no Meta kernel"，开启后走 fake）。
-  真实 `x[idx]` 的 meta 行为与原生 aten 一致。`aten::index.Tensor_out` 也已覆盖。
-- 扩展链 BiSheng `libomp.so`，`LD_LIBRARY_PATH` 必须含 BiSheng lib，否则
-  import 报 `libomp.so: cannot open`（`README.md` 快速开始）。
-- **`torch.compile` 下默认不生效**：Inductor 把 `aten::index` 内联成自己生成的
-  kernel，dispatcher 覆盖被绕开（实测慢 2.6x）。设 `HPC_INDEX_COMPILE=1`（import
-  前）可 opt-in：注册 fake + 把 lowering 永久设为 fallback + 切换独立 inductor
-  cache 子目录，运行期回到 dispatcher；与 `HPC_INDEX_NO_OVERRIDE=1` 冲突会报错。
-  细节与限制见 `torch-compile.md` §6。
-- 慢形态与"为什么不 fallback"的深度分析见 `fallback-analysis.md`：核心结论是
-  4B（f32/i32）大 K 大值域 pure gather 受 64B cache line 放大 + DRAM 延迟限制
-  （SVE 4B 与标量持平，非指令 MLP；RESULTS §3.7）；**当前 <1x 的六个家族**
-  见 §5.1（1B 0.91-0.99x、complex 0.92-0.95x、非连续 mask 0.79-0.98x、S4
-  0.77-0.92x、空 mask 4-38t 0.42-0.66x、噪声单格）；`x[:,i]` 当前 1t 2.00x
-  （T11 前曾 0.4-0.7x）；连续 mask 1t 1.77x、38t 8.62x（后者含 aten 侧退化）；
-  fallback 的 Python wrapper 开销 ~45µs/调用对以 RowCopy 小张量为收益主体的
-  本算子是不可接受的全局回归。
-
-## 7. 演进方向（后续再看从这里开始）
-
-> 2026-10-27 收尾时的建议排序（优先级代号用 **R**，避免与场景代号
-> P1/P2/P3 冲突，代号总表见 `glossary.md`）。R1/R2
-> 是最后两个"可修的"劣化家族（其余 <1x 项为硬上限或使用侧问题）；R3 是
-> 验证项，其结果决定后续投入是否值得。各项根因推导见
-> `degradation-analysis.md` §5.9。
-
-| 优先级 | 项目 | 预期收益 | 工作量 | 详见 |
-|---|---|---|---|---|
-| **R1** | 1D 小源跳过 `gather_bucket_pure_raw` 前置值域扫描（并入 gather 单遍） | K=8192/65536 小源 36-38t 0.90-0.95x → ≥1x（省 ~15µs / 总 42-53µs，fork-join 占 30-50%） | 小 | degradation §5.8-C/§5.9.2、§8-1 |
-| **R2** | 非连续 mask 的 T8 stride 扩展（计数/压实按 mask stride 读，去 nonzero 物化） | 0.86-0.98x → 1.2-1.5x（8t 实测可省 ~1ms） | 中 | degradation §5.8-D、§8-2 |
-| **R3** | 端到端 AI4S 模型复测 | 验证 T0-T15 累计收益是否传导到真实负载（决策项） | 中 | performance §3/§4.1 |
-| R4 | f64+i32 下标经 `svunpklo` 加宽走 8B gather | ≈持平 → 小幅正收益 | 小 | degradation §8-3 |
-| R5 | M1 值域桶化（T2 阶段 2）：`gather_rowcopy_raw` 做下标值域分析 | 高重复下标场景再提升 | 中 | optimizations §3.5 |
-| R6 | 4B 大 K 大值域：按 cache line 分桶/排序 | 受 64B 行放大硬上限，只有改访问结构有效 | 大 | degradation §5.9.3 |
-| R7 | `small_multi_index` 扩广播/非连续索引（修正 `all_full_contig` + 复用偏移预计算） | 覆盖面，非性能 | 中 | — |
-| R8 | dtype 白名单扩展（barebones u16/u32/u64、float8、complex32） | 覆盖面（当前抛 NotImplementedError） | 小-中 | semantics §4 |
-| R9 | `HPC_INDEX_COMPILE=1` 真实模型端到端验证 | 决定是否默认开启 | 中 | torch-compile §6 |
-
-**不建议再投入**：1B/complex（64B 行放大是硬上限，aten 同为标量，换指令
-无解）；纯转置 run=1 低线程尾部（8t 0.84x，需独立"固定 col_off SVE
-gather"内核，收益面窄；gap 文档 §19.1）。
-
-**换机器注意**：多索引 raw 的 16t 阈值与 T15 各门值（源>512KB、
-512×nt）均按 920F/node5 实测标定；L2 容量、内存带宽、fork-join 成本
-不同则需重跑聚焦 A/B 再定门值。
-
-## 8. 复现 / 复测命令
-
-```bash
-# 全量测试
-for t in tests/test_smoke.py tests/test_normalize.py tests/test_correctness.py \
-         tests/test_errors.py tests/test_sve.py tests/test_model.py \
-         tests/test_index_out.py tests/test_mask_fused.py tests/test_smallk.py \
-         tests/test_compile_optin.py tests/test_strided_rows.py \
-         tests/test_rowcopy_routes.py tests/test_small_multi.py \
-         tests/test_autograd.py tests/test_output_layout.py; do python $t; done
-
-# true-aten 值级对拍（正确性，非性能）
-python tests/verify_against_aten.py --mode both
-python tests/verify_e2e.py --mode both --threads
-
-# 全线程矩阵（RESULTS §2，pin node 5 静默节点，25 iters interleaved）
-HPC_INDEX_NO_OVERRIDE=1 HPC_AFFINITY=190-227 HPC_THREADS=1,2,4,8,16,32,36,38 \
-  python benchmarks/bench_threads.py
-
-# 真实 workload 对拍（RESULTS §2.5，短调用/真实路径结论首选）
-HPC_AFFINITY=190-227 HPC_THREADS=1,8,16,38 HPC_REPS=3 \
-  python benchmarks/bench_realpath_driver.py
-
-# 回归扫描（pin node 5 静默节点，避免共享箱噪声）
-HPC_INDEX_NO_OVERRIDE=1 HPC_AFFINITY=190-227 HPC_THREADS=1,8,32 \
-  python benchmarks/bench_regression.py
-```
