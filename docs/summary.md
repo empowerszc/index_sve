@@ -97,14 +97,14 @@ x[张量下标]（归一化后）
 
 六类手段（按收益排序）：
 
-| # | 手段 | 吃到的形态 | 效果来源 |
-|---|---|---|---|
-| 1 | **RowCopy 整行拷贝**（SVE `ld1/st1`） | A≥4 连续行：`h[src]`、`features[inp_idx]` | 一条 64B line 里有用字节接近 100%，行放大从 16x 降到 ≈1x → 1t 4.4x |
-| 2 | **raw 单遍（跳过 linearize）** | 单索引行取数、权重块 M1 | 省一遍偏移写 + 一遍读 + 中间分配 → M1 1t 13x |
-| 3 | **小值域桶化** | 下标值域 ≤2048 的查表（如 M3 `keys[order]`） | 8MB 随机流量变成 KB 级查表 |
-| 4 | **融合单遍 / 小 K 快路径** | mask 压实、K<1024 直接读原始下标 | 去掉两遍模型的固定开销 |
-| 5 | **大源 4B 直连 SVE**（T15-C） | f32/i32 源 >512KB、多线程 | gather 每迭代 8 路在飞请求摊掉 DRAM 延迟（每元素 ~19ns→~10ns） |
-| 6 | **并行粒度与线程同步** | 所有并行路径 | 自适应 grain；`torch.set_num_threads` 对扩展真正生效 |
+| # | 手段 | 主要内核（函数名） | 吃到的形态 | 效果来源 |
+|---|---|---|---|---|
+| 1 | **RowCopy 整行拷贝**（SVE `ld1/st1`） | `rowcopy_sve`（两遍后）/ `rowcopy_raw_single`（raw）/ `rowcopy_fused_sve`（多索引），底座 `copy_contig_sve` | A≥4 连续行：`h[src]`、`features[inp_idx]` | 一条 64B line 里有用字节接近 100%，行放大从 16x 降到 ≈1x → 1t 4.4x |
+| 2 | **raw 单遍（跳过 linearize）** | 入口 `gather_rowcopy_raw` → `rowcopy_raw_single`；`gather_single_1d`；`gather_bucket_pure_raw` | 单索引行取数、权重块 M1 | 省一遍偏移写 + 一遍读 + 中间分配 → M1 1t 13x |
+| 3 | **小值域桶化** | `bucket_gather_pure`（两遍后）/ `bucket_gather_pure_raw`（raw），入口 `gather_bucket_pure_raw` | 下标值域 ≤2048 的查表（如 M3 `keys[order]`） | 8MB 随机流量变成 KB 级查表 |
+| 4 | **融合单遍 / 小 K 快路径** | `gather_mask`（T8 压实）、`gather_fused`（T3 融合）、`gather_direct` 与 `small_single_index` / `small_multi_index`（免 normalize） | mask 压实、K<1024 直接读原始下标 | 去掉两遍模型的固定开销 |
+| 5 | **大源 4B 直连 SVE**（T15-C） | `gather_single_1d_sve` → `pure_gather_sve_4b_i64idx` | f32/i32 源 >512KB、多线程 | gather 每迭代 8 路在飞请求摊掉 DRAM 延迟（每元素 ~19ns→~10ns） |
+| 6 | **并行粒度与线程同步** | `adaptive_grain`（grain.h）、`sync_omp_threads`（op.cpp） | 所有并行路径 | 自适应 grain；`torch.set_num_threads` 对扩展真正生效 |
 
 T0-T15 = 16 轮"发现劣化 → 定位根因 → 修路由/内核"的迭代，每轮有记录
 （`optimizations.md`）；历史劣化家族的修复台账见 §8。
