@@ -35,7 +35,7 @@
 - [6. 已知边界 / 注意事项](#6-已知边界--注意事项)
 - [7. 演进方向](#7-演进方向后续再看从这里开始)
 - [8. 复现 / 复测命令](#8-复现--复测命令)
-- [附录：历史性能结论](#附录历史性能结论)
+- [附录：历史性能结论（原 §5.2）](#附录历史性能结论原-52)
 
 ## 1. 项目一句话
 
@@ -72,7 +72,7 @@ CPU 键覆盖，autograd 不受影响）。构建/运行契约见 `README.md` �
 | 修复 | pybind 调试出口 `_hpc_index.index` typed 句柄补 `const&`（自初始 commit 即抛签名错，零调用方未暴露；测试扩三直调入口断言） | 0397eb5 | ✅ |
 | 基准 | AI4S workload 全线程档复测（31 场景 + realpath 两进程对拍 × 1/2/4/8/16/32/36/38 全 8 档，RESULTS §2.8；summary §6.2 全档表；新观察项 mask empty/complex64 待聚焦复测） | 557cdbf | ✅ |
 | 修复 | 输出内存布局与 aten 逐维一致：`aten_out_strides` 复刻 TensorIterator 置换恢复（strides/should_swap 平局规则），`empty_strided` 分配 + 非连续 tmp→`copy_`；新增 `test_output_layout.py`（25 例，期望值为无覆盖进程实测钉入）+ `verify_e2e.py`（E2E 两进程差分 120 例，值+shape+dtype+stride 比对 + 线程矩阵）；专项文档 output-layout.md | 5eaa3b1 | ✅ |
-| R10 | cl/置换布局行块直写：`rowcopy_direct_ok` 资格判定（源/出尾块同 dense 置换 + out 前导块行主序等）+ `IndexSpec::rowcopy_direct` + dispatch 顶部守卫（只允许块拷贝内核）+ `gather.cpp` rowcopy_sve 守卫放宽；cl4d 行索引从明显慢于 aten 提升到与连续行索引拉平（数值见 RESULTS §2.9.4 / output-layout.md §8）；normalize.cpp 编译警告清零；test_rowcopy_routes 增至 14（直写 2 例含 1t/8t 双档 + 排除 3 + cl3d linearize 臂 1）；verify_e2e 增至 124 例（g5big 大 K 直写 4 例，线程矩阵 46 例） | （本轮） | ✅ |
+| R10 | cl/置换布局行块直写：`rowcopy_direct_ok` 资格判定（源/出尾块同 dense 置换 + out 前导块行主序等）+ `IndexSpec::rowcopy_direct` + dispatch 顶部守卫（只允许块拷贝内核）+ `gather.cpp` rowcopy_sve 守卫放宽；cl4d 行索引从明显慢于 aten 提升到与连续行索引拉平（数值见 RESULTS §2.9.2 / output-layout.md §8）；normalize.cpp 编译警告清零；test_rowcopy_routes 增至 14（直写 2 例含 1t/8t 双档 + 排除 3 + cl3d linearize 臂 1）；verify_e2e 增至 124 例（g5big 大 K 直写 4 例，线程矩阵 46 例） | （本轮） | ✅ |
 
 ## 3. 路由现状（op.cpp `index_impl`）
 
@@ -152,7 +152,7 @@ A==1 || (连续 && A>=4 && f32/f64) → linearize + gather_index（SVE/桶化/sc
 ### 5.2 历史结论
 
 > 逐轮历史（T11/T12/T13/T14/T15 与前一版全线程档）已移到文末
-> [附录：历史性能结论](#附录历史性能结论)；正文只留当前结论。历史数字不代表当前状态。
+> [附录：历史性能结论（原 §5.2）](#附录历史性能结论原-52)；正文只留当前结论。历史数字不代表当前状态。
 
 ---
 
@@ -190,7 +190,7 @@ A==1 || (连续 && A>=4 && f32/f64) → linearize + gather_index（SVE/桶化/sc
 |---|---|---|---|---|
 | **R1** | 1D 小源跳过 `gather_bucket_pure_raw` 前置值域扫描（并入 gather 单遍） | K=8192/65536 小源 36-38t 0.90-0.95x → ≥1x（省 ~15µs / 总 42-53µs，fork-join 占 30-50%） | 小 | degradation §5.8-C/§5.9.2、§8-1 |
 | **R2** | 非连续 mask 的 T8 stride 扩展（计数/压实按 mask stride 读，去 nonzero 物化） | 0.86-0.98x → 1.2-1.5x（8t 实测可省 ~1ms） | 中 | degradation §5.8-D、§8-2 |
-| **R3** | 端到端 AI4S 模型复测 | 验证 T0-T15 累计收益是否传导到真实负载（决策项） | 中 | performance §3/§4.1 |
+| **R3** | 端到端 AI4S 模型复测 | 验证 T0-T15 累计收益是否传导到真实负载（决策项） | 中 | performance §3 / 附录 A.3（原 §4.1） |
 | R4 | f64+i32 下标经 `svunpklo` 加宽走 8B gather | ≈持平 → 小幅正收益 | 小 | degradation §8-3 |
 | R5 | M1 值域桶化（T2 阶段 2）：`gather_rowcopy_raw` 做下标值域分析 | 高重复下标场景再提升 | 中 | optimizations §3.5 |
 | R6 | 4B 大 K 大值域：按 cache line 分桶/排序 | 受 64B 行放大硬上限，只有改访问结构有效 | 大 | degradation §5.9.3 |
@@ -236,7 +236,7 @@ HPC_INDEX_NO_OVERRIDE=1 HPC_AFFINITY=190-227 HPC_THREADS=1,8,32 \
 
 ---
 
-## 附录：历史性能结论
+## 附录：历史性能结论（原 §5.2）
 
 > 数据时点：T11-T15 与 2026-10-29 上午；**历史，不代表当前状态**。当前值见
 > RESULTS §2.9，当前结论见 §5.1。保留这些表是为了追溯“当时为什么这么判断”。

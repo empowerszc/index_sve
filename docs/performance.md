@@ -288,7 +288,7 @@ RowCopy 附加数据（node 4 全矩阵定点，历史）：`x[:,idx]` B=256 K=1
 
 真实 AI4S 模型端到端无提升甚至劣化后，按优化任务文档实现 T0-T4（自适应粒度、
 rowcopy 阈值 A>=4、M1 skip-linearize、T3 融合单遍、T4 小值域桶化），并用
-`benchmarks/bench_ai4s.py`（M1-M6 workload 形态，§3.1）定点复测。净效果
+`benchmarks/bench_ai4s.py`（M1-M6 workload 形态，附录 A.3／原 §4.1）定点复测。净效果
 （注意：M1-M4 的 8-32t 列来自 T11 前，受双 ICV 影响不可信；1t 数字有效）：
 
 - **M1（最热模式，14 模型累计 27270ms）**：i64 E=2k-20k 1 线程 **8-10x**、

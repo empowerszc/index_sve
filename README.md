@@ -183,7 +183,7 @@ cl 家族专项）。下表只放代表值；P2/P3/S4、`x[:,i]`、rowcopy A=4/A
 - **仍 <1x：五个可复现家族 + 噪声级单格（另计）**（RESULTS §2.9.1）：空 mask
   4-38t 0.42-0.66x（aten 并行早退，绝对差 1.5-2ms）、非连续 1D mask 0.79-0.98x、
   int8/uint8 4-16t 0.91-0.99x、complex 1-16t 0.92-0.95x、S4 f64 0.77-0.92x；
-  另有噪声级单格与 1D 小源高线程 0.90-0.95x。逐项根因见
+  另有噪声级单格与 1D 小源高线程 0.90-0.95x（T15 轮测）。逐项根因见
   `docs/degradation-analysis.md` §5.8/§5.9 与 `docs/fallback-analysis.md` 文首。
 - **4B 大 K 随机 gather 的硬限制**：64B cache line 放大 + DRAM 延迟；同构建 A/B
   实测 SVE 4B 与标量持平（8MB 1.85 vs 1.86 ms、256MB 7.46 vs 7.45 ms），
