@@ -7,8 +7,10 @@
 场景/负载代号（S1/P1、M1-M6、A1/shortq…）与形状记号（A/B/K/C/E）的
 白话含义见 `docs/glossary.md`（术语与代号速查）。
 
-- 平台：鲲鹏 920F（aarch64，SVE2，VL=512-bit），608 核 / 32 NUMA，
-  **共享机器（5+ 用户，噪声大）**。
+- 平台：鲲鹏 920F（aarch64，SVE2，VL=512-bit），608 核 / 32 NUMA（每 node 19 核
+  / 38 线程 / 64GB），**共享机器（噪声大）**。实测（2026-10-30，idle）：node 5
+  读 **~168GB/s**、拷贝 ~145GB/s、DRAM 依赖延迟 97-138ns、单核随机行吞吐
+  5-6GB/s——详见 `docs/degradation-analysis.md` §6.4。
 - 构建：BiSheng clang 19.1.7，`-march=armv8-a+sve2 -msve-vector-bits=512 -O3 -fopenmp`。
 - 固定配置：`PREFETCH_DIST=16`，`HPC_INDEX_NT` 默认关闭（opt-in），`-fopenmp` 开启。
 

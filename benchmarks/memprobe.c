@@ -25,33 +25,58 @@ static void latency(size_t size, uint64_t acc){
     free(p);
 }
 
-static void bandwidth(size_t size,int nt,int wr){
+// 单遍计时会把 OpenMP 建队 + TLB 冷启动算进去：256MB/8t 只有 ~3ms，误差可达 30%。
+// REPS>1 时在同一个 parallel 区内重复扫描，取最好的一遍。
+static void bandwidth(size_t size,int nt,int wr,int reps){
     size_t n=size/8; uint64_t *a=aligned_alloc(64,size); uint64_t *b=wr?aligned_alloc(64,size):NULL;
     for(size_t i=0;i<n;i++) a[i]=i*3+1;
     if(wr) memset(b,0,size);
-    double t0=now();
+    double t=0, best=0; double bytes=(double)size*(wr?2:1);
+    if(reps<1) reps=1;
     #pragma omp parallel num_threads(nt)
     {
         size_t lo=(size_t)((double)n*omp_get_thread_num()/nt), hi=(size_t)((double)n*(omp_get_thread_num()+1)/nt);
-        if(!wr){uint64_t s0=0,s1=0,s2=0,s3=0;
-            for(size_t i=lo;i+3<hi;i+=4){s0+=a[i];s1+=a[i+1];s2+=a[i+2];s3+=a[i+3];}
-            if(omp_get_thread_num()==0) a[0]+=s0+s1+s2+s3;
-        }else{
-            for(size_t i=lo;i<hi;i++) b[i]=a[i]*3+1;
-            if(omp_get_thread_num()==0) b[0]+=1;
+        for(int r=0;r<reps;r++){
+            #pragma omp barrier
+            #pragma omp single
+            { t=now(); }
+            #pragma omp barrier
+            if(!wr){uint64_t s0=0,s1=0,s2=0,s3=0;
+                for(size_t i=lo;i+3<hi;i+=4){s0+=a[i];s1+=a[i+1];s2+=a[i+2];s3+=a[i+3];}
+                if(omp_get_thread_num()==0) a[0]+=s0+s1+s2+s3;
+            }else{
+                for(size_t i=lo;i<hi;i++) b[i]=a[i]*3+1;
+                if(omp_get_thread_num()==0) b[0]+=1;
+            }
+            #pragma omp barrier
+            #pragma omp single
+            {
+                double gb=bytes/(now()-t)/1e9;
+                if(gb>best) best=gb;
+                if(reps>1) printf("bandwidth size=%zuMB threads=%d op=%s rep=%d GBps=%.2f\n",
+                                  size/1024/1024,nt,wr?"copy":"read",r,gb);
+            }
         }
     }
-    double t=now()-t0;
-    double bytes=(double)size*(wr?2:1);
-    printf("bandwidth size=%zuMB threads=%d op=%s GBps=%.2f\n",size/1024/1024,nt,wr?"copy":"read",bytes/t/1e9);
+    printf("bandwidth size=%zuMB threads=%d op=%s reps=%d GBps=%.2f\n",
+           size/1024/1024,nt,wr?"copy":"read",reps,best);
     if(wr && b[0]==0xdeadbeef) printf("x");
     free(a); free(b);
+}
+
+static uint64_t splitmix(uint64_t *s){
+    uint64_t z=(*s+=0x9E3779B97F4A7C15ULL);
+    z=(z^(z>>30))*0xBF58476D1CE4E5B9ULL;z=(z^(z>>27))*0x94D049BB133111EBULL;return z^(z>>31);
 }
 
 static void gather(size_t size,uint64_t acc,int mode){
     size_t n=size/4; float *src=aligned_alloc(64,size);
     for(size_t i=0;i<n;i++) src[i]=(float)(i&1023);
-    uint64_t m=n-1; uint64_t s0=1,s1=2,s2=3,s3=4,s4=5,s5=6,s6=7,s7=8;
+    // 种子必须用 splitmix 拉开：直接取 1..8 会让 8 路 xorshift 序列相关，
+    // 8 条"独立流"落到同样的行上，测出来的随机 gather 偏快（曾差 30%+）。
+    uint64_t g=0x243F6A8885A308D3ULL+size+mode, s0=splitmix(&g),s1=splitmix(&g),s2=splitmix(&g),s3=splitmix(&g),
+             s4=splitmix(&g),s5=splitmix(&g),s6=splitmix(&g),s7=splitmix(&g);
+    uint64_t m=n-1;
     volatile float sink=0; double t0=0;
     if(mode==0){ // sequential
         t0=now();
@@ -74,9 +99,9 @@ static void gather(size_t size,uint64_t acc,int mode){
 }
 
 int main(int argc,char**argv){
-    if(argc<2){fprintf(stderr,"usage: %s latency SIZE_KB ACC | bandwidth SIZE_MB THREADS RD|CP | gather SIZE_MB ACC seq|s16|rand\n",argv[0]);return 1;}
+    if(argc<2){fprintf(stderr,"usage: %s latency SIZE_KB ACC | bandwidth SIZE_MB THREADS RD|CP [REPS] | gather SIZE_MB ACC seq|s16|rand\n",argv[0]);return 1;}
     if(!strcmp(argv[1],"latency")) latency(atol(argv[2])*1024ULL,strtoull(argv[3],0,10));
-    else if(!strcmp(argv[1],"bandwidth")) bandwidth(atol(argv[2])*1024ULL*1024,atoi(argv[3]),!strcmp(argv[4],"cp"));
+    else if(!strcmp(argv[1],"bandwidth")) bandwidth(atol(argv[2])*1024ULL*1024,atoi(argv[3]),!strcmp(argv[4],"cp"),argc>5?atoi(argv[5]):1);
     else if(!strcmp(argv[1],"gather")){
         int m=!strcmp(argv[4],"seq")?0:!strcmp(argv[4],"s16")?1:2;
         gather(atol(argv[2])*1024ULL*1024,strtoull(argv[3],0,10),m);

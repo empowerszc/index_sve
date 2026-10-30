@@ -24,7 +24,8 @@
 | `bench_t2.py` | 优化轮专项 | M1 权重块（A=1024/2048/4096/65536，含 ≤16KB/行真实尺寸）线程扫描 | 调整大块 rowcopy / raw 路径时用 |
 | `degrade_probe.py` | 诊断探针 | 绝对带宽、小工作量强扩展、mask 分解等退化定位数据 | 分析“为什么慢”、写 degradation-analysis 时用 |
 | `perf_one.py` | perf 驱动 | 单 case 循环执行，供 `perf stat/record` 采样 | 需要微架构计数（cache/TLB/指令数）时用 |
-| `memprobe.c` | 硬件探针 | 纯 C 的延迟/带宽/随机 gather 微基准，与 torch 无关 | 测内存系统上限、排除算子本身因素 |
+| `memprobe.c` | 硬件探针 | 纯 C 的延迟/带宽/随机 gather 微基准，与 torch 无关；带宽要带 `REPS`（单遍会把冷建队算进去） | 测内存系统上限、排除算子本身因素 |
+| `bench_hw_traffic.py` | 内核线流量 | 真实 `aten::index` 1D gather 的绝对带宽，换算成 64B 行流量，用来和 `memprobe` 的上限对照 | 判断"是否撞到带宽墙" |
 | `RESULTS.md` | 结果报告 | 正式性能结果与历史轮次数据，不是脚本 | 查数据、写结论、对齐口径 |
 
 ## 2. 该用哪个？
@@ -144,7 +145,8 @@ MODE=aten HPC_INDEX_NO_OVERRIDE=1 HPC_AFFINITY=190-227 \
 # 10. 内存系统探针
 gcc -O3 -march=native -fopenmp benchmarks/memprobe.c -o /tmp/memprobe -lm
 numactl --membind=5 --physcpubind=190 /tmp/memprobe latency 8192 3000000
-numactl --membind=5 --physcpubind=190-227 /tmp/memprobe bandwidth 256 8 rd
+# REPS 必填：单遍计时包含冷 OpenMP 建队（8t ~1.8ms），会把带宽读数压掉 ~40%
+numactl --membind=5 --physcpubind=190-227 /tmp/memprobe bandwidth 2048 16 rd 3
 numactl --membind=5 --physcpubind=190-227 /tmp/memprobe gather 256 4000000 rand
 ```
 
