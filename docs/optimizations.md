@@ -695,10 +695,12 @@ smallk 官方复测见 RESULTS §2.3（T15 构建）。
 - `test_rowcopy_routes` **8/8**（新增 4 个路由测试：`medium_a_raw_route`、
   `medium_a_large_k_keeps_linearize`、`f32_i64_1d_route`、
   `small_single_thread_scaled_threshold`，全部走计数器断言）；13 个测试文件
-  **127/127**（T15 时点；补测 autograd 后全套件 14 文件 **143/143**）；
+  **127/127**（T15 时点；补测 autograd 后 14 文件 **143/143**，R10 起 15 套件
+  **174/174**）；
   两进程 true-aten 对拍 **44/44**。
 - realpath 全形态路由不变（A1 K=1、M1 A=1024/2048/4096、M2 B·K=10 万均不在
-  新路由范围），§2.5 T14 数据继续有效。
+  新路由范围）——该判断在 R10 轮仍成立，当前值见 RESULTS §2.9.4（§2.5 是
+  T14 的历史数字）。
 
 ## 20. 之后的轮次（不在本文范围）
 

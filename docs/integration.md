@@ -157,8 +157,8 @@ Warning: Overriding a previously registered kernel for the same operator and the
 
 - **慢场景（当前）**：只有六个家族 <1x——空 mask 4-38t 0.42-0.66x（aten 并行
   早退，绝对差 1.5-2ms）、1B 0.91-0.99x、complex 0.92-0.95x、非连续 mask
-  0.79-0.98x、S4 0.77-0.92x、噪声单格；逐格清单见 RESULTS §2.9.1。其余
-  31 场景 × 8 档全部 ≥1.00x。4B 大 K 随机 gather 的绝对带宽仍受 64B 行放大 +
+  0.79-0.98x、S4 0.77-0.92x、噪声单格；逐格清单见 RESULTS §2.9.1。31 场景 ×
+  8 档共 248 格，其余 217 格 ≥1.00x。4B 大 K 随机 gather 的绝对带宽仍受 64B 行放大 +
   DRAM 延迟限制（§8.4），这是物理上限而非实现差距。
   RowCopy/8B PureGather 是可靠收益（1t S1/P1 2.89-2.98x、8t 3.0-3.3x）；
   `x[:,i]` 当前 1t 2.00x（T11 前 0.4-0.7x，A==1 紧凑循环修复）。

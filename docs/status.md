@@ -55,8 +55,8 @@ CPU 键覆盖，autograd 不受影响）。构建/运行契约见 `README.md` �
 | T15 | 中等行宽 raw 放行 `A<=64 && B*K<=65536`（2D A=16 K=8192 32/36t 0.73/0.76x）；f32/i32+i64 下标大源（>512KB）直连单遍 SVE `pure_gather_sve_4b_i64idx`（uzp1 收窄复用 u32index）；`small_single` 并行阈值 `max(16384, 512×nt)`（38t K=1024 边界） | 428bafd | ✅ |
 | 补测 | autograd 专项回归 `test_autograd.py`（16 项：梯度 vs `index_add_` 独立参考、负索引/重复/mask/多索引/非连续/gradcheck、路由计数器、`torch.ops` 直调无 autograd 公式） | 24cd8b3 | ✅ |
 | 修复 | pybind 调试出口 `_hpc_index.index` typed 句柄补 `const&`（自初始 commit 即抛签名错，零调用方未暴露；测试扩三直调入口断言） | 0397eb5 | ✅ |
-| 基准 | AI4S workload 全线程档复测（31 场景 + realpath 两进程对拍 × 1/2/4/8/16/32/36/38 全 8 档，RESULTS §2.8；summary §6.2 全档表；新观察项 mask empty/complex64 待聚焦复测） | 557cdbf | ✅ |
-| 修复 | 输出内存布局与 aten 逐维一致：`aten_out_strides` 复刻 TensorIterator 置换恢复（strides/should_swap 平局规则），`empty_strided` 分配 + 非连续 tmp→`copy_`；新增 `test_output_layout.py`（25 例，期望值为无覆盖进程实测钉入）+ `verify_e2e.py`（E2E 两进程差分 120 例，值+shape+dtype+stride 比对 + 线程矩阵）；专项文档 output-layout.md | 5eaa3b1 | ✅ |
+| 基准 | AI4S workload 全线程档复测（31 场景 + realpath 两进程对拍 × 1/2/4/8/16/32/36/38 全 8 档，RESULTS §2.8；summary §6.2 全档表；mask empty/complex64 已在 §2.9.1 复测） | 557cdbf | ✅ |
+| 修复 | 输出内存布局与 aten 逐维一致：`aten_out_strides` 复刻 TensorIterator 置换恢复（strides/should_swap 平局规则），`empty_strided` 分配 + 非连续 tmp→`copy_`；新增 `test_output_layout.py`（25 例，期望值为无覆盖进程实测钉入）+ `verify_e2e.py`（E2E 两进程差分 120 例，值+shape+dtype+stride 比对 + 线程矩阵；R10 后增至 124 例）；专项文档 output-layout.md | 5eaa3b1 | ✅ |
 | R10 | cl/置换布局行块直写：`rowcopy_direct_ok` 资格判定（源/出尾块同 dense 置换 + out 前导块行主序等）+ `IndexSpec::rowcopy_direct` + dispatch 顶部守卫（只允许块拷贝内核）+ `gather.cpp` rowcopy_sve 守卫放宽；cl4d 行索引 0.30-0.42x → **1.45-2.54x**；normalize.cpp 编译警告清零；test_rowcopy_routes 增至 14（直写 2 例含 1t/8t 双档 + 排除 3 + cl3d linearize 臂 1）；verify_e2e 增至 124 例（g5big 大 K 直写 4 例，线程矩阵 46 例） | （本轮） | ✅ |
 
 ## 3. 路由现状（op.cpp `index_impl`）
@@ -78,6 +78,11 @@ K < 1024                          → gather_direct（无线性化；A==1 预校
 1 线程 && 单索引 && A>1           → A>=4 连续 f32/f64 ? raw rowcopy : gather_fused
 A==1 || (连续 && A>=4 && f32/f64) → linearize + gather_index（SVE/桶化/scalar）
 其余（A<4 / 非连续小块 / run=1）  → gather_fused
+
+normalize 之后、按 out 布局分岔（2026-10-29 起）：
+out 连续                          → index_into 直写
+!连续 out && rowcopy_direct_ok     → 行块直写（R10；dispatch 顶部守卫只允许块拷贝内核）
+!连续 out 其余                     → tmp 行主序 + copy_
 ```
 
 > 线程数：T11 起入口 `sync_omp_threads()` 把 libomp team 同步为
@@ -125,10 +130,10 @@ A==1 || (连续 && A>=4 && f32/f64) → linearize + gather_index（SVE/桶化/sc
 | 形态 | 1t | 8t | 38t | 备注 |
 |---|---|---|---|---|
 | S1 / P1 整行 rowcopy C=64 | 2.98x / 2.89x | 3.03x / 3.26x | 4.48x / 4.02x | 收益主体 |
-| rowcopy A=4 / A=16 | 1.53x / 2.07x | 1.14x / 1.81x | 8.65x / 3.00x | 轮间 1.5-2.4x |
+| rowcopy A=4 / A=16 | 1.53x / 2.07x | 1.14x / 1.81x | 8.65x / 3.00x | 轮间 1.5-2.4x（T11 轻载轮曾 3.6x） |
 | P3 连续 mask C=16 | 1.77x | 1.23x | 8.62x | T8 单遍压实 |
 | `x[:,i]` | 2.00x | 1.41x | 2.85x | T11 修复后保持（旧 0.18x） |
-| 1D pure f64 / f32 K=2M | 1.34x / 1.07x | 1.60x / 1.58x | 2.73x / 4.74x | 4B 受行放大墙 |
+| 1D f64 / f32 K=2M | 1.34x / 1.07x | 1.60x / 1.58x | 2.73x / 4.74x | 4B 受行放大墙 |
 | cl4d 行索引（8t 专项） | — | **1.45-2.54x** | — | R10 直写（§2.9.2） |
 | M1 权重块（realpath） | 12.7-13.6x | 5.0-5.9x | 1.22-1.47x | 集成收益主体 |
 | shortq A=2-4 K=64-512 | 2.55-4.06x | 2.46-4.16x | 2.67-4.05x | µs 级随箱态 |
@@ -185,7 +190,7 @@ A==1 || (连续 && A>=4 && f32/f64) → linearize + gather_index（SVE/桶化/sc
 纯转置 run=1（tail 无连续后缀）保持 `gather_fused`，8t 仍 0.84x；块拷贝无法
 改善，原因见 `docs/archive/index_sve_vs_fastindex_gap_20261023.md` §19.1。
 
-#### 【历史·T13】多索引小 K 与小 K 复测
+#### 【历史·T13·a】多索引小 K 与小 K 复测
 
 > 数据轮次：T13（`a91d566`，2026-10-23）｜历史。
 
@@ -246,11 +251,11 @@ fork-join 病理（我们串行免疫），对应 22-26x 格子不作收益宣�
 4.1-5.5x、38t 1.17-1.40x（带宽饱和）；M2 全形态 ≥1.09x；µs 级（M5/A1/
 shortq）本轮轻载 1.65-3.4x（§2.5 重载轮 2.6-4.3x——随箱态漂移，跨轮只比
 形态）；§2.6 的 32-38t 高值（3.2-6.0x）未复现，与 §2.5 及本轮一致，判共享
-箱噪声。新观察项待聚焦复测：mask empty 4-38t 0.51-0.73x（绝对差 ~0.3µs；
-**§2.9.1 已更正为 1.5-2ms**）、
-complex64 4-16t 1.68-1.71x（T13 轮 ~1.0x）。
+箱噪声。当时的两个观察项在 §2.9.1 已复测：mask empty 4-38t 0.51-0.73x
+（当时记的绝对差 ~0.3µs 有误，实测 1.5-2ms）、complex64 4-16t 1.68-1.71x
+（T13 轮 ~1.0x，R10 复测 0.92-0.95x）。
 
-#### 【历史·T13】全量复测与残余 <1x 分类
+#### 【历史·T13·b】全量复测与残余 <1x 分类
 
 > 数据轮次：T13（2026-10-23）｜历史；当前 <1x 清单见 §5.1。
 
@@ -360,7 +365,7 @@ python tests/verify_e2e.py --mode both --threads
 HPC_INDEX_NO_OVERRIDE=1 HPC_AFFINITY=190-227 HPC_THREADS=1,2,4,8,16,32,36,38 \
   python benchmarks/bench_threads.py
 
-# 真实 workload 对拍（RESULTS §2.5，短调用/真实路径结论首选）
+# 真实 workload 对拍（当前值 RESULTS §2.9.4；§2.5 为 T14 历史轮）
 HPC_AFFINITY=190-227 HPC_THREADS=1,8,16,38 HPC_REPS=3 \
   python benchmarks/bench_realpath_driver.py
 

@@ -84,7 +84,7 @@ index_sve/
 │   ├── linearize.{h,cpp} # 线性化 + 越界检查，int32 保持（直接写 int32）
 │   ├── grain.h           # 自适应并行粒度（T0）
 │   ├── gather.{h,cpp}    # SVE gather/rowcopy/scalar + gather_direct + M1 raw / T3 fused / T4 桶化
-├── tests/                # 15 套件 174 测试（smoke/normalize/correctness/errors/sve/model/index_out/mask/smallk/compile/strided/routes/smallmulti/autograd/layout/output-layout）
+├── tests/                # 15 套件 174 测试（smoke/normalize/correctness/errors/sve/model/index_out/mask_fused/smallk/compile_optin/strided_rows/rowcopy_routes/small_multi/autograd/output_layout）
 ├── benchmarks/           # bench_index.py（原始矩阵）、bench_pinned.py/bench_gate.py（定点核复测）
 │   │                     # bench_t1.py/bench_t2.py/bench_ai4s.py（优化轮专项）、bench_regression.py（回归扫描）
 │   │                     # bench_threads.py（全线程矩阵 1-38t）
@@ -142,7 +142,7 @@ HPC_INDEX_NO_OVERRIDE=1 python your_script.py   # import 不再改 aten::index.T
 ## 基准结论（摘要）
 
 鲲鹏 920F，node 5（38 核），aten/hpc 同进程交替中位数。**当前数据唯一出处 =
-`benchmarks/RESULTS.md` §2.9**（R10 轮，2026-10-29 下午：31 场景 × 8 线程 +
+`benchmarks/RESULTS.md` §2.9**（R10 轮，2026-10-29 下午：31 场景 × 8 档线程 +
 realpath + cl 家族专项）；AI4S 全档表格见 `docs/summary.md` §6.2；逐 case 分析见
 `docs/degradation-analysis.md` §5.8/§5.9、当前 <1x 清单见 RESULTS §2.9.1。
 

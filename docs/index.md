@@ -15,7 +15,7 @@
 | [kernels.md](kernels.md) | SVE512 各内核（8B/4B gather、rowcopy、scalar）实现细节 + 优化轮新路径（M1 raw rowcopy、T3 fused、T4 桶化、T12 strided/multi raw、T13 small_multi、T15-C 大源 4B 直连 SVE）、预取、NT 开关 | 性能优化、内核修改 |
 | [performance.md](performance.md) | 基准方法论、**当前轮（R10）模型场景结果表**、**胜出场景的硬件根因（§4.3：rowcopy/gather MLP/遍数消除/固定开销/桶化/串行边界）**、已知硬件限制、如何复测 | 性能评估、验收、想知道"为什么快"的读者 |
 | [benchmarks.md](benchmarks.md) | **benchmarks/ 目录指南**：逐脚本用途、公共环境变量、典型命令、真实 workload 覆盖与预测力矩阵、与功能测试的区别 | 想知道"该跑哪个基准、结果能不能外推"的读者 |
-| [degradation-analysis.md](degradation-analysis.md) | **性能退化与线程扩展分析**（矩阵为 T15 时点历史，§0 有当前对照）：1/2/4/8/16/32/36 线程矩阵、逐 case 微架构定位（x[:,i]、2B/1B、非连续 mask、小规模并行）、perf 方法、**§5.9 残余劣化的硬件根因（微架构/系统结构/并行编程）**、优化优先级 | 想知道"哪个线程数慢、为什么慢"的读者 |
+| [degradation-analysis.md](degradation-analysis.md) | **性能退化与线程扩展分析**（矩阵为 T15 时点历史；当前值见该文文首 R10 表）：1/2/4/8/16/32/36 线程矩阵、逐 case 微架构定位（x[:,i]、2B/1B、非连续 mask、小规模并行）、perf 方法、**§5.9 残余劣化的硬件根因（微架构/系统结构/并行编程）**、优化优先级 | 想知道"哪个线程数慢、为什么慢"的读者 |
 | [optimizations.md](optimizations.md) | **T0-T15 优化/修复轮记录（编年史，非状态文档）**：自适应粒度、rowcopy A>=4、M1 skip-linearize、融合单遍、小值域桶化、1 线程单遍、跨设备校验、mask 单遍压实、小 K 精简路径、compile opt-in、T12-T15（strided run 块/multi raw/raw 放宽/4B 直连 SVE）；变更、路由、实测数据、复测 | 想了解"做了哪些优化"的读者 |
 | [fallback-analysis.md](fallback-analysis.md) | **慢场景/回退路径深度分析**（文首有当前 <1x 速查；已修项标【历史·已修】）：为什么某些形态慢（4B 随机 gather 的 64B 行放大 + DRAM 延迟、两遍模型、串行阶段、无内核 dtype）、受限于什么、为何不做 fallback、判定速查表 | 想搞清"为什么慢、能不能修"的读者 |
 | [integration.md](integration.md) | 默认覆盖 `aten::index.Tensor` 机制、运行时环境契约、逃逸开关、慢场景 fallback 决策（不改） | 集成部署、排障 |
@@ -45,7 +45,7 @@
 - **第一次接触，只想跑起来**：仓库 `README.md` 的“术语与结果口径”+“快速开始”
   → [semantics.md](semantics.md) §1-§4（行为边界）→ [status.md](status.md) §3-§4。
 - **评估性能/做选型**：[performance.md](performance.md) §3 → `benchmarks/RESULTS.md`
-  §2 → [degradation-analysis.md](degradation-analysis.md)（先看 §0 结论与 §5 逐案）；
+  §2 → [degradation-analysis.md](degradation-analysis.md)（先看文首 R10 表与 §5 逐案）；
   短调用 / 真实 workload 收益另跑 `bench_realpath_driver.py`（见
   [benchmarks.md](benchmarks.md) §3 覆盖矩阵）。
 - **要读源码**：[code-walkthrough.md](code-walkthrough.md)（按文件与行号走读全部核心
@@ -121,6 +121,12 @@ aten::index.Tensor ──► index_impl(self, indices)
 - `status.md` 每轮实质变更后更新（§2 变更日志、§5.1 当前性能、§3 路由）。
 - 归因类结论（尤其 4B gather）以**同构建 A/B** 为准；旧的独立探针数字只作历史
   背景，不得再作为因果依据（见 `fallback-analysis.md` §3.1、RESULTS §3.7）。
-- 行号锚点：改完源码跑 `python tools/check_doc_anchors.py`（逐条校验 `file:NNN`
-  是否还落在含对应符号的行上，漂移即报错）。
+- 行号锚点：改完源码跑 `python tools/check_doc_anchors.py`。它校验 `file:NNN`、
+  `symbol:NNN` 与裸 `:NNN` 三种写法：行号范围、区间两端（含"终点是不是越界到
+  下一个函数的注释/模板行"）、注释与残句；写成 `符号 :NNN` 的，还要求行号落在
+  该符号的函数体内。输出按覆盖强度分三桶报数——**函数体已校验 / 单引用弱校验
+  （±3 行窗口里出现文档点名的符号）/ 仅结构校验**，看最后一桶就知道有多少条只挡
+  得住大位移。**一张表里同时引用多个文件时，行号必须写成 `file:NNN`**；关键锚点
+  尽量用 `file:NNN`/`symbol:NNN` 或"符号 :NNN"。`docs/archive/`（冻结快照）与
+  `docs/reference/`（aten 导读）豁免。
 - `reference/` 为背景资料，不承诺与当前实现逐行同步；实现细节以其他文档/源码为准。

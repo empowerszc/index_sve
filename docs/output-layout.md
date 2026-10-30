@@ -61,12 +61,12 @@ restrided self, 各 index]）→ `TensorIterator::build`：
 1. **compute_strides**（TensorIterator.cpp:1277）：每个 operand 逐维取
    `stride × element_size`（字节）；operand 该维尺寸 1 而 out 该维 >1 视作
    广播 → 0；维数不足时前补 0。
-2. **reorder_dimensions**（:232，NOTE [Computing output strides]）：对维做
+2. **reorder_dimensions**（TensorIterator.cpp:232，NOTE [Computing output strides]）：对维做
    `should_swap` 插入排序（perm 内维在前，初始为逆序恒等）：
    - 某一 operand 上两维 stride 任一为 0 → 跳到下一 operand 再比；
    - 严格小于/大于 → 定序；相等 → 平局按 out 该维 shape，大者靠外，仍平则
      跳下一 operand；全部无定论 → 保持。
-3. **allocate_or_resize_outputs**（:574）：perm 恰为逆序恒等 → 连续快路径；
+3. **allocate_or_resize_outputs**（TensorIterator.cpp:574）：perm 恰为逆序恒等 → 连续快路径；
    否则 `compatible_stride` 按 perm 序做 dense 分配，`invert_perm` 映回原维
    序，`set_output_raw_strided` → `empty_strided`。
 
@@ -110,7 +110,7 @@ torch + 包 import）与 `tests/verify_e2e.py`（两进程差分，值+shape+str
 
 守卫自查：若你的版本 `small_single_index`/`small_multi_index`/
 `mask_fast_path` 没有 `self.is_contiguous()`（或等价）守卫，它们也接非连续
-self，需要同样处理；本仓库三者均有守卫（op.cpp :208/:326/:178），且连续
+self，需要同样处理；本仓库三者均有守卫（op.cpp:197 / op.cpp:227 / op.cpp:345），且连续
 self 时 aten 恒连续输出，无需改动。
 
 `index.Tensor_out`（`out=` 变体）不需要改：aten 写调用方提供的 out（不重

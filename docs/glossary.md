@@ -41,7 +41,7 @@ shortq、A/B/K…），先查这里；各文档不再各自维护术语表。
 | **DVFS** | 动态电压频率调节（主频随负载浮动） | 共享箱绝对时间漂移的来源之一（degradation §5.9.5） |
 | **源（source）/ 源驻留级** | 被索引的张量 x / 它常驻的缓存层级（L1/L2/L3/DRAM） | T15 起 4B SVE 内核按源大小（>512KB）门控（degradation §5.9.1） |
 | **每元素成本** | 墙钟时间 ÷ **每线程**元素数 | 并行路径除以总元素数会低估 8-38 倍（degradation §5.9.5 的历史教训） |
-| **smallk / realpath** | 小 K 两进程基准 / 真实 workload 两进程基准（`benchmarks.md` §1） | 短调用结论的首选依据（RESULTS §2.3/§2.5） |
+| **smallk / realpath** | 小 K 两进程基准 / 真实 workload 两进程基准（`benchmarks.md` §1） | 短调用结论的首选依据（RESULTS §2.3 小 K；realpath 当前值 §2.9.4，§2.5 为 T14 历史轮） |
 | **对拍** | 覆盖态与非覆盖态两进程比对 true-aten 参考值 | 正确性验收口径，44/44（`tests/verify_against_aten.py`） |
 | **T0-T15** | 优化/修复轮次代号（每轮一条记录） | 文中"T15 起 / T5 已修"指这些轮次，见 `optimizations.md` |
 
@@ -71,11 +71,11 @@ shortq、A/B/K…），先查这里；各文档不再各自维护术语表。
 | **M5** | 标量循环（FPS/ball_query 风格）：每次调用取 1 个元素、高频循环 | x (4096,) 或 (4096, 3)，idx (CALLS, 1) |
 | **M6** | 双下标 2D 取数：`pf[vi]` | x (20000, 64)，idx (2048, 3) |
 
-**realpath 短调用（`bench_realpath.py`，RESULTS §2.5）**：M1（真实权重块，
+**realpath 短调用（`bench_realpath_driver.py`，当前值 RESULTS §2.9.4；§2.5 为 T14 历史轮）**：M1（真实权重块，
 行 ≤16KB）、M2（代表形态）、M5（标量循环）、**A1**（单元素高频，N=200k、
 K=1）、**shortq**（短行查询，A=2-4、K=64-1023，x (20000, A)）。
 
-**矩阵场景行名读法（RESULTS §2.1）**：`1D f32 K=2M` = 1D f32 源按 2M 个
+**矩阵场景行名读法（RESULTS §2.1=T11、§2.9.1=R10，行名相同）**：`1D f32 K=2M` = 1D f32 源按 2M 个
 随机下标取元素；`rowcopy A=16 f32 K=200k` = 2D f32 源（行宽 16）按 200k
 个随机行下标取行；`noncontig self` = 源是非连续视图（stride 2）、
 `noncontig idx` = 下标张量非连续；`col x[:,i]` = 整列选取；`range2048` =
