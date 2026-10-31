@@ -1,0 +1,36 @@
+{
+  "note": "示例权重：仓库内没有生产 trace，调用次数按反馈里的热点摘要构造（只覆盖库内形态），仅用于演示 --weighted 的算法，不是生产实测结果。有 trace 时用 --gen-cases 生成用例和权重。",
+  "models": [
+    {
+      "name": "SGI_v1m1",
+      "threads": 12,
+      "total_calls": 20800,
+      "calls": {
+        "bucket_K512_dom1k": 2500,
+        "bucket_K528_dom1k": 1500,
+        "gather_K13824_dom1m": 800,
+        "rowcopy_K8192_A64": 412
+      }
+    },
+    {
+      "name": "PPT_v1m1",
+      "threads": 19,
+      "total_calls": 4896,
+      "calls": {
+        "bucket_K2048_dom2k": 300,
+        "bucket_K2112_dom2k": 200,
+        "gather_K55296_dom1m": 182
+      }
+    },
+    {
+      "name": "Sonata_v1m3",
+      "threads": 6,
+      "total_calls": 6080,
+      "calls": {
+        "bucket_K55296_dom2k": 236,
+        "rowcopy_K256000_A64": 300,
+        "rowcopy_K55296_A64": 200
+      }
+    }
+  ]
+}

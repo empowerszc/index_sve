@@ -1,3 +1,10 @@
+"""理想大形态基准（历史）：K=2M/10M、线程 1/608、hpc 侧直呼 `hpc_index()`。
+
+**不要用这个脚本代表生产收益**：它的 K 是大端点、线程是 1 和 608 两个端点，
+而且绕过 dispatcher。生产形态（K 512-55296、4-19 线程、`x[idx]` 走 dispatch）
+在 6-19t 会掉到 1x 以下，见 `benchmarks/bench_production_shapes.py` 与
+RESULTS §2.10 / degradation-analysis.md §6.5。本脚本保留用于历史对照。
+"""
 import os, sys, time, torch, statistics
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))

@@ -17,6 +17,11 @@
 > 同日第一轮完成输出布局修复（复刻 TensorIterator 置换恢复）+ E2E 差分
 > harness；此前 T15/全线程档复测见 RESULTS §2.8。
 >
+> **再补一条按形态的结论（2026-10-31）**：把 K 换到生产区间 512-55296、线程
+> 换到 6-19 后，1D A=1 从 1t 的 1.11-1.61x 掉到 **0.66-1.10x**（rowcopy 与
+> K≤2048 桶化不受影响）。旧矩阵的 K=2M/10M 与 1/608t 是两个端点，没覆盖这段；
+> 见 §5.1、RESULTS §2.10、degradation §6.5。
+>
 > **本文怎么用**：这是“快照”，不追求完整推导；数字以 `benchmarks/RESULTS.md`
 > §2 为准，原因分析看 `degradation-analysis.md`，路由看 §3 与
 > `architecture.md`。发现文档间冲突时，优先级：RESULTS §2 > degradation >
@@ -58,6 +63,7 @@ CPU 键覆盖，autograd 不受影响）。构建/运行契约见 `README.md` �
 | 基准 | AI4S workload 全线程档复测（31 场景 + realpath 两进程对拍 × 1/2/4/8/16/32/36/38 全 8 档，RESULTS §2.8；summary §6.2 全档表；mask empty/complex64 已在 §2.9.1 复测） | 557cdbf | ✅ |
 | 修复 | 输出内存布局与 aten 逐维一致：`aten_out_strides` 复刻 TensorIterator 置换恢复（strides/should_swap 平局规则），`empty_strided` 分配 + 非连续 tmp→`copy_`；新增 `test_output_layout.py`（25 例，期望值为无覆盖进程实测钉入）+ `verify_e2e.py`（E2E 两进程差分 120 例，值+shape+dtype+stride 比对 + 线程矩阵；R10 后增至 124 例）；专项文档 output-layout.md | 5eaa3b1 | ✅ |
 | R10 | cl/置换布局行块直写：`rowcopy_direct_ok` 资格判定（源/出尾块同 dense 置换 + out 前导块行主序等）+ `IndexSpec::rowcopy_direct` + dispatch 顶部守卫（只允许块拷贝内核）+ `gather.cpp` rowcopy_sve 守卫放宽；cl4d 行索引 0.30-0.42x → **1.45-2.54x**；normalize.cpp 编译警告清零；test_rowcopy_routes 增至 14（直写 2 例含 1t/8t 双档 + 排除 3 + cl3d linearize 臂 1）；verify_e2e 增至 124 例（g5big 大 K 直写 4 例，线程矩阵 46 例） | （本轮） | ✅ |
+| 基准 | 生产形态基准：`bench_production_shapes.py` + `bench_production_driver.py`（K 512-55296、A=1/3/64、线程 1/6/12/19、`x[idx]` 走 dispatch、两进程交替、`--weighted`/`--gen-cases`/`--fit`）；实测 1D A=1 在 6-19t **0.66-1.10x**（1t 1.11-1.61x），机理写入 degradation §6.5 | （本轮） | ✅ |
 
 ## 3. 路由现状（op.cpp `index_impl`）
 
@@ -126,6 +132,10 @@ out 连续                          → index_into 直写
 ### 5.1 当前结论（R10 轮，`330d268`，2026-10-29 下午）
 
 > 数据轮次：R10（2026-10-29 下午）｜**当前**。全矩阵见 RESULTS §2.9.1。
+> **另有按形态的一条轴（2026-10-31）**：把 K 换到 512-55296、线程换到 6-19
+> （生产并集）后，1D A=1 从 1t 的 1.11-1.61x 掉到 **0.66-1.10x**，rowcopy
+> 仍有 1.3-4.2x、K≤2048 桶化 1.24-1.62x。下表的 2-8x 主要来自 K=2M/10M 与
+> 32/38t 端点，**不要当模型内收益**。见 RESULTS §2.10、degradation §6.5。
 
 | 形态 | 1t | 8t | 38t | 备注 |
 |---|---|---|---|---|
@@ -329,10 +339,10 @@ T4 桶化在小值域规避行放大，大值域靠预取/行 gather 等待未�
 
 | 优先级 | 项目 | 预期收益 | 工作量 | 详见 |
 |---|---|---|---|---|
-| **R1** | 1D 小源跳过 `gather_bucket_pure_raw` 前置值域扫描（并入 gather 单遍） | K=8192/65536 小源 36-38t 0.90-0.95x → ≥1x（省 ~15µs / 总 42-53µs，fork-join 占 30-50%） | 小 | degradation §5.8-C/§5.9.2、§8-1 |
-| **R2** | 非连续 mask 的 T8 stride 扩展（计数/压实按 mask stride 读，去 nonzero 物化） | 0.86-0.98x → 1.2-1.5x（8t 实测可省 ~1ms） | 中 | degradation §5.8-D、§8-2 |
+| **R1** | 1D 小源跳过 `gather_bucket_pure_raw` 前置值域扫描（并入 gather 单遍） | K=8192/65536 小源 36-38t 0.90-0.95x → ≥1x（省 ~15µs / 总 42-53µs，fork-join 占 30-50%） | 小 | degradation §5.8-C/§5.9.2、§8-2 |
+| **R2** | 非连续 mask 的 T8 stride 扩展（计数/压实按 mask stride 读，去 nonzero 物化） | 0.86-0.98x → 1.2-1.5x（8t 实测可省 ~1ms） | 中 | degradation §5.8-D、§8-3 |
 | **R3** | 端到端 AI4S 模型复测 | 验证 T0-T15 累计收益是否传导到真实负载（决策项） | 中 | performance §3/§4.1 |
-| R4 | f64+i32 下标经 `svunpklo` 加宽走 8B gather | ≈持平 → 小幅正收益 | 小 | degradation §8-3 |
+| R4 | f64+i32 下标经 `svunpklo` 加宽走 8B gather | ≈持平 → 小幅正收益 | 小 | degradation §8-4 |
 | R5 | M1 值域桶化（T2 阶段 2）：`gather_rowcopy_raw` 做下标值域分析 | 高重复下标场景再提升 | 中 | optimizations §3.5 |
 | R6 | 4B 大 K 大值域：按 cache line 分桶/排序 | 受 64B 行放大硬上限，只有改访问结构有效 | 大 | degradation §5.9.3 |
 | R7 | `small_multi_index` 扩广播/非连续索引（修正 `all_full_contig` + 复用偏移预计算） | 覆盖面，非性能 | 中 | — |
