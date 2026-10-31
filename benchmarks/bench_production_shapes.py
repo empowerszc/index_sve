@@ -17,11 +17,15 @@
   HPC_INDEX_NO_OVERRIDE=1 python benchmarks/bench_production_shapes.py
   # 只打印用例库
   python benchmarks/bench_production_shapes.py --emit-cases
-  # 从 trace CSV 提取热点形态（不需要 torch）
+  # 从 trace CSV 提取热点形态（不需要 torch），再按生成的用例测一遍
   python benchmarks/bench_production_shapes.py --gen-cases trace.csv > cases.json
-  # 按调用次数加权合成模型级 index 占比（不需要 torch）
-  python benchmarks/bench_production_shapes.py --weighted \
-      benchmarks/prod_weights.example.json --times prod_times.json
+  HPC_CASES=cases.json python benchmarks/bench_production_driver.py --out t.json
+  # 按调用次数加权合成（不需要 torch；cases.json 直接当权重文件）
+  python benchmarks/bench_production_shapes.py --weighted cases.json --times t.json
+
+两条口径一起打印，避免把方向读反：
+  aten/hpc       >1 = 本算子更快（本仓库文档的默认口径）
+  index_sve/原生  <1 = 本算子更快（反馈 §11.3.3 表格用的口径，互为倒数）
 """
 import argparse
 import csv
@@ -70,7 +74,21 @@ PROD_CASES = [
     dict(name="rowcopy_K256000_A64", group="prod", K=256000, A=64, dom=1 << 20),
 ]
 
-CASES = PROD_CASES + K_SWEEP
+# 反馈 §11.2.5 给出的 SGI 热点形态（按调用次数）。A 由 A-br 桶中值推测（见 ABR_HINTS），
+# 不是 trace 真值；rows 只影响源张量大小，必须 >= dom。
+SGI_CASES = [
+    dict(name="sgi_bucket_K512_dom1k", group="sgi", K=512, A=1, dom=1024, calls=2322),
+    dict(name="sgi_bucket_K13824_dom2k", group="sgi", K=13824, A=1, dom=2048, calls=1620),
+    dict(name="sgi_bucket_K528_dom1k", group="sgi", K=528, A=1, dom=1024, calls=1064),
+    dict(name="sgi_rowcopy_K512_A64", group="sgi", K=512, A=64, dom=1024,
+         rows=8192, calls=1748),
+    dict(name="sgi_rowcopy_K528_A256", group="sgi", K=528, A=256, dom=1024,
+         rows=8192, calls=896),
+    dict(name="sgi_rowcopy_K2_A256", group="sgi", K=2, A=256, dom=1024,
+         rows=8192, calls=768),
+]
+
+CASES = PROD_CASES + K_SWEEP + SGI_CASES
 for _c in CASES:
     # 路由标签按 op.cpp 的实际顺序：K<1024 先落 gather_direct（不建桶），
     # K>=1024 才可能走桶；A>1 走行/块拷贝。
@@ -83,6 +101,13 @@ _SUBSET = [x for x in os.environ.get("HPC_SUBSET", "").split(",") if x]
 if _SUBSET:
     CASES = [c for c in CASES if any(x in c["name"] for x in _SUBSET)]
 
+# HPC_CASES=cases.json 用 --gen-cases 的产物直接测（告别人工抄形态）
+_CASES_FILE = os.environ.get("HPC_CASES")
+if _CASES_FILE:
+    CASES = json.load(open(_CASES_FILE, encoding="utf-8"))
+    for _c in CASES:
+        _c.setdefault("group", "gen")
+
 # 诊断模式：固定 K 只扫值域，用来看桶化路径的"建表/查表"占多少固定成本
 # （dom<=2048 走桶，>2048 回退 SVE/标量单遍，两侧就是同一形态的两种内核）。
 DOM_SWEEP_K = int(os.environ.get("HPC_DOM_SWEEP", "0"))
@@ -91,9 +116,22 @@ if DOM_SWEEP_K:
                   path="bucket" if d <= 2048 else "single")
              for d in (8, 64, 512, 2048, 4096, 1 << 20)]
 
-# trace 里的 A-br 是分桶码，不是真实 A。反馈里 path11/path2 的 A-br=3 对应真实
-# A∈[16,128)（典型 64）；这里显式列出来，映射不到就直接报错而不是瞎猜。
-ABR_HINTS = {1: 1, 2: 4, 3: 64, 4: 64, 5: 64}
+# trace 里的 A-br 是分桶码，不是真实 A。只有 A-br=3 被反馈锚定（path11 的
+# A∈[16,128)，典型 64）；4/5 按几何中点猜 256/2048，可用 --abr-map 覆盖。
+# 映射不到就报错，不静默猜。
+ABR_HINTS = {1: 1, 2: 4, 3: 64, 4: 256, 5: 2048}
+
+
+def _parse_abr_map(spec):
+    if not spec:
+        return dict(ABR_HINTS)
+    out = dict(ABR_HINTS)
+    for part in spec.replace(" ", "").split(","):
+        if not part:
+            continue
+        k, v = part.split("=")
+        out[int(k)] = int(v)
+    return out
 PATH_ALIASES = {
     "path3": "bucket", "bucket": "bucket",
     "path11": "small_single", "small_single": "small_single",
@@ -157,17 +195,18 @@ def measure(cases, threads):
     mode = "aten" if os.environ.get("HPC_INDEX_NO_OVERRIDE") == "1" else "hpc"
     g = torch.Generator().manual_seed(7)
 
-    # 源按最大 A 分配一次；A=1 用 4MB（L3 内），A>1 用 A*4MB
+    # 源按 (A, rows) 分配一次；A=1 用 4MB（L3 内），A>1 用 rows*A*4B。
+    # rows 默认 1<<20，显式给 rows 的用例（如 A=256）用小源，避免 1GB 级分配。
     x1 = torch.randn(1 << 20, generator=g)
-    x_multi = {A: torch.randn(1 << 20, A, generator=g).contiguous()
-               for A in sorted({c["A"] for c in cases if c["A"] > 1})}
+    keys = sorted({(c["A"], int(c.get("rows", 1 << 20))) for c in cases if c["A"] > 1})
+    x_multi = {k: torch.randn(k[1], k[0], generator=g).contiguous() for k in keys}
 
     rows = []
     for t in threads:
         _set_threads(torch, omp, t)
         for c in cases:
             K, A, dom = c["K"], c["A"], c["dom"]
-            src = x1 if A == 1 else x_multi[A]
+            src = x1 if A == 1 else x_multi[(A, int(c.get("rows", 1 << 20)))]
             # HPC_IDX_STRIDED=2：把下标换成 stride=2 的非连续视图（生产里很常见，
             # 如列切片）；=0：换成 stride=0 的广播视图（`idx.expand(K)`）。
             # 两者都会离开 fast_1d 快路径，见 degradation-analysis.md §6.5.7。
@@ -188,42 +227,96 @@ def measure(cases, threads):
     return rows
 
 
-def gen_cases(path):
-    """从 trace CSV 提取热点形态：列 = path,K,A,dom,calls[,threads]。"""
-    agg = {}
+def _parse_totals(spec):
+    """`--total 'SGI=20800,PPT=4896'`：CSV 只含热点时，用它给出真实总调用数。"""
+    out = {}
+    for part in (spec or "").replace(" ", "").split(","):
+        if part:
+            k, v = part.split("=")
+            out[k] = int(v)
+    return out
+
+
+def gen_cases(path, abr_map=None, per_model=False, default_th=12, totals=None):
+    """从 trace CSV 提取热点形态：列 = model,path,K,A,dom,calls[,threads]。
+
+    默认输出扁平用例列表（可直接给 `HPC_CASES`）；`per_model=True` 输出
+    `{"models": [...]}`，每个模型带自己的线程数和调用次数，给 `--weighted` 用。
+    """
+    abr_map = _parse_abr_map(None) if abr_map is None else abr_map
+    agg, models = {}, {}
     with open(path, newline="", encoding="utf-8") as f:
-        for r in csv.DictReader(f):
+        lines = (ln for ln in f if not ln.lstrip().startswith("#"))
+        for r in csv.DictReader(lines):
             path_name = PATH_ALIASES.get(r["path"].strip())
             if path_name is None:
                 continue
             K, abr = int(r["K"]), int(r["A"])
             dom = int(r["dom"]) if r.get("dom") not in (None, "", "0") else 2048
-            A = 1 if path_name == "bucket" else ABR_HINTS.get(abr)
+            # A==1 的形态不分桶化/单遍，一律按 (dom, A) 重新打标签：
+            # dom<=2048 走桶化，否则单遍；A>1 才是行拷贝。trace 的路径号只作溯源。
+            A = 1 if path_name == "bucket" else abr_map.get(abr)
             if A is None:
-                raise SystemExit(f"A-br={abr} 没有映射规则，先加到 ABR_HINTS 再跑")
+                raise SystemExit(f"A-br={abr} 没有映射规则，用 --abr-map '4=256' 指定")
+            shape = ("bucket" if dom <= 2048 else "gather") if A == 1 else "rowcopy"
             calls = int(r["calls"])
-            name = f"gen_{path_name}_K{K}_A{A}_dom{dom}"
+            name = f"gen_{shape}_K{K}_A{A}_dom{dom}"
             cur = agg.setdefault(name, dict(name=name, group="gen", K=K, A=A,
-                                            dom=dom, path=path_name, calls=0))
+                                            dom=dom, path=shape, calls=0))
             cur["calls"] += calls
+            mname = (r.get("model") or os.path.basename(path)).strip()
+            th = int(r["threads"]) if r.get("threads") else default_th
+            m = models.setdefault(mname, dict(name=mname, threads=th,
+                                              total_calls=0, calls={}))
+            m["calls"][name] = m["calls"].get(name, 0) + calls
+            m["total_calls"] += calls
+    print(f"# A-br 映射：{abr_map}（只有 3->64 有反馈锚定，其余是几何中点假设）",
+          file=sys.stderr)
+    if per_model:
+        for m in models.values():
+            # CSV 只有热点行时，覆盖率会假性 100%；--total 给真实总调用数。
+            m["total_calls"] = (totals or {}).get(m["name"], m["total_calls"])
+        return {"note": f"{os.path.basename(path)}：按 trace 调用次数加权；"
+                        "形态由 A-br 桶中值映射，非真实 A",
+                "models": sorted(models.values(), key=lambda m: m["name"])}
     return sorted(agg.values(), key=lambda c: -c["calls"])
 
 
-def weighted(weights_path, times_path):
-    """按 trace 调用次数加权：ratio = Σ(w*aten) / Σ(w*hpc)，>1 表示本算子更快。"""
-    spec = json.load(open(weights_path, encoding="utf-8"))
+def _load_weights(path, threads):
+    """兼容两种输入：{models:[...]} 规格，或 --gen-cases 输出的用例列表。"""
+    spec = json.load(open(path, encoding="utf-8"))
+    if isinstance(spec, dict):
+        return spec
+    calls = {c["name"]: int(c.get("calls", 0)) for c in spec if c.get("calls")}
+    return {"note": f"{path}（用例列表，调用次数即权重；覆盖率 = 库内形态占比）",
+            "models": [{"name": os.path.basename(path).replace(".json", ""),
+                        "threads": threads, "total_calls": sum(calls.values()),
+                        "calls": calls}]}
+
+
+def weighted(weights_path, times_path, threads=12, detail=False):
+    """按调用次数加权，两个口径一起给，并把"未覆盖长尾"的不确定性显式化。
+
+    覆盖内比值只反映被覆盖的形态；覆盖率低时它不代表整体。这里额外给出三个
+    "全程"估计：未覆盖调用按持平 / 按覆盖内比值 / 按本算子慢 2x。三者跨过 1.0
+    就说明覆盖率不足以下方向结论。
+    """
+    spec = _load_weights(weights_path, threads)
     times = json.load(open(times_path, encoding="utf-8"))
     table = {}
     for r in times:
         table[(r["name"], r["mode"], r["threads"])] = r["us"]
 
     print(f"# 权重来源：{spec.get('note', weights_path)}")
-    print("| 模型 | TH | 覆盖调用 | 未覆盖 | Σaten µs | Σhpc µs | aten/hpc |")
-    print("|---|---|---|---|---|---|---|")
+    print("# aten/hpc >1 = 本算子更快；index_sve/原生 <1 = 本算子更快（互为倒数）")
+    print("| 模型 | TH | 覆盖调用 | 覆盖内 aten/hpc | index_sve/原生 | 全程"
+          "（未覆盖持平） | 全程（同覆盖） | 全程（未覆盖慢2x） |")
+    print("|---|---|---|---|---|---|---|---|")
     for m in spec["models"]:
-        th = m["threads"]
+        th = m.get("threads", threads)
         covered = miss = 0
         sa = sh = 0.0
+        rows = []
         for name, w in m["calls"].items():
             a = table.get((name, "aten", th))
             h = table.get((name, "hpc", th))
@@ -233,11 +326,36 @@ def weighted(weights_path, times_path):
             covered += w
             sa += w * a
             sh += w * h
+            rows.append((w * h, w, name, a, h))
         total = m.get("total_calls", covered + miss)
-        ratio = f"{sa / sh:.3f}x" if sh else "n/a"
+        # total_calls 可能大于权重表里的热调用之和：差额是根本没列进 trace 的长尾。
+        miss = max(miss, total - covered)
+        if not sh or not covered:
+            print(f"| {m['name']} | {th} | 0/{total} | n/a | n/a | n/a | n/a | n/a |")
+            continue
+        a_mean = sa / covered
+        cov = sa / sh
+        # 未覆盖调用的单次 aten 取覆盖内均值；hpc 侧按三种假设
+        est = []
+        for r_u in (1.0, sh / sa, 2.0):
+            est.append((sa + miss * a_mean) / (sh + miss * a_mean * r_u))
         print(f"| {m['name']} | {th} | {covered}/{total} "
-              f"({100 * covered / total:.0f}%) | {miss} | {sa:.0f} | {sh:.0f} | {ratio} |")
-    print("\n> 只覆盖库内形态；未覆盖长尾按 0 计入，方向看覆盖部分的比值。")
+              f"({100 * covered / total:.0f}%) | {cov:.3f}x | {1 / cov:.3f}x | "
+              f"{est[0]:.3f}x | {est[1]:.3f}x | {est[2]:.3f}x |")
+        if detail:
+            tot_h = sum(r[0] for r in rows)
+            print(f"\n  按 hpc 耗时排序（{m['name']}，TH={th}）：")
+            print("  | 形态 | 调用 | hpc µs | 占 hpc 时间 | aten/hpc |")
+            print("  |---|---|---|---|---|")
+            for wh, w, name, a, h in sorted(rows, reverse=True)[:6]:
+                print(f"  | {name} | {w} | {h:.1f} | {100 * wh / tot_h:.0f}% | "
+                      f"{a / h:.2f}x |")
+            print()
+    print("\n> 三个「全程」列 = 未覆盖调用按三种假设补全：①与本算子持平"
+          "（aten/hpc=1）②与覆盖内同比值 ③本算子慢 2 倍（aten/hpc=0.5）。"
+          "三者跨过 1.0 就说明覆盖率不足以下方向结论。\n> 覆盖内比值只说明"
+          "「被覆盖的形态」；按调用次数覆盖率不等于按耗时覆盖率——长尾大形态"
+          "少数派可以主导总时间（RESULTS §2.11.5）。")
 
 
 def main():
@@ -246,10 +364,29 @@ def main():
     ap.add_argument("--gen-cases", metavar="CSV", help="从 trace CSV 提取用例")
     ap.add_argument("--weighted", metavar="WEIGHTS", help="按调用次数加权")
     ap.add_argument("--times", metavar="JSON", help="--weighted 用的测量结果")
+    ap.add_argument("--th", type=int, default=12,
+                    help="--weighted 用哪个线程档（用例列表输入时）")
+    ap.add_argument("--detail", action="store_true", help="打印按耗时的形态排名")
+    ap.add_argument("--abr-map", metavar="SPEC", default="",
+                    help="覆盖 A-br 映射，如 '3=64,4=256'")
+    ap.add_argument("--per-model", action="store_true",
+                    help="--gen-cases 输出按模型分组的权重（含各自线程数）")
+    ap.add_argument("--total", metavar="SPEC", default="",
+                    help="真实总调用数，如 'SGI=20800,PPT=4896'（CSV 只含热点时用）")
+    ap.add_argument("--cases", metavar="JSON",
+                    help="用生成的用例列表测量（等价于 HPC_CASES）")
     args = ap.parse_args()
 
+    if args.cases:
+        global CASES
+        CASES = json.load(open(args.cases, encoding="utf-8"))
+        for _c in CASES:
+            _c.setdefault("group", "gen")
     if args.gen_cases:
-        print(json.dumps(gen_cases(args.gen_cases), ensure_ascii=False, indent=1))
+        print(json.dumps(gen_cases(args.gen_cases, _parse_abr_map(args.abr_map),
+                                   args.per_model, args.th,
+                                   _parse_totals(args.total)),
+                         ensure_ascii=False, indent=1))
         return
     if args.emit_cases:
         print(json.dumps(CASES, ensure_ascii=False, indent=1))
@@ -257,7 +394,7 @@ def main():
     if args.weighted:
         if not args.times:
             raise SystemExit("--weighted 需要 --times（driver 的 --out 结果）")
-        weighted(args.weighted, args.times)
+        weighted(args.weighted, args.times, args.th, args.detail)
         return
 
     rows = measure(CASES, THREADS)

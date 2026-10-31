@@ -33,7 +33,8 @@ T5（1 线程回归修复）见 `optimizations.md` §9。
   `bench_gate.py` 3 轮中位数（min/med/max）。
 - **短调用 / 真实路径**：`bench_realpath_driver.py` 交替启动 aten/hpc 两个子进程，
   两边都走真实 `x[idx]`（dispatcher 全链路），按 (case, threads) 取轮间中位数，
-  避免 pybind 直呼绕过 dispatcher 导致短调用比值偏乐观；覆盖 M5 标量循环、
+  避免 pybind 直呼多付的约 10µs Python 包装开销（这一步让短调用比值偏悲观，
+  RESULTS §2.12.1）；覆盖 M5 标量循环、
   shortq A=2-4、A1 单元素高频、M1 真实权重块（≤16KB/行）、M2 代表形态
   （脚本清单与真实 workload 预测力矩阵见 `benchmarks.md` §3）。
 - 带宽口径：bytes = idx 读 + 数据进/出（见 RESULTS.md 表头）。

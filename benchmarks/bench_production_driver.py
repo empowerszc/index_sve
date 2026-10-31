@@ -78,7 +78,12 @@ def main():
     ap.add_argument("--fit", action="store_true", help="拟合固定开销/每元素成本")
     ap.add_argument("--fit-from", default="", metavar="JSON",
                     help="只对已有的测量结果做拟合（不重跑）")
+    ap.add_argument("--cases", metavar="JSON", default="",
+                    help="用例列表（等价于 HPC_CASES，传给子进程）")
     args = ap.parse_args()
+
+    if args.cases:
+        os.environ["HPC_CASES"] = args.cases
 
     if args.fit_from:
         print("# 拟合（k_sweep 组：A=1, dom=2048）")

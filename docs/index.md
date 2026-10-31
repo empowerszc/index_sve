@@ -15,7 +15,7 @@
 | [kernels.md](kernels.md) | SVE512 各内核（8B/4B gather、rowcopy、scalar）实现细节 + 优化轮新路径（M1 raw rowcopy、T3 fused、T4 桶化、T12 strided/multi raw、T13 small_multi、T15-C 大源 4B 直连 SVE）、预取、NT 开关 | 性能优化、内核修改 |
 | [performance.md](performance.md) | 基准方法论、**当前轮（R10）模型场景结果表**、**胜出场景的硬件根因（§4.3：rowcopy/gather MLP/遍数消除/固定开销/桶化/串行边界）**、已知硬件限制、如何复测 | 性能评估、验收、想知道"为什么快"的读者 |
 | [benchmarks.md](benchmarks.md) | **benchmarks/ 目录指南**：逐脚本用途、公共环境变量、典型命令、真实 workload 覆盖与预测力矩阵、与功能测试的区别 | 想知道"该跑哪个基准、结果能不能外推"的读者 |
-| [degradation-analysis.md](degradation-analysis.md) | **性能退化与线程扩展分析**（矩阵为 T15 时点历史；当前值见该文文首 R10 表）：1/2/4/8/16/32/36 线程矩阵、逐 case 微架构定位（x[:,i]、2B/1B、非连续 mask、小规模并行）、perf 方法、**§5.9 残余劣化的硬件根因**、**§6.5 生产形态（小 K + 6-19t）的劣化家族**（含 §6.5.7 对"固定开销占 93-95%"的逐项裁决）、优化优先级 | 想知道"哪个线程数慢、为什么慢"的读者 |
+| [degradation-analysis.md](degradation-analysis.md) | **性能退化与线程扩展分析**（矩阵为 T15 时点历史；当前值见该文文首 R10 表）：1/2/4/8/16/32/36 线程矩阵、逐 case 微架构定位（x[:,i]、2B/1B、非连续 mask、小规模并行）、perf 方法、**§5.9 残余劣化的硬件根因**、**§6.5 生产形态（小 K + 6-19t）的劣化家族**（含 §6.5.7 对"固定开销占 93-95%"的逐项裁决、§6.5.8 benchmarks 口径审计）、优化优先级 | 想知道"哪个线程数慢、为什么慢"的读者 |
 | [optimizations.md](optimizations.md) | **T0-T15 优化/修复轮记录（编年史，非状态文档）**：自适应粒度、rowcopy A>=4、M1 skip-linearize、融合单遍、小值域桶化、1 线程单遍、跨设备校验、mask 单遍压实、小 K 精简路径、compile opt-in、T12-T15（strided run 块/multi raw/raw 放宽/4B 直连 SVE）；变更、路由、实测数据、复测 | 想了解"做了哪些优化"的读者 |
 | [fallback-analysis.md](fallback-analysis.md) | **慢场景/回退路径深度分析**（文首有当前 <1x 速查；已修项标【历史·已修】）：为什么某些形态慢（4B 随机 gather 的 64B 行放大 + DRAM 延迟、两遍模型、串行阶段、无内核 dtype）、受限于什么、为何不做 fallback、判定速查表 | 想搞清"为什么慢、能不能修"的读者 |
 | [integration.md](integration.md) | 默认覆盖 `aten::index.Tensor` 机制、运行时环境契约、逃逸开关、慢场景 fallback 决策（不改） | 集成部署、排障 |
@@ -61,8 +61,9 @@
 
 > **数字口径（一条规则）**：**当前值唯一出处 = `benchmarks/RESULTS.md` §2.9**
 > （31 场景 × 1/2/4/8/16/32/36/38t + realpath + cl 家族专项）、**§2.10**
-> （生产形态轴：K 512-55296 × 1/6/12/19t，`x[idx]` 走 dispatch）与 **§2.11**
-> （上下文开销：hot/池冷/源冷/autograd + 固定链 + 混合序列）。§2 顶部的轮次
+> （生产形态轴：K 512-55296 × 1/6/12/19t，`x[idx]` 走 dispatch）、**§2.11**
+> （上下文开销：hot/池冷/源冷/autograd + 固定链 + 混合序列）与 **§2.12**
+> （基准口径审计：入口偏置 / A-br 映射 / 加权与覆盖率）。§2 顶部的轮次
 > 索引表标明每小节是哪个轮次、是否当前；其它文档只写结论 + 指针，不复制全矩阵。
 > §2 之前任何标着 2-36t 的旧数据还受"libomp/libgomp 双 ICV"影响（degradation §3.1），
 > 只作历史记录。
@@ -110,7 +111,7 @@ aten::index.Tensor ──► index_impl(self, indices)
 **数据时效（最重要）**
 
 1. **当前值唯一出处 = `benchmarks/RESULTS.md` §2.9（全量矩阵）+ §2.10（生产形态轴）
-   + §2.11（上下文/固定开销）**。
+   + §2.11（上下文/固定开销）+ §2.12（入口/加权口径）**。
    任何文档写"当前"数字都必须与它同源；改数值先改 RESULTS，其他地方只放摘要 + 指针。
 2. **任何实测表格前必须有"数据轮次"行**：`> 数据轮次：<轮次>（<commit/日期>）｜当前`
    或 `｜历史（当前见 §x.y）`。没有轮次标注的数字视为不可引用。

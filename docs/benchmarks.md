@@ -16,9 +16,11 @@
 | `bench_smallk_driver.py` | **正式基准** | 交替启动 aten/hpc 两个子进程，汇总小 K 中位数，排除 pybind 包装噪声 | 小 K（K<=65536）真实路径验收 |
 | `bench_realpath.py` | 组件脚本 | 单进程真实 workload（M5/shortq/A1/M1/M2）`x[idx]` 计时，输出 JSON；由 driver 交替调用 | 不单独用，配合 `bench_realpath_driver.py` |
 | `bench_realpath_driver.py` | **正式基准** | 交替启动 aten/hpc 两个子进程，真实路径全 case 对拍（含短调用、高频单元素） | 短调用 / 真实 workload 收益结论的首选依据 |
-| `bench_production_shapes.py` | 组件脚本 | 生产形态库（K 512-55296、A=1/3/64、线程 1/6/12/19、`x[idx]` 走 dispatch）单进程计时，输出 JSON；含 `--emit-cases`/`--gen-cases`/`--weighted` | 不单独用，配合 `bench_production_driver.py` |
+| `bench_production_shapes.py` | 组件脚本 | 生产形态库（K 512-55296、A=1/3/64、线程 1/6/12/19、`x[idx]` 走 dispatch）单进程计时，输出 JSON；含 `--emit-cases`/`--gen-cases`/`--per-model`/`--weighted`/`--detail`/`--abr-map`/`--total`/`--cases` | 不单独用，配合 `bench_production_driver.py`；加权/覆盖率结论见 RESULTS §2.12 |
+| `trace_hotspots.example.csv` | 输入 fixture | **不是真实 trace**：按生产反馈 §11.2.5 的聚合热点表手工重建（model/path/K/A/dom/calls/threads），用来演示 `--gen-cases` 的输入格式 | 有真 trace 时换成真文件；格式说明见文件头注释 |
 | `bench_production_driver.py` | **正式基准** | 交替启动 aten/hpc 两进程，汇总生产形态矩阵；`--fit` 把"固定开销 / 每元素成本"分开 | **生产收益结论的唯一依据**，任何"单算子几倍"的结论都要附这一族（RESULTS §2.10） |
 | `bench_context_overhead.py` | 诊断 | 同一形态在 hot / 线程池冷（spaced）/ 源冷 / autograd 四种上下文下的单次耗时；另含固定链（K=1）、A 敏感性、K=2 小形态、mask 的 `nonzero` 与混合序列 | 回答"模型内每次调用比 bench 贵多少"，RESULTS §2.11 |
+| `bench_entry_overhead.py` | 诊断 | `x[idx]` 全链路拆解：dispatcher / `torch.ops` 查表 / Python 包装 / `torch.empty` / normalize 的各路下标表示（i32/stride2/2D/双索引） | 判断"某个基准脚本的入口口径差多少"，RESULTS §2.12.1 |
 | `bench_regression.py` | 回归扫描 | 多形态性能回归扫描，默认 1/8/32t，比值 <0.90 打 `REGRESS` | 改内核后快速看有没有明显性能回退 |
 | `bench_ai4s.py` | 专项基准 | AI4S workload 形态（M1-M6）线程扫描，不是功能测试 | 评估 AI4S 场景收益/回归 |
 | `bench_cl_family.py` | **专项基准** | cl/置换布局行索引族前后对照：`aten`/`hpc` 两进程交替（覆盖是进程级开关），cl4d 行/掩码、cl3d 置换、contig4d 箱态对照组 | R10 直写（output-layout.md §8）等布局相关优化的验收/复现（RESULTS §2.9.2） |
@@ -56,10 +58,13 @@
 ## 3. 真实 workload 覆盖与预测力
 
 **路径对称性问题**：除 `bench_smallk_real.py` / `bench_realpath.py` /
-`bench_production_shapes.py` 外，其余脚本的 hpc 侧都是 `hpc_index()` pybind 直呼，
-绕过了 dispatcher。大 K 下固定开销占比可忽略，比值可信；**短调用（单次几微秒级）
-的比值会偏乐观**，必须以两进程真实 `x[idx]` 对拍（`bench_realpath_driver.py` /
-`bench_smallk_driver.py` / `bench_production_driver.py`）为准。
+`bench_production_shapes.py` / `bench_entry_overhead.py` 外，其余脚本的 hpc 侧都是
+`hpc_index()` 直呼，绕过了 dispatcher。实测这条路的偏置方向是**偏悲观**，不是
+偏乐观：Python 包装 + `torch.ops` 查表比 `x[idx]` **慢 10µs**（K=0/512/2048 都是，
+`torch.ops.aten.index` 一样慢，见 RESULTS §2.12.1）。大 K 下 10µs 可忽略，比值
+可信；**短调用（单次几微秒级）必须用两进程真实 `x[idx]` 对拍**
+（`bench_realpath_driver.py` / `bench_smallk_driver.py` /
+`bench_production_driver.py`），否则会把本算子算慢。
 
 **K / 线程量级同样会决定结论**：`bench_index.py` 的 K=2M/10M（工作集 8-80MB）
 把双方都推到行流量受限区，`bench_threads.py` 的 1/608t 是两个端点。生产的
@@ -96,6 +101,7 @@ K 512-55296（工作集 8KB-4MB）+ 4-19t 落在"每元素成本 / 固定开销"
 | `HPC_CTX_KS` | `bench_context_overhead.py` 上下文组用的 K | `512,2048,8192` |
 | `HPC_SPACED_S` | `bench_context_overhead.py` `spaced` 上下文的调用间隔（秒） | `0.0002` |
 | `HPC_SUBSET` | `bench_production_shapes.py` 只保留名字含任一子串的用例（逗号分隔） | 空（全量） |
+| `HPC_CASES` | 用 `--gen-cases` / `--emit-cases` 的 JSON 直接当用例库（等价于 `--cases`） | 空 |
 | `HPC_LOOP_ITERS` | `bench_realpath.py` 标量循环 case 的计时轮数（每轮内含 `HPC_CALLS` 次调用） | `5` |
 | `HPC_BIG_ITERS` | `bench_realpath.py` 大输出 case（M1/M2）的计时轮数 | `20` |
 | `HPC_CALLS` | `bench_realpath.py` 高频调用 case 的每轮调用次数 | `10000` |
@@ -111,6 +117,11 @@ K 512-55296（工作集 8KB-4MB）+ 4-19t 落在"每元素成本 / 固定开销"
 - `bench_context_overhead.py` 的 K=8192 档会受脚本内 768MB 源分配的堆扰动（aten
   多线程热循环出现 550µs 级假峰，隔离复测 32µs）；看 K≤2048 的档，或先删 `cold`
   组再跑。`forms` 组的 `nonzero` 19t 单格也可能被抖动污染，关键结论请隔离复测。
+- `--weighted` 同时打印两套口径，别读反：**`aten/hpc` >1 = 本算子更快**（本仓库
+  默认），**`index_sve/原生` <1 = 本算子更快**（生产反馈用的口径），互为倒数。
+- `--gen-cases` 里的 `A` 是 **A-br 桶中值映射**，不是 trace 真值；只有 `3→64` 有
+  反馈锚定，其余是几何中点假设，用 `--abr-map '4=256'` 覆盖。A=3 与 A=64 的
+  单算子比值差 1.6 倍（RESULTS §2.12.4），所以这一项会影响加权结果。
 
 ## 5. 典型命令
 
@@ -138,6 +149,20 @@ python benchmarks/bench_production_shapes.py --weighted \
 # 3b. 上下文开销：hot / 线程池冷 / 源冷 / autograd + 固定链 + 混合序列平均
 HPC_AFFINITY=190-227 HPC_THREADS=1,12,19 \
   python benchmarks/bench_context_overhead.py --ab --json ctx.json
+
+# 3c. 入口口径拆解（x[idx] / torch.ops / Python 包装 / empty，K=0/512/2048）
+HPC_THREADS=1,12 HPC_KS=0,512,2048 \
+  python benchmarks/bench_entry_overhead.py --ab --json entry.json
+
+# 3d. trace 热点 → 用例 → 测量 → 加权的完整链路（CSV 是示例，不是真 trace）
+python benchmarks/bench_production_shapes.py --gen-cases \
+    benchmarks/trace_hotspots.example.csv > cases.json
+HPC_CASES=cases.json HPC_THREADS=6,12,19 HPC_REPS=3 \
+  python benchmarks/bench_production_driver.py --out times.json
+python benchmarks/bench_production_shapes.py --gen-cases \
+    benchmarks/trace_hotspots.example.csv --per-model \
+    --total 'SGI=20800,PPT=4896' > models.json
+python benchmarks/bench_production_shapes.py --weighted models.json --times times.json --detail
 
 # 4. 真实 workload 两进程对拍（M5/shortq/A1/M1/M2，含短调用与高频单元素）
 HPC_AFFINITY=190-227 HPC_THREADS=1,8,16,38 \

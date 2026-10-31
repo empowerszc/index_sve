@@ -4,6 +4,10 @@
 而且绕过 dispatcher。生产形态（K 512-55296、4-19 线程、`x[idx]` 走 dispatch）
 在 6-19t 会掉到 1x 以下，见 `benchmarks/bench_production_shapes.py` 与
 RESULTS §2.10 / degradation-analysis.md §6.5。本脚本保留用于历史对照。
+
+注意直呼 `hpc_index()` 的偏置方向：Python 包装 + torch.ops 查表比 `x[idx]`
+慢约 10µs（RESULTS §2.12.1），所以这一列是**偏悲观**的，不是"自娱自乐"式的
+偏乐观。在 K=2M/10M 上这 10µs 可以忽略，但它不能用来测小 K。
 """
 import os, sys, time, torch, statistics
 
