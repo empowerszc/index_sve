@@ -65,7 +65,8 @@ CPU 键覆盖，autograd 不受影响）。构建/运行契约见 `README.md` �
 | R10 | cl/置换布局行块直写：`rowcopy_direct_ok` 资格判定（源/出尾块同 dense 置换 + out 前导块行主序等）+ `IndexSpec::rowcopy_direct` + dispatch 顶部守卫（只允许块拷贝内核）+ `gather.cpp` rowcopy_sve 守卫放宽；cl4d 行索引 0.30-0.42x → **1.45-2.54x**；normalize.cpp 编译警告清零；test_rowcopy_routes 增至 14（直写 2 例含 1t/8t 双档 + 排除 3 + cl3d linearize 臂 1）；verify_e2e 增至 124 例（g5big 大 K 直写 4 例，线程矩阵 46 例） | （本轮） | ✅ |
 | 基准 | 生产形态基准：`bench_production_shapes.py` + `bench_production_driver.py`（K 512-55296、A=1/3/64、线程 1/6/12/19、`x[idx]` 走 dispatch、两进程交替、`--weighted`/`--gen-cases`/`--fit`）；实测 1D A=1 在 6-19t **0.66-1.10x**（1t 1.11-1.61x），机理写入 degradation §6.5 | （本轮） | ✅ |
 | 基准/裁决 | 上下文开销基准 `bench_context_overhead.py`（hot / 池冷 / 源冷 / autograd + K=1 固定链 + A 敏感性 + K=2 小形态 + mask `nonzero` + 1000 次混合序列）；对反馈"固定开销占 93-95%"逐条裁决写入 degradation §6.5.7，原始表 RESULTS §2.11 | （本轮） | ✅ |
-| 测试加固 | 两个靠 `x[...]` 的套件补前置守卫（`index_sve.OVERRIDE_ACTIVE`，`NO_OVERRIDE=1` 直接 rc=1）+ 入口计数 `dispatch_count()` 给负向断言配正向控制（覆盖静默失效时 6 项全挂、假通过归零）；排查过程与 13 步检查表写入 debugging-playbook.md | （本轮） | ✅ |
+| 测试加固 | 两个靠 `x[...]` 的套件补前置守卫（`index_sve.OVERRIDE_ACTIVE`，`NO_OVERRIDE=1` 直接 rc=1）+ 入口计数 `dispatch_count()` 给负向断言配正向控制（覆盖静默失效时 6 项全挂、假通过归零）；排查过程与检查表写入 debugging-playbook.md | （本轮） | ✅ |
+| 测试补口 | 源大小路由门补边界用例（`numel*element_size > 512KB`，判据来自 degradation §5.9.1 的 4B gather 成本交叉点）：512KB 整走标量、+4B 走 SVE，两侧各钉一点；同时订正 `test_f32_i64_1d_route` 注释里被撤回的 0.63/1.2ns 旧口径为 7.1/18ns | （本轮） | ✅ |
 | 基准/裁决 2 | 基准口径审计：`bench_entry_overhead.py` 量出入口偏置（Python 包装 +10µs、`torch.ops` +9µs）；`bench_production_shapes.py` 增加 `--cases`/`--per-model`/`--total`/`--detail`/`--abr-map`/CSV fixture 与"两套口径 + ①③覆盖率区间"；按反馈热点重建 trace 复现加权，得 0.767/0.780/0.783（反馈是 1.116/1.184/0.980）。原始表 RESULTS §2.12，裁决 degradation §6.5.8 | （本轮） | ✅ |
 
 ## 3. 路由现状（op.cpp `index_impl`）
@@ -111,11 +112,11 @@ out 连续                          → index_into 直写
 
 ## 4. 测试
 
-- **174/174 通过**：test_correctness 25、test_errors 6、test_model 9、
+- **175/175 通过**：test_correctness 25、test_errors 6、test_model 9、
   test_normalize 9、test_smoke 2、test_sve 25、test_index_out 7、test_mask_fused 9、
-  test_smallk 7、test_compile_optin 3、test_strided_rows 6、test_rowcopy_routes 14
+  test_smallk 7、test_compile_optin 3、test_strided_rows 6、test_rowcopy_routes 15
   （R10 增至 14：cl 直写路由 2 例含 1t/8t 双档 + 排除形态 3 例 +
-  cl3d linearize 臂 1 例）、test_small_multi 11、
+  cl3d linearize 臂 1 例；+1 为源大小门边界）、test_small_multi 11、
   test_autograd 16、test_output_layout 25（输出布局专项，期望 stride 为无覆盖
   进程实测真值钉入）。
 - 复跑：`for t in tests/test_smoke.py tests/test_normalize.py tests/test_correctness.py tests/test_errors.py tests/test_sve.py tests/test_model.py tests/test_index_out.py tests/test_mask_fused.py tests/test_smallk.py tests/test_compile_optin.py tests/test_strided_rows.py tests/test_rowcopy_routes.py tests/test_small_multi.py tests/test_autograd.py tests/test_output_layout.py; do python $t; done`

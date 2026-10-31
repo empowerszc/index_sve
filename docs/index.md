@@ -23,7 +23,7 @@
 | [override-mechanism.md](override-mechanism.md) | **Dispatcher 劫持机制详解**：如何覆盖 aten::index、autograd 为何不受影响、递归/唯一性边界、验证方法 | 想搞清"怎么做到的"的读者 |
 | [porting.md](porting.md) | 移植到其他 aarch64/SVE 变体、非 512-bit VL、其他 torch 版本 | 移植维护 |
 | [status.md](status.md) | **当前进展快照**：完成的工作、路由现状、性能结论、已知限制、**演进方向（§7 优先级表，接续开发从这看）** | 新读者/agent 快速上手 |
-| [debugging-playbook.md](debugging-playbook.md) | **排查手记与套路**：断言四型分类法（正向计数/负向计数/值级/元数据）、能让行为不同的变量清单、**负向对照**实验、假通过比 fail 更危险的实例；两个完整案例（`test_rowcopy_routes` 覆盖关闭时 12/14 而其中 4 项是假通过、`test_output_layout` 关覆盖仍 25/25）、两层修复（入口守卫 + `dispatch_count` 正向控制）与验证、改高频引用源文件后的锚点维护、走过的弯路；§7 是可直接照做的 13 步检查表 | 想学排查方法、接手"有测试过不了"报告的 agent |
+| [debugging-playbook.md](debugging-playbook.md) | **排查手记与套路**：断言四型分类法（正向计数/负向计数/值级/元数据）、能让行为不同的变量清单、**负向对照**实验、假通过比 fail 更危险的实例；两个完整案例（`test_rowcopy_routes` 覆盖关闭时 12/14 而其中 4 项是假通过、`test_output_layout` 关覆盖仍 25/25）、两层修复（入口守卫 + `dispatch_count` 正向控制）与验证、改高频引用源文件后的锚点维护、走过的弯路；§7 是可直接照做的 14 步检查表 | 想学排查方法、接手"有测试过不了"报告的 agent |
 
 ### 归档（archive/）
 

@@ -84,7 +84,7 @@ index_sve/
 │   ├── linearize.{h,cpp} # 线性化 + 越界检查，int32 保持（直接写 int32）
 │   ├── grain.h           # 自适应并行粒度（T0）
 │   ├── gather.{h,cpp}    # SVE gather/rowcopy/scalar + gather_direct + M1 raw / T3 fused / T4 桶化
-├── tests/                # 15 套件 174 测试（smoke/normalize/correctness/errors/sve/model/index_out/mask_fused/smallk/compile_optin/strided_rows/rowcopy_routes/small_multi/autograd/output_layout）
+├── tests/                # 15 套件 175 测试（smoke/normalize/correctness/errors/sve/model/index_out/mask_fused/smallk/compile_optin/strided_rows/rowcopy_routes/small_multi/autograd/output_layout）
 ├── benchmarks/           # bench_index.py（原始矩阵）、bench_pinned.py/bench_gate.py（定点核复测）
 │   │                     # bench_t1.py/bench_t2.py/bench_ai4s.py（优化轮专项）、bench_regression.py（回归扫描）
 │   │                     # bench_threads.py（全线程矩阵 1-38t）
@@ -218,11 +218,12 @@ for t in tests/test_smoke.py tests/test_normalize.py tests/test_correctness.py \
          tests/test_output_layout.py; do python $t; done
 ```
 
-全部通过 = 174/174（覆盖激活态；test_correctness 25、test_errors 6、test_model 9、
+全部通过 = 175/175（覆盖激活态；test_correctness 25、test_errors 6、test_model 9、
 test_normalize 9、test_smoke 2、test_sve 25、test_index_out 7、test_mask_fused 9、
-test_smallk 7、test_compile_optin 3、test_strided_rows 6、test_rowcopy_routes 14
+test_smallk 7、test_compile_optin 3、test_strided_rows 6、test_rowcopy_routes 15
 （R10 增至 14：cl 直写路由 2 例含 1t/8t 双档 + 排除形态 3 例 +
-cl3d linearize 臂 1 例）、test_small_multi 11、
+cl3d linearize 臂 1 例；+1 为 §5.9.1 成本交叉点导出的源大小门边界）、
+test_small_multi 11、
 test_autograd 16、test_output_layout 25）。
 覆盖下测试是自洽的（`x[i]` 也走
 本算子），值级真对拍用两进程法（无覆盖进程生成 true-aten 参考，覆盖进程比对）：

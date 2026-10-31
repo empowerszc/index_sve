@@ -108,9 +108,9 @@ def test_medium_a_large_k_keeps_linearize():
 
 def test_f32_i64_1d_route():
     # T15-C：f32 数据 + int64 下标的 1D 纯 gather。小源（≤512KB，L1/L2 常驻）标量
-    # 单遍更快——4B SVE gather 微码吞吐下限 ~1.2ns/元素，高于标量 L1 命中循环
-    # ~0.63ns/元素（实测 K=65536 源 16KB：SVE 75µs vs 标量 41µs）；大源（L3/DRAM）
-    # 走专用单遍 SVE 内核（gather MLP 吸收延迟，K=10M 源 8MB：8t 1.32→1.93x）。
+    # 单遍更快——每线程每元素 4B SVE gather ~18ns vs 标量 L1 命中 ~7.1ns（微码/
+    # 发射下限，双内核复现；大源反转 ~10 vs ~18.8ns，见 degradation §5.9.1）；
+    # 大源（L3/DRAM）走专用单遍 SVE 内核（gather MLP 吸收延迟，8t 1.32→1.93x）。
     # 不能经 linearize 落 gather_index——bucket 扫描+linearize+bucket 扫描+SVE
     # 共 4 遍 fork-join（实测 K=65536 56→110µs）。
     idx = torch.randint(0, 4096, (65536,), dtype=torch.int64)
@@ -137,6 +137,29 @@ def test_f32_i64_1d_route():
         cref = torch.index_select(cx, 0, idx)
         torch.testing.assert_close(index_sve.index(cx, [idx]), cref)
         assert C.single_1d_count() == before + 2, "complex64 control should stay scalar"
+    finally:
+        torch.set_num_threads(old)
+
+
+def test_single_1d_sve_source_boundary():
+    # 路由门 self.numel()*element_size > 512KB（op.cpp:142）：§5.9.1 的成本交叉点
+    # 在 L2（768KB）附近，门取 L2 之下的保守界。两侧各钉一点，防阈值漂移或
+    # 比较符翻转——那只会掉 2.5x 性能，功能测试全绿。
+    old = torch.get_num_threads()
+    try:
+        torch.set_num_threads(8)
+        for numel, want_sve in ((131072, False), (131073, True)):  # 512KB 整 / +4B
+            x = torch.randn(numel)
+            idx = torch.randint(0, numel, (65536,), dtype=torch.int64)
+            ref = torch.index_select(x, 0, idx)
+            b1 = C.single_1d_count()
+            bs = C.single_1d_sve_count()
+            y = index_sve.index(x, [idx])
+            torch.testing.assert_close(y, ref)
+            assert C.single_1d_sve_count() - bs == int(want_sve), \
+                f"numel={numel} ({numel * 4}B) want_sve={want_sve}"
+            assert C.single_1d_count() - b1 == int(not want_sve), \
+                f"numel={numel} ({numel * 4}B) scalar branch"
     finally:
         torch.set_num_threads(old)
 
