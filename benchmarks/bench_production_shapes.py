@@ -21,11 +21,16 @@
   python benchmarks/bench_production_shapes.py --gen-cases trace.csv > cases.json
   HPC_CASES=cases.json python benchmarks/bench_production_driver.py --out t.json
   # 按调用次数加权合成（不需要 torch；cases.json 直接当权重文件）
-  python benchmarks/bench_production_shapes.py --weighted cases.json --times t.json
+  # 默认窄版（一模型一块，<=70 列）；--md 出文档表；--detail 加按耗时的排名
+  python benchmarks/bench_production_shapes.py --weighted cases.json --times t.json --detail
+  python benchmarks/bench_production_shapes.py --weighted cases.json --times t.json --md
 
 两条口径一起打印，避免把方向读反：
   aten/hpc       >1 = 本算子更快（本仓库文档的默认口径）
   index_sve/原生  <1 = 本算子更快（反馈 §11.3.3 表格用的口径，互为倒数）
+
+"全程①/③" 是给未覆盖长尾的两种补全假设（持平 / 本算子慢 2x），括号外的
+覆盖内比值只说明被覆盖的形态；①和③夹住 1.0 就说明覆盖率不足以下方向结论。
 """
 import argparse
 import csv
@@ -294,12 +299,24 @@ def _load_weights(path, threads):
                         "calls": calls}]}
 
 
-def weighted(weights_path, times_path, threads=12, detail=False):
+def _detail_lines(rows, top=6):
+    """按 hpc 耗时（次数×单次）排序，不用调用次数排——两者经常不是一回事。"""
+    tot_h = sum(r[0] for r in rows) or 1.0
+    out = [f"  按耗时 Top {min(top, len(rows))}"
+           f"（形态  calls  hpcµs  占比  aten/hpc）"]
+    for wh, w, name, a, h in sorted(rows, reverse=True)[:top]:
+        out.append(f"    {name:34s} {w:6d} {h:7.1f} {100 * wh / tot_h:4.0f}% "
+                   f"{a / h:5.2f}x")
+    return out
+
+
+def weighted(weights_path, times_path, threads=12, detail=False, md=False):
     """按调用次数加权，两个口径一起给，并把"未覆盖长尾"的不确定性显式化。
 
-    覆盖内比值只反映被覆盖的形态；覆盖率低时它不代表整体。这里额外给出三个
-    "全程"估计：未覆盖调用按持平 / 按覆盖内比值 / 按本算子慢 2x。三者跨过 1.0
-    就说明覆盖率不足以下方向结论。
+    默认输出是窄版（一模型一块，宽度 <=70 列，方便直接看终端）；`md=True`
+    输出 markdown 表，给文档用。覆盖内比值只反映被覆盖的形态，所以额外给
+    两个"全程"估计：未覆盖调用按与本算子持平（①）/ 按本算子慢 2x（③）补全。
+    中间那种"按覆盖内同比例"补全恒等于覆盖内比值，不单列。
     """
     spec = _load_weights(weights_path, threads)
     times = json.load(open(times_path, encoding="utf-8"))
@@ -309,9 +326,11 @@ def weighted(weights_path, times_path, threads=12, detail=False):
 
     print(f"# 权重来源：{spec.get('note', weights_path)}")
     print("# aten/hpc >1 = 本算子更快；index_sve/原生 <1 = 本算子更快（互为倒数）")
-    print("| 模型 | TH | 覆盖调用 | 覆盖内 aten/hpc | index_sve/原生 | 全程"
-          "（未覆盖持平） | 全程（同覆盖） | 全程（未覆盖慢2x） |")
-    print("|---|---|---|---|---|---|---|---|")
+    if md:
+        # ②（未覆盖与覆盖内同比例）恒等于覆盖内比值，单列没信息量，省掉。
+        print("| 模型 | TH | 覆盖 | aten/hpc | sve/原生 | 全程① | 全程③ |")
+        print("|---|---|---|---|---|---|---|")
+
     for m in spec["models"]:
         th = m.get("threads", threads)
         covered = miss = 0
@@ -331,31 +350,38 @@ def weighted(weights_path, times_path, threads=12, detail=False):
         # total_calls 可能大于权重表里的热调用之和：差额是根本没列进 trace 的长尾。
         miss = max(miss, total - covered)
         if not sh or not covered:
-            print(f"| {m['name']} | {th} | 0/{total} | n/a | n/a | n/a | n/a | n/a |")
+            head = f"| {m['name']} | {th} | 0/{total} |"
+            print(head + " n/a | n/a | n/a | n/a |" if md
+                  else f"{m['name']}  TH={th}  覆盖 0/{total}，无可用测量")
             continue
         a_mean = sa / covered
         cov = sa / sh
-        # 未覆盖调用的单次 aten 取覆盖内均值；hpc 侧按三种假设
-        est = []
-        for r_u in (1.0, sh / sa, 2.0):
-            est.append((sa + miss * a_mean) / (sh + miss * a_mean * r_u))
-        print(f"| {m['name']} | {th} | {covered}/{total} "
-              f"({100 * covered / total:.0f}%) | {cov:.3f}x | {1 / cov:.3f}x | "
-              f"{est[0]:.3f}x | {est[1]:.3f}x | {est[2]:.3f}x |")
+        # 未覆盖调用的单次 aten 取覆盖内均值；hpc 侧按 ①持平 / ③慢2x 两种假设。
+        est0 = (sa + miss * a_mean) / (sh + miss * a_mean)
+        est2 = (sa + miss * a_mean) / (sh + miss * a_mean * 2.0)
+        if md:
+            print(f"| {m['name']} | {th} | {100 * covered / total:.0f}% "
+                  f"({covered}/{total}) | {cov:.3f}x | {1 / cov:.3f}x | "
+                  f"{est0:.3f}x | {est2:.3f}x |")
+            if detail:
+                # 每行再缩进 4 格：markdown 里是代码块，等宽对齐才不会被折掉。
+                print("\n" + "\n".join("    " + ln for ln in _detail_lines(rows)))
+                print()
+            continue
+        print(f"\n{m['name']}  TH={th}  覆盖 {covered}/{total} "
+              f"({100 * covered / total:.0f}%)")
+        print(f"  覆盖内    aten/hpc {cov:.3f}x   index_sve/原生 {1 / cov:.3f}x")
+        print(f"  全程      ①持平 {est0:.3f}x   ③慢2x {est2:.3f}x"
+              f"   （②同覆盖 = 上面 {cov:.3f}x）")
         if detail:
-            tot_h = sum(r[0] for r in rows)
-            print(f"\n  按 hpc 耗时排序（{m['name']}，TH={th}）：")
-            print("  | 形态 | 调用 | hpc µs | 占 hpc 时间 | aten/hpc |")
-            print("  |---|---|---|---|---|")
-            for wh, w, name, a, h in sorted(rows, reverse=True)[:6]:
-                print(f"  | {name} | {w} | {h:.1f} | {100 * wh / tot_h:.0f}% | "
-                      f"{a / h:.2f}x |")
-            print()
-    print("\n> 三个「全程」列 = 未覆盖调用按三种假设补全：①与本算子持平"
-          "（aten/hpc=1）②与覆盖内同比值 ③本算子慢 2 倍（aten/hpc=0.5）。"
-          "三者跨过 1.0 就说明覆盖率不足以下方向结论。\n> 覆盖内比值只说明"
-          "「被覆盖的形态」；按调用次数覆盖率不等于按耗时覆盖率——长尾大形态"
-          "少数派可以主导总时间（RESULTS §2.11.5）。")
+            print("\n".join(_detail_lines(rows)))
+
+    print("\n① 未覆盖调用按 aten/hpc=1（与本算子持平）补全"
+          "\n② 按覆盖内同比值补全（恒等于覆盖内比值，故不单列）"
+          "\n③ 按本算子慢 2x（aten/hpc=0.5）补全"
+          "\n   ①和③夹住 1.0 就说明覆盖率不足以下方向结论。"
+          "\n> 覆盖内比值只说明「被覆盖的形态」；按调用次数覆盖率不等于按耗时"
+          "覆盖率——\n  长尾大形态少数派可以主导总时间（RESULTS §2.11.5）。")
 
 
 def main():
@@ -367,6 +393,8 @@ def main():
     ap.add_argument("--th", type=int, default=12,
                     help="--weighted 用哪个线程档（用例列表输入时）")
     ap.add_argument("--detail", action="store_true", help="打印按耗时的形态排名")
+    ap.add_argument("--md", action="store_true",
+                    help="--weighted 输出 markdown 表（默认是窄版，给终端看）")
     ap.add_argument("--abr-map", metavar="SPEC", default="",
                     help="覆盖 A-br 映射，如 '3=64,4=256'")
     ap.add_argument("--per-model", action="store_true",
@@ -394,7 +422,7 @@ def main():
     if args.weighted:
         if not args.times:
             raise SystemExit("--weighted 需要 --times（driver 的 --out 结果）")
-        weighted(args.weighted, args.times, args.th, args.detail)
+        weighted(args.weighted, args.times, args.th, args.detail, args.md)
         return
 
     rows = measure(CASES, THREADS)

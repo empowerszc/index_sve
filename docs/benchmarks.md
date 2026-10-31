@@ -16,7 +16,7 @@
 | `bench_smallk_driver.py` | **正式基准** | 交替启动 aten/hpc 两个子进程，汇总小 K 中位数，排除 pybind 包装噪声 | 小 K（K<=65536）真实路径验收 |
 | `bench_realpath.py` | 组件脚本 | 单进程真实 workload（M5/shortq/A1/M1/M2）`x[idx]` 计时，输出 JSON；由 driver 交替调用 | 不单独用，配合 `bench_realpath_driver.py` |
 | `bench_realpath_driver.py` | **正式基准** | 交替启动 aten/hpc 两个子进程，真实路径全 case 对拍（含短调用、高频单元素） | 短调用 / 真实 workload 收益结论的首选依据 |
-| `bench_production_shapes.py` | 组件脚本 | 生产形态库（K 512-55296、A=1/3/64、线程 1/6/12/19、`x[idx]` 走 dispatch）单进程计时，输出 JSON；含 `--emit-cases`/`--gen-cases`/`--per-model`/`--weighted`/`--detail`/`--abr-map`/`--total`/`--cases` | 不单独用，配合 `bench_production_driver.py`；加权/覆盖率结论见 RESULTS §2.12 |
+| `bench_production_shapes.py` | 组件脚本 | 生产形态库（K 512-55296、A=1/3/64、线程 1/6/12/19、`x[idx]` 走 dispatch）单进程计时，输出 JSON；含 `--emit-cases`/`--gen-cases`/`--per-model`/`--weighted`/`--detail`/`--md`/`--abr-map`/`--total`/`--cases` | 不单独用，配合 `bench_production_driver.py`；加权/覆盖率结论见 RESULTS §2.12 |
 | `trace_hotspots.example.csv` | 输入 fixture | **不是真实 trace**：按生产反馈 §11.2.5 的聚合热点表手工重建（model/path/K/A/dom/calls/threads），用来演示 `--gen-cases` 的输入格式 | 有真 trace 时换成真文件；格式说明见文件头注释 |
 | `bench_production_driver.py` | **正式基准** | 交替启动 aten/hpc 两进程，汇总生产形态矩阵；`--fit` 把"固定开销 / 每元素成本"分开 | **生产收益结论的唯一依据**，任何"单算子几倍"的结论都要附这一族（RESULTS §2.10） |
 | `bench_context_overhead.py` | 诊断 | 同一形态在 hot / 线程池冷（spaced）/ 源冷 / autograd 四种上下文下的单次耗时；另含固定链（K=1）、A 敏感性、K=2 小形态、mask 的 `nonzero` 与混合序列 | 回答"模型内每次调用比 bench 贵多少"，RESULTS §2.11 |
@@ -119,6 +119,9 @@ K 512-55296（工作集 8KB-4MB）+ 4-19t 落在"每元素成本 / 固定开销"
   组再跑。`forms` 组的 `nonzero` 19t 单格也可能被抖动污染，关键结论请隔离复测。
 - `--weighted` 同时打印两套口径，别读反：**`aten/hpc` >1 = 本算子更快**（本仓库
   默认），**`index_sve/原生` <1 = 本算子更快**（生产反馈用的口径），互为倒数。
+- `--weighted` 默认是**窄版**（一个模型一块、宽度 ≤70 列，直接看终端）；要贴进
+  文档加 `--md`。`--detail` 给的排名按"调用次数 × 单次耗时"，不是按次数——
+  两者结论经常不同（RESULTS §2.12.2）。
 - `--gen-cases` 里的 `A` 是 **A-br 桶中值映射**，不是 trace 真值；只有 `3→64` 有
   反馈锚定，其余是几何中点假设，用 `--abr-map '4=256'` 覆盖。A=3 与 A=64 的
   单算子比值差 1.6 倍（RESULTS §2.12.4），所以这一项会影响加权结果。
@@ -162,7 +165,10 @@ HPC_CASES=cases.json HPC_THREADS=6,12,19 HPC_REPS=3 \
 python benchmarks/bench_production_shapes.py --gen-cases \
     benchmarks/trace_hotspots.example.csv --per-model \
     --total 'SGI=20800,PPT=4896' > models.json
+# 窄版给终端看；--md 出文档表；--detail 加"按耗时"排名
 python benchmarks/bench_production_shapes.py --weighted models.json --times times.json --detail
+python benchmarks/bench_production_shapes.py --weighted models.json --times times.json --md \
+    > weighted.md
 
 # 4. 真实 workload 两进程对拍（M5/shortq/A1/M1/M2，含短调用与高频单元素）
 HPC_AFFINITY=190-227 HPC_THREADS=1,8,16,38 \
