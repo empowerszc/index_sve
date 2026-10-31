@@ -5,8 +5,8 @@
 > [architecture.md](architecture.md)，每个内核为什么快/慢看 [kernels.md](kernels.md)，
 > 遇到名词/代号查 [glossary.md](glossary.md)。
 >
-> **行号与源码版本**：以下行号对应 `index_sve/index_sve/` 的 `330d268`
-> （op.cpp 681 行、gather.cpp 1095 行、normalize.cpp 211 行、linearize.cpp
+> **行号与源码版本**：以下行号对应 `index_sve/index_sve/` 的当前提交
+> （op.cpp 689 行、gather.cpp 1095 行、normalize.cpp 211 行、linearize.cpp
 > 162 行）。源码改动后跑 `python tools/check_doc_anchors.py`——它逐条校验
 > `file:NNN` 引用是否仍指向含同名符号的行，漂移即报错。
 > 代码注释里大量出现任务/场景代号（T2 = 优化轮次、M1 = 场景形态、A7 = 手段编号、
@@ -38,7 +38,7 @@
 端到端主干（真实函数名 + 行号，§2 有详细版）：
 
 ```
-x[idx] ─► dispatcher（aten::index.Tensor 的 CPU 键已被 op.cpp:633 覆盖）
+x[idx] ─► dispatcher（aten::index.Tensor 的 CPU 键已被 op.cpp:630 覆盖）
   └► index_impl                     op.cpp:546    入口校验 + sync_omp_threads
      ├► mask_fast_path              op.cpp:190   ─► gather_mask          gather.cpp:1023
      ├► small_single_index          op.cpp:338    免 normalize
@@ -59,14 +59,14 @@ x[idx] ─► dispatcher（aten::index.Tensor 的 CPU 键已被 op.cpp:633 覆�
 
 | 文件 | 行数 | 职责一句话 | 优先级 |
 |---|---|---|---|
-| index_sve/normalize.h | 20 | **IndexSpec 定义**（核心数据结构）+ normalize_index 声明 | ★★★ 第一个读 |
-| index_sve/op.cpp | 500 | 入口校验、两级路由、免 normalize 快路径、注册三件套、调试出口 | ★★★ |
-| index_sve/normalize.cpp | 213 | ATen 语义归一：mask→nonzero、广播、转置、decode_offsets → IndexSpec | ★★★ |
+| index_sve/normalize.h | 24 | **IndexSpec 定义**（核心数据结构）+ normalize_index 声明 | ★★★ 第一个读 |
+| index_sve/op.cpp | 689 | 入口校验、两级路由、免 normalize 快路径、注册三件套、调试出口 | ★★★ |
+| index_sve/normalize.cpp | 211 | ATen 语义归一：mask→nonzero、广播、转置、decode_offsets → IndexSpec | ★★★ |
 | index_sve/linearize.cpp | 162 | 两遍模型第一遍：把广播下标物化成扁平元素偏移（可 int32 直写） | ★★ |
-| index_sve/gather.cpp | 1093 | 全部计算内核：SVE 原语 → 中层 → 顶层入口（§7 族谱） | ★★★ 主战场 |
+| index_sve/gather.cpp | 1095 | 全部计算内核：SVE 原语 → 中层 → 顶层入口（§7 族谱） | ★★★ 主战场 |
 | index_sve/gather.h / linearize.h | 16/4 | 内核与 linearize 的声明 | ★ |
 | index_sve/grain.h | 16 | adaptive_grain 并行粒度（§8） | ★ |
-| index_sve/__init__.py | 15 | dlopen 触发注册 + 两个环境变量门（§9） | ★ |
+| index_sve/__init__.py | 17 | dlopen 触发注册 + 两个环境变量门（§9） | ★ |
 | index_sve/register_aten.py | 11 | 历史兼容层：install() 已是空实现（§9） | |
 | index_sve/compile_support.py | 98 | torch.compile 的 opt-in 三步（§9） | |
 | setup.py（仓库 index_sve/ 根） | — | 构建入口 `python setup.py build_ext --inplace`（BiSheng 工具链、`-fopenmp`、SVE512；选项见源文件） | |
@@ -95,28 +95,28 @@ Python __getitem__
  └► torch/csrc 的 TensorIndexing 层：整数/切片在该层解决；x[None]（新轴）也在该层
     unsqueeze 解决，从不进入本算子。传给 dispatcher 的是 aten::index.Tensor
     (self, Tensor?[] indices)；列表里的 None/undefined = "该维跳过"占位（x[:, i] 的 :）
- └► dispatcher：CPU key 已被 op.cpp:633 的 TORCH_LIBRARY_IMPL(aten, CPU) 指到 index_impl
+ └► dispatcher：CPU key 已被 op.cpp:630 的 TORCH_LIBRARY_IMPL(aten, CPU) 指到 index_impl
      └► index_impl                      op.cpp:546
         ① to_vec(:548)                  List → vector
-        ② 校验(:546-548)                空列表 / 索引数超过维数
-        ③ sync_omp_threads(:549)        omp_set_num_threads(at::get_num_threads())
+        ② 校验(:549-551)                空列表 / 索引数超过维数
+        ③ sync_omp_threads(:553)        omp_set_num_threads(at::get_num_threads())
                                         （T11：双 OpenMP runtime 的 ICV 同步，§8.3）
-        ④ mask_fast_path(:551)          不中——idx 是 int64 不是 mask
-        ⑤ small_single_index(:552)      不中——K = 1M > 4096
-        ⑥ small_multi_index(:553)      不中——单索引
-        ⑦ normalize_index(:554)        → IndexSpec：B=1、K=1M、A=64、
+        ④ mask_fast_path(:555)          不中——idx 是 int64 不是 mask
+        ⑤ small_single_index(:556)      不中——K = 1M > 4096
+        ⑥ small_multi_index(:557)      不中——单索引
+        ⑦ normalize_index(:558)        → IndexSpec：B=1、K=1M、A=64、
                                         after_contiguous=true（本例不 permute）
-        ⑧ empty_strided(:556)          y (1M, 64)；连续 out → 直进 index_into
-                                        （非连续且 rowcopy_direct_ok 也直进 :559-562）
-        ⑨ index_into(:558)             op.cpp:52，逐条试探：
+        ⑧ empty_strided(:560)          y (1M, 64)；连续 out → 直进 index_into
+                                        （非连续且 rowcopy_direct_ok 也直进 :563-566）
+        ⑨ index_into(:562)             op.cpp:52，逐条试探：
            · #1 K<1024 ?                 否
-           · #2 M1 raw(:81-86)？         A=64∈[16,64] 但 B*K=1M>65536 ✗、
+           · #2 M1 raw(:84-89)？         A=64∈[16,64] 但 B*K=1M>65536 ✗、
                                         A<16 ✗、A≥4096 ✗ → 不中
-           · #3 strided(:96)?           after_contiguous → ✗
-           · #4 多索引 raw(:103)?        单索引 ✗
-           · #5-#7 1D 族(:118)?          A≠1 ✗
-           · #8 1 线程特判(:167)?        36 线程 ✗
-           · #9(:176)：after_contiguous ∧ A=64≥4 ∧ f32 ✓
+           · #3 strided(:99)?           after_contiguous → ✗
+           · #4 多索引 raw(:106)?        单索引 ✗
+           · #5-#7 1D 族(:121)?          A≠1 ✗
+           · #8 1 线程特判(:170)?        36 线程 ✗
+           · #9(:179)：after_contiguous ∧ A=64≥4 ∧ f32 ✓
              → linearize(spec, idx)     linearize.cpp:85
                  use_i32（op.cpp:156）：numel=3.2M < 2^31 且 f32 → 物化成 int32 偏移
                  all_full_contig → 直读 idx[k]，内联检查+负归一，一遍写完
@@ -159,17 +159,18 @@ Python __getitem__
 
 ## 4. op.cpp 逐段精读
 
-### 4.1 工具层（:21-46）
+### 4.1 工具层（:21-49）
 
 - `to_vec`(:21)：`c10::List` → `std::vector`，后续按下标访问。
 - `non_temporal_enabled`(:29)：读 `HPC_INDEX_NT` 环境变量，`static` 只读一次。
 - `sync_omp_threads`(:37)：**T11 的关键修复**。扩展链 BiSheng libomp、ATen 链
   libgomp，`torch.set_num_threads` 只改 libgomp 的线程数 ICV；不同步的话本算子
   永远用 libomp 默认线程数，torch 的线程设置形同虚设。ICV 按调用线程生效，所以
-  每次入口调一次（:549/:592）而不是只调一次。
-- `g_single_1d` / `g_single_1d_sve`(:45-46)：诊断计数器（§4.8、附录 B）。
+  每次入口调一次（:553/:597）而不是只调一次。
+- `g_single_1d` / `g_single_1d_sve`(:45-46)、`g_dispatch`(:49)：诊断计数器
+  （§4.8、附录 B）；后者是测试用的入口计数。
 
-### 4.2 index_into：大路由（:49-181）——本文件的心脏
+### 4.2 index_into：大路由（:52-184）——本文件的心脏
 
 走到这里的调用都已 normalize（有 IndexSpec）、out 已分配。十一条路由**从上到下依次
 试探**，条件全部显式：
@@ -192,30 +193,30 @@ Python __getitem__
 
 - **顺序就是优先级**：#1 在 #2 之前——K<1024 时哪怕形状是 M1 也走 direct。
   #2 的规模门槛放行三类形状（A≥4096 超宽行 / A<16 窄行 / A≤64 且行数少），
-  注释 :77-80 记录了为什么大 K 不放行——raw 逐行检查链在冷源行拷贝下反而慢
+  注释 :80-83 记录了为什么大 K 不放行——raw 逐行检查链在冷源行拷贝下反而慢
   12-32%（A/B 实测）。
-- `sve_ok`(:126-128) 只描述"这个 dtype/下标组合有没有 SVE 内核"：i32 下标配
+- `sve_ok`(:129-131) 只描述"这个 dtype/下标组合有没有 SVE 内核"：i32 下标配
   f32/i32，i64 下标配 f64/i64。**f32 数据 + i64 下标不在内**——那是 #6（T15-C
   专用内核）的地盘；#6 不中且多线程时落 #9（两遍模型 + gather_index 的 8B/4B 分支）。
-- `use_i32`(:153-154)：`self.numel() < 2³¹ && (f32 ∨ i32)` 才用 int32 偏移数组，
+- `use_i32`(:156-157)：`self.numel() < 2³¹ && (f32 ∨ i32)` 才用 int32 偏移数组，
   省一半物化内存/带宽；**溢出自动退 int64**——gather_index 的 4B SVE 分支要求
-  idx32，退了就自然落 dispatch_scalar（注释 :151-152）。
+  idx32，退了就自然落 dispatch_scalar（注释 :154-155）。
 - 非 SVE512 机器（`svcntb()!=64`）一切照跑：#6 不中、gather_index 里
   `sve_512_ok()` 再拦一次，最终 dispatch_scalar。路由条件从不假设硬件，只在
   入口检查。
 
-### 4.3 mask_fast_path（:187-214）
+### 4.3 mask_fast_path（:190-217）
 
 准入：恰好一个索引、是 bool/byte mask、两者同 CPU、mask 维数在 1..self.dim()、
-两者都连续、逐维 shape 相等（不等按 aten 文案报错 :200-205）。uint8 顺带发
-deprecation 警告（:207-210，与 normalize.cpp:50-53 文案一致）。命中 →
+两者都连续、逐维 shape 相等（不等按 aten 文案报错 :203-208）。uint8 顺带发
+deprecation 警告（:210-213，与 normalize.cpp:50-53 文案一致）。命中 →
 `gather_mask`（gather.cpp:1023）。
 
 **为什么在 normalize 之前**：aten 的 mask 语义要先把 mask 转 nonzero 下标再
 gather；本路径一遍扫描直接写出结果，normalize 的 expand/permute/vector 分配全
 用不上（T8）。mask 覆盖前 md 维的形状校验在这里提前做掉了。
 
-### 4.4 small_multi_index（:222-322）
+### 4.4 small_multi_index（:225-325）
 
 T13 免 normalize 路径。准入：≥2 个索引、全部 int64/int32、同 shape、连续、
 CPU、self 连续、n≤65536（op.cpp:228-246）。要点：
@@ -227,7 +228,7 @@ CPU、self 连续、n≤65536（op.cpp:228-246）。要点：
 - 拷贝段先 `AT_DISPATCH`(op.cpp:296) 再按 `n*A ≥ 2048` 决定并行（op.cpp:318）——阈值是
   固定值不含线程数：offs 已经串行算过，并行段只剩纯拷贝。
 
-### 4.5 small_single_index 与并行阈值（:324-390）
+### 4.5 small_single_index 与并行阈值（:327-393）
 
 T9。准入：单 int64/int32 下标、`K = idx.size(-1) ≤ 4096`（op.cpp:347）、self/idx
 连续。A≥2 每行 memcpy（op.cpp:377-380，注释解释 A=3 标量循环比 memcpy 慢 ~2x 的实测）；
@@ -246,26 +247,26 @@ small K 下 fork-join 开销可能超过收益，且按总元素数 `n*A` 而非
 - `index_out_impl`(:579)：out= 变体**不走任何免 normalize 快路径**，直接
   normalize；dtype/device 校验与 aten 结构化 out 语义对齐（op.cpp:587-591），需要时
   resize（op.cpp:592），然后 `assert_no_internal_overlap` / `assert_no_overlap`
-  （op.cpp:593-595）。**非连续 out 走临时张量 + copy_**（op.cpp:599-604）——语义正确性优先
+  （op.cpp:593-595）。**非连续 out 走临时张量 + copy_**（op.cpp:600-603）——语义正确性优先
   （test_index_out.py 对拍的就是这些边界）。
 
-### 4.7 注册三件套（:603-631）
+### 4.7 注册三件套（:608-636）
 
 ```
-TORCH_LIBRARY(hpc_index, m)          :603  只 def schema，不挂 CompositeImplicitAutograd
+TORCH_LIBRARY(hpc_index, m)          :608  只 def schema，不挂 CompositeImplicitAutograd
 TORCH_LIBRARY_IMPL(hpc_index, CPU)   :614  本家 op 的 CPU 实现
-TORCH_LIBRARY_IMPL(aten, CPU, m)    :625  把 aten::index.Tensor / index.Tensor_out 的
+TORCH_LIBRARY_IMPL(aten, CPU, m)    :630  把 aten::index.Tensor / index.Tensor_out 的
                                          CPU 键改指到 index_impl / index_out_aten
 ```
 
 - hpc_index 只 def schema 的原因：挂 CompositeImplicitAutograd 的话 PyTorch 拒绝
   再注册 fake/meta（torch.compile / torch.export 需要，compile_support.py 靠这个）。
 - 在 C++ 覆盖而非 Python `torch.library.impl`：Python 覆盖每次调用多一次解释器
-  往返，小 K 实测 10-20µs（:614-615 注释）；register_aten.py 因此退役。
-- `HPC_INDEX_NO_OVERRIDE`(:626-630)：dlopen 时决定要不要劫持——基准对拍逃生门，
+  往返，小 K 实测 10-20µs（:619-620 注释）；register_aten.py 因此退役。
+- `HPC_INDEX_NO_OVERRIDE`(:631-635)：dlopen 时决定要不要劫持——基准对拍逃生门，
   在 import 前设置才生效。
 
-### 4.8 pybind 调试出口（:633-681）
+### 4.8 pybind 调试出口（:638-689）
 
 13 个导出（附录 B 全表）。最常用的三个：`debug_spec`（看 normalize 结果——
 调试路由第一步）、`linearize_spec`（看物化出的偏移数组）、各路由命中计数器。
@@ -351,7 +352,7 @@ row_off（B 个）与 col_off（A 个）都由它生成。O(num·dims)，B/A 通
 
 ## 7. gather.cpp 逐段精读——内核族谱（三层）
 
-1093 行按"原语 → 中层 → 顶层入口"三层组织。自上而下读会迷路，建议先读
+1095 行按"原语 → 中层 → 顶层入口"三层组织。自上而下读会迷路，建议先读
 gather_index 分发树（:657），再按需跳转。
 
 ### 7.1 第 0 层：SVE 原语（:16-221，4b_i64idx 到 :219）
@@ -463,7 +464,7 @@ at::parallel_for(0, B * K, adaptive_grain(B * K), [&](int64_t lo, int64_t hi) {
 一份线程数 ICV，`torch.set_num_threads` 只改 libgomp。因此：
 
 - **所有并行走 `at::parallel_for`**（ATen 头在本 TU 按 `-fopenmp` 编译 → libomp）；
-- **入口必须 `sync_omp_threads()`**（op.cpp:37，调用点 :549/:592）把 torch 的
+- **入口必须 `sync_omp_threads()`**（op.cpp:37，调用点 :553/:597）把 torch 的
   线程数灌进 libomp，否则 torch.set_num_threads 对本算子无效——历史上 2-36t
   旧数据全因此作废（degradation-analysis.md §3.1）。
 
@@ -496,7 +497,7 @@ import 顺序即注册顺序：dlopen 先于一切。两个环境变量都必须
 ### register_aten.py（11 行）
 
 `install()` 是**空实现**——Python 侧覆盖（torch.library.impl）是初版方案，每次
-调用多 10-20µs 解释器往返；A6 后改由 op.cpp:633 的 C++ 注册取代。保留空壳为
+调用多 10-20µs 解释器往返；A6 后改由 op.cpp:630 的 C++ 注册取代。保留空壳为
 兼容旧 import 代码。
 
 ### compile_support.py（98 行）
@@ -536,7 +537,7 @@ integration.md §3。
 5. **dtype 支持面 = 9 处 AT_DISPATCH 白名单**（§7.4）。barebones dtype 抛
    NotImplementedError 的唯一来源；扩 dtype 先改这里再补内核。
 6. **双 OpenMP runtime**：一切并行走 at::parallel_for（libomp），入口
-   sync_omp_threads 同步 ICV（op.cpp:37/:549/:592）。新内核忘了这两条，
+   sync_omp_threads 同步 ICV（op.cpp:37/:553/:597）。新内核忘了这两条，
    torch.set_num_threads 就管不住它。
 7. **use_i32 门槛**（op.cpp:156-157）：`numel < 2³¹ ∧ (f32∨i32)`。numel≥2³¹ 时
    偏移装不进 int32，自动退 int64 → 4B SVE 分支要求 idx32 不触发 → dispatch_scalar
@@ -544,20 +545,20 @@ integration.md §3。
 8. **计数器是 relaxed atomic**：g_* 计数器只供 pybind 诊断（附录 B），不参与任何
    控制流——删掉不影响语义。
 9. **out= 语义优先**：非连续 out 走临时张量+copy_（op.cpp:601-603）；overlap
-   断言（:589-591）。别在 out 变体上为性能抄近路。
+   断言（:593-595）。别在 out 变体上为性能抄近路。
 10. **并行阈值是标定出来的**：small_multi 的 n·A≥2048（op.cpp:318）、
-    small_single 的 max(16384, 512·nt)（:330-331）、mask 计数的 1MB
-    （gather.cpp:1043）。改任何一个都要带多线程实测，否则历史重演
-    （:326-327 注释里 0.55x 的教训）。
+    small_single 的 max(16384, 512·nt)（:330-334）、mask 计数的 1MB
+    （gather.cpp:1042）。改任何一个都要带多线程实测，否则历史重演
+    （:327-329 注释里 0.55x 的教训）。
 
 ## 附录 A：函数 → 行号速查表
 
 **op.cpp**：to_vec :21 · non_temporal_enabled :29 · sync_omp_threads :37 ·
-index_into :49 · mask_fast_path :190 · small_multi_index :225 ·
+index_into :52 · mask_fast_path :190 · small_multi_index :225 ·
 small_single_par_threshold :330 · small_single_index :338 · aten_out_strides :402 ·
 rowcopy_direct_ok :491 · index_impl :546 · index_out_impl :579 ·
-TORCH_LIBRARY(hpc_index) :603 · TORCH_LIBRARY_IMPL(hpc_index,CPU) :614 ·
-TORCH_LIBRARY_IMPL(aten,CPU) :625 · PYBIND11_MODULE :633
+TORCH_LIBRARY(hpc_index) :608 · TORCH_LIBRARY_IMPL(hpc_index,CPU) :614 ·
+TORCH_LIBRARY_IMPL(aten,CPU) :630 · PYBIND11_MODULE :638
 
 **normalize.cpp**：is_defined :9 · check_index_types :14 · check_indices_on_cpu :28 ·
 expand_tensors :38 · has_contiguous_subspace :74 · transpose_to_front :82 ·

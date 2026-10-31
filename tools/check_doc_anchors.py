@@ -16,11 +16,19 @@
      代码块的引导行）；
   4. 有归属函数时，引用的两端都必须落在该函数的函数体
      （定义行 → 下一个定义行）内；
-  5. 单引用行里用反引号点名的符号，必须出现在 `NNN±3` 行窗口内。
+  5. 单引用行里用反引号点名的符号，必须出现在 `NNN±3` 行窗口内；
+  6. 引用紧邻左边点名的符号（``f(:NNN)`` / ``f :NNN``）若在该文件里有定义，
+     则 NNN 必须落在 f 的函数体内，或 f 在 `NNN±3` 行内被调用——这条专抓
+     "把调用点写成别处的行号"（`mask_fast_path(:551)` 这种，结构上完全合法）；
+  7. 表格行 ``| 符号 | :NNN |`` 按规则 6 校验；一行 N 个引用配 N 个反引号符号
+     时按出现顺序配对（附录 B 的 `a` / `b` | :x/:y）。
 
 已知边界（刻意不装作能查）：
-  - 一行写多个引用且没有 ``符号 :NNN`` 紧贴写法时，只做结构校验，函数内部小幅
-    位移（同一函数里挪几行）不会报错；这类引用计入输出里的"无符号锚点"条数。
+  - 一行写多个引用、不是表格行、也没有 ``符号 :NNN`` 紧贴写法时，只做结构校验
+    且归属符号说不清（例如 §4 的步骤清单 ``① f(:N)``），函数内部小幅位移不会
+    报错；这类引用计入输出里的"仅结构校验"条数，改源码后要人工按源码核一遍。
+  - 宏（``TORCH_LIBRARY`` 等）与 ``struct``/变量定义不参与规则 6，带模板参数的
+    调用按 ``f<`` 识别。
   - ``docs/archive/``（冻结快照）与 ``docs/reference/``（aten 源码导读）豁免。
 
 用途：源码新增/删除几行，文档里所有"拿着代码读"的行号就整体错位。改完源码跑一遍，
@@ -75,7 +83,7 @@ def inside_function(f, defs, name, lo, src):
     starts = sorted(d for (ff, _), ds in defs.items() if ff == f for d in ds)
     for d in defs.get((f, name), []):
         end = next((x for x in starts if x > d), len(src[f]) + 1)
-        if d - TOL <= lo < end:
+        if d <= lo < end:
             return True
     return False
 
@@ -93,11 +101,15 @@ def unique_symbol_in(line, sym):
     return None
 
 
-def pick_file(line, ref_start, cur_file, sym_ctx, sym):
+def pick_file(line, ref_start, cur_file, sec_file, sym_ctx, sym):
     """为裸行号选目标文件。
 
     判据从强到弱：整行只指向一个文件 → 紧邻左边的符号 → 行首反引号主语 →
-    本段最近的符号 → 小节标题/上一条显式引用。
+    小节标题点名的文件 → 本段最近的符号 → 上一条显式引用。
+
+    小节标题点名文件时优先用它：`## 4. op.cpp 逐段精读` 里的裸 `:NNN` 说的是
+    op.cpp，哪怕前一行表格刚出现过 `gather.cpp:750`（那会把"最近的符号"污染成
+    gather.cpp，曾让 §4 的裸引用拿 gather.cpp 的行号校验，静默通过）。
     """
     cands = {f for name in unique_symbols(line, sym) for f in sym[name]}
     if len(cands) == 1:
@@ -111,7 +123,26 @@ def pick_file(line, ref_start, cur_file, sym_ctx, sym):
         files = sym.get(name)
         if files and len(files) == 1:
             return next(iter(files))
-    return sym_ctx or cur_file
+    return sec_file or sym_ctx or cur_file
+
+
+def adjacent_name(line, pos):
+    """引用紧邻左边的符号名（`to_vec(:548)` / `index_into :52` 两种写法）。"""
+    m = re.search(r"([A-Za-z_]\w*)\s*[`（(]*\s*$", line[:pos])
+    return m.group(1) if m else None
+
+
+def table_symbol(line, pos, refs):
+    """表格行：`符号 | :NNN`。取引用前最后一个反引号符号；一行 N 个引用配 N 个
+    符号时按出现顺序配对（附录 B 的 `a` / `b` | :x/:y 写法）。"""
+    if not line.lstrip().startswith("|"):
+        return None
+    ticks = re.findall(r"`([A-Za-z_]\w*)`", line[:pos])
+    if len(ticks) == 1:
+        return ticks[0]
+    if len(ticks) == len(refs):
+        return ticks[[r[5] for r in refs].index(pos)]
+    return None
 
 
 def start_ok(body, n, hi, doc_line):
@@ -136,11 +167,14 @@ def check(docs):
             continue  # aten 源码导读，行号不属于本仓库
         lines = open(doc, encoding="utf-8").read().splitlines()
         cur_file = None
+        sec_file = None
         sym_ctx = None
         for i, line in enumerate(lines, 1):
             m = HEADING_FILE.match(line) or BOLD_FILE.search(line)
             if m:
-                cur_file, sym_ctx = m.group(1), None
+                cur_file, sec_file, sym_ctx = m.group(1), m.group(1), None
+            elif line.startswith("## "):
+                sec_file = None  # 新的一级小节不点名文件 → 不再沿用上一节的文件
             line_sym = unique_symbol_in(line, sym)
             if line_sym:
                 sym_ctx = line_sym
@@ -149,6 +183,7 @@ def check(docs):
                 refs.append((mm.group(1), int(mm.group(2)), int(mm.group(3) or mm.group(2)),
                              mm.group(0), "explicit", mm.start(), []))
                 cur_file = mm.group(1)
+                sym_ctx = None  # 显式引用是最新的强上下文，别让更早的符号盖过它
             masked = OTHER_FILE.sub(" ", EXPLICIT.sub(" ", line))
             for mm in SYMBOL_REF.finditer(masked):
                 files = sym.get(mm.group(1))
@@ -163,7 +198,7 @@ def check(docs):
             masked = SYMBOL_REF.sub(" ", masked)
             bare_matches = list(BARE.finditer(masked))
             for mm in bare_matches:
-                f = pick_file(line, mm.start(), cur_file, sym_ctx, sym)
+                f = pick_file(line, mm.start(), cur_file, sec_file, sym_ctx, sym)
                 if f is None:
                     skipped.append((doc, i, mm.group(0), "无文件上下文"))
                     continue
@@ -176,7 +211,7 @@ def check(docs):
                 refs.append((f, int(mm.group(1)), int(mm.group(2) or mm.group(1)),
                              mm.group(0), "bare", mm.start(), expect))
 
-            for f, lo, hi, text, kind, _, expect in refs:
+            for f, lo, hi, text, kind, pos, expect in refs:
                 if f not in src:
                     failures.append((doc, i, text, f"源文件 {f} 不存在", None))
                     continue
@@ -211,6 +246,17 @@ def check(docs):
                         window = "\n".join(body[max(0, lo - 1 - TOL):min(len(body), hi + TOL)])
                         if named and not any(s in window for s in named):
                             why = f"文档点名的符号 {named} 不在 ±{TOL} 行内"
+                    if why is None and kind == "bare":
+                        name = adjacent_name(line, pos) if len(refs) == 1 else None
+                        name = name or table_symbol(line, pos, refs)
+                        if name and ((f, name) in defs or any(
+                                re.search(r"\b" + re.escape(name) + r"\s*[<(]", t) for t in body)):
+                            near = body[max(0, lo - 1 - TOL):min(len(body), hi + TOL)]
+                            if not (inside_function(f, defs, name, lo, src) or any(
+                                    re.search(r"\b" + re.escape(name) + r"\s*[<(]", t) for t in near)):
+                                d = defs.get((f, name), [None])[0]
+                                why = (f"紧邻的 {name} 既不在 :{lo} 的函数体内"
+                                       f"（定义在 :{d}），也不在 ±{TOL} 行内被调用")
                 if why is None:
                     continue
                 best = None
