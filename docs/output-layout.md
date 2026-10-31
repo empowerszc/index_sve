@@ -110,7 +110,7 @@ torch + 包 import）与 `tests/verify_e2e.py`（两进程差分，值+shape+str
 
 守卫自查：若你的版本 `small_single_index`/`small_multi_index`/
 `mask_fast_path` 没有 `self.is_contiguous()`（或等价）守卫，它们也接非连续
-self，需要同样处理；本仓库三者均有守卫（op.cpp:197 / op.cpp:227 / op.cpp:345），且连续
+self，需要同样处理；本仓库三者均有守卫（op.cpp:200 / op.cpp:230 / op.cpp:348），且连续
 self 时 aten 恒连续输出，无需改动。
 
 `index.Tensor_out`（`out=` 变体）不需要改：aten 写调用方提供的 out（不重

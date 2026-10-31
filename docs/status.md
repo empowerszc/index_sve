@@ -65,6 +65,7 @@ CPU 键覆盖，autograd 不受影响）。构建/运行契约见 `README.md` �
 | R10 | cl/置换布局行块直写：`rowcopy_direct_ok` 资格判定（源/出尾块同 dense 置换 + out 前导块行主序等）+ `IndexSpec::rowcopy_direct` + dispatch 顶部守卫（只允许块拷贝内核）+ `gather.cpp` rowcopy_sve 守卫放宽；cl4d 行索引 0.30-0.42x → **1.45-2.54x**；normalize.cpp 编译警告清零；test_rowcopy_routes 增至 14（直写 2 例含 1t/8t 双档 + 排除 3 + cl3d linearize 臂 1）；verify_e2e 增至 124 例（g5big 大 K 直写 4 例，线程矩阵 46 例） | （本轮） | ✅ |
 | 基准 | 生产形态基准：`bench_production_shapes.py` + `bench_production_driver.py`（K 512-55296、A=1/3/64、线程 1/6/12/19、`x[idx]` 走 dispatch、两进程交替、`--weighted`/`--gen-cases`/`--fit`）；实测 1D A=1 在 6-19t **0.66-1.10x**（1t 1.11-1.61x），机理写入 degradation §6.5 | （本轮） | ✅ |
 | 基准/裁决 | 上下文开销基准 `bench_context_overhead.py`（hot / 池冷 / 源冷 / autograd + K=1 固定链 + A 敏感性 + K=2 小形态 + mask `nonzero` + 1000 次混合序列）；对反馈"固定开销占 93-95%"逐条裁决写入 degradation §6.5.7，原始表 RESULTS §2.11 | （本轮） | ✅ |
+| 测试加固 | 两个靠 `x[...]` 的套件补前置守卫（`index_sve.OVERRIDE_ACTIVE`，`NO_OVERRIDE=1` 直接 rc=1）+ 入口计数 `dispatch_count()` 给负向断言配正向控制（覆盖静默失效时 6 项全挂、假通过归零）；排查过程与 13 步检查表写入 debugging-playbook.md | （本轮） | ✅ |
 | 基准/裁决 2 | 基准口径审计：`bench_entry_overhead.py` 量出入口偏置（Python 包装 +10µs、`torch.ops` +9µs）；`bench_production_shapes.py` 增加 `--cases`/`--per-model`/`--total`/`--detail`/`--abr-map`/CSV fixture 与"两套口径 + ①③覆盖率区间"；按反馈热点重建 trace 复现加权，得 0.767/0.780/0.783（反馈是 1.116/1.184/0.980）。原始表 RESULTS §2.12，裁决 degradation §6.5.8 | （本轮） | ✅ |
 
 ## 3. 路由现状（op.cpp `index_impl`）

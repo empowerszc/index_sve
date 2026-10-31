@@ -228,9 +228,11 @@ test_autograd 16、test_output_layout 25）。
 本算子），值级真对拍用两进程法（无覆盖进程生成 true-aten 参考，覆盖进程比对）：
 
 `test_rowcopy_routes` 与 `test_output_layout` 在 import 时检查覆盖是否激活
-（`index_sve.OVERRIDE_ACTIVE`）：`HPC_INDEX_NO_OVERRIDE=1` 下直接报错退出，
-因为这两个套件靠 `x[...]` 走覆盖后的内核——前者会 2 项必挂 + 4 项假通过，后者
-会 25 项全绿却什么也没验证。其余套件走 `index_sve.index()` 包装，不受影响。
+（`index_sve.OVERRIDE_ACTIVE`）：`HPC_INDEX_NO_OVERRIDE=1` 下直接报错退出。两个
+套件都靠 `x[...]` 走覆盖后的内核，覆盖一旦静默失效，`test_output_layout` 的 25 项
+会全绿却什么都没验证。`test_rowcopy_routes` 里"某条路由不该被选"的负向断言另外
+配了 `dispatch_count()` 正向控制（`op.cpp:660`），所以覆盖真没生效时那 6 项会直接
+挂，不会假通过。其余套件走 `index_sve.index()` 包装，不受影响。
 
 ```bash
 python tests/verify_against_aten.py --mode both    # 44/44，kernel 语义矩阵

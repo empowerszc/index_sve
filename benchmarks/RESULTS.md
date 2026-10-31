@@ -824,7 +824,7 @@ mask 路径的成本是 **O(self.numel)**：输出只有 64 个元素，1t 仍�
 
 K=512/528 的 hpc 绝对时间：1t 9.60µs、12t 9.52µs、19t 9.51µs（aten 15.45/15.53/
 15.55µs）——**从 1t 到 19t 完全不变**，说明这条路径（`K<1024 → gather_direct`，
-`op.cpp:70`）既不进桶化、也没有可测的 fork-join 成本。反转只出现在 K≥4096。
+`op.cpp:73`）既不进桶化、也没有可测的 fork-join 成本。反转只出现在 K≥4096。
 
 复现：
 
@@ -1004,7 +1004,7 @@ python benchmarks/bench_production_shapes.py --weighted models.json --times time
 下面这条台阶。
 
 - 台阶在 `n·A` 跨过 `small_single_par_threshold() = max(16384, 512·nt)`
-  （`op.cpp:327`）：K=512 时 A=16→32。跨过去 hpc 从 11.6µs 跳到 18.3µs
+  （`op.cpp:330`）：K=512 时 A=16→32。跨过去 hpc 从 11.6µs 跳到 18.3µs
   （**+6.7µs fork-join**），而这一步只多了 32KB 拷贝。
 - 台阶是"付一次"的：A≥64 之后 hpc 一直平在 19-20µs，而 aten 随 A 线性涨，
   所以比值从 1.29x 缓慢回到 1.74x。**A=64 正好是台阶后的平台起点，是这一族

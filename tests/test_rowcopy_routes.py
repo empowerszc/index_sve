@@ -7,7 +7,7 @@ from index_sve import _hpc_index as C
 if not index_sve.OVERRIDE_ACTIVE:
     raise SystemExit(
         "test_rowcopy_routes 需要覆盖激活：cl4d 六项靠 x[...] 验证路由，覆盖关闭时 "
-        "2 项必挂、4 项假通过（HPC_INDEX_NO_OVERRIDE=1？）")
+        "6 项全挂（HPC_INDEX_NO_OVERRIDE=1？）")
 
 
 def test_small_row_raw_route():
@@ -51,8 +51,10 @@ def test_multi_index_raw_route():
             assert C.rowcopy_raw_count() == before + 1, f"multi-index A=64 t={t} did not skip linearize"
         torch.set_num_threads(8)
         before = C.rowcopy_raw_count()
+        before_d = C.dispatch_count()
         index_sve.index(x, [i, j])
         assert C.rowcopy_raw_count() == before, "multi-index t=8 should keep linearize"
+        assert C.dispatch_count() == before_d + 1, "kernel did not run"
     finally:
         torch.set_num_threads(old)
 
@@ -95,9 +97,11 @@ def test_medium_a_large_k_keeps_linearize():
     try:
         torch.set_num_threads(8)
         before = C.rowcopy_raw_count()
+        before_d = C.dispatch_count()
         y = index_sve.index(x, [idx])
         torch.testing.assert_close(y, ref)
         assert C.rowcopy_raw_count() == before, "A=64 K=200k should keep linearize"
+        assert C.dispatch_count() == before_d + 1, "kernel did not run"
     finally:
         torch.set_num_threads(old)
 
@@ -205,9 +209,11 @@ def test_cl3d_perm_row_index_direct_values():
     old = torch.get_num_threads()
     try:
         torch.set_num_threads(8)
+        before_d = C.dispatch_count()
         y = x[rows]
         torch.testing.assert_close(y, ref)
         assert y.stride() == (3072, 1, 32), y.stride()
+        assert C.dispatch_count() == before_d + 1, "kernel did not run"
     finally:
         torch.set_num_threads(old)
 
@@ -223,9 +229,11 @@ def test_cl4d_sliced_tail_excluded():
     try:
         torch.set_num_threads(8)
         before = C.rowcopy_raw_count()
+        before_d = C.dispatch_count()
         y = x[t, 1:3]
         torch.testing.assert_close(y, ref)
         assert C.rowcopy_raw_count() == before, "sliced cl tail is not dense; must not block-copy direct"
+        assert C.dispatch_count() == before_d + 1, "kernel did not run"
     finally:
         torch.set_num_threads(old)
 
@@ -240,9 +248,11 @@ def test_cl4d_small_k_excluded():
     try:
         torch.set_num_threads(8)
         before = C.rowcopy_raw_count()
+        before_d = C.dispatch_count()
         y = x[rows]
         torch.testing.assert_close(y, ref)
         assert C.rowcopy_raw_count() == before, "K<1024 stays on small-tensor path"
+        assert C.dispatch_count() == before_d + 1, "kernel did not run"
     finally:
         torch.set_num_threads(old)
 
@@ -257,9 +267,11 @@ def test_cl4d_half_excluded():
     try:
         torch.set_num_threads(8)
         before = C.rowcopy_raw_count()
+        before_d = C.dispatch_count()
         y = x[rows]
         torch.testing.assert_close(y, ref)
         assert C.rowcopy_raw_count() == before, "f16 cl self must not use direct rowcopy"
+        assert C.dispatch_count() == before_d + 1, "kernel did not run"
     finally:
         torch.set_num_threads(old)
 

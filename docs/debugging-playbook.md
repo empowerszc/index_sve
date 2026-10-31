@@ -2,8 +2,9 @@
 
 > **案例日期**：2026-10-31（n20，node 5，608 核 / 32 NUMA，`torch 2.10.0+cpu`）
 > **对象**：`tests/test_rowcopy_routes.py`（14 项）、`tests/test_output_layout.py`（25 项）
-> **一句话结论**：两起"测试过不了"都不是随机 flaky，而是**测试自身对运行环境的前置
-> 假设从未被声明**。修复方向不是改断言让它们变绿，而是让环境不对时**大声失败**。
+> **一句话结论**：两起"测试可能过不了"都不是随机 flaky，而是**测试自身对运行环境
+> 的前置假设从未被声明**。修复分两层：先让环境不对时**大声失败**（守卫），再给
+> "某条路由不该被选"的负向断言补上**正向控制**，否则覆盖静默失效时它照样全绿。
 
 本文分两部分：§1-§2 是可复制的方法与清单，§3-§6 是这两个案例的完整复盘（含走过
 的弯路），§7 之后是可以直接照做的检查表与命令。
@@ -64,7 +65,7 @@ for t in tests/test_smoke.py tests/test_normalize.py tests/test_correctness.py \
 | 工作目录 | 否 | `sys.path` 用 `__file__` 推导 |
 | 默认 dtype / deterministic / mkldnn | 否 | 实测 25/25 |
 | torch 版本 | **是**（布局期望值） | 见 §4.5 |
-| 硬件 ISA（SVE512） | **是** | `op.cpp:122` |
+| 硬件 ISA（SVE512） | **是** | `op.cpp:125` |
 
 ### 2.3 第三步：负向对照（性价比最高的一步）
 
@@ -106,8 +107,8 @@ $ python tests/test_rowcopy_routes.py
 
 | 判据 | 位置 | 读的是什么 |
 |---|---|---|
-| 多索引 raw 路由 | `op.cpp:101` | `at::get_num_threads() >= 16` |
-| 并行台阶 | `op.cpp:327`（函数）、`:330`（返回） | `max(16384, 512 * at::get_num_threads())` |
+| 多索引 raw 路由 | `op.cpp:104` | `at::get_num_threads() >= 16` |
+| 并行台阶 | `op.cpp:330`（函数）、`:330`（返回） | `max(16384, 512 * at::get_num_threads())` |
 | 自适应粒度 | `grain.h:14` | `n / (at::get_num_threads() * 8)` |
 
 全仓 `grep hardware_concurrency` **零命中**。也就是说：判据只跟随 `torch.set_num_threads`
@@ -155,10 +156,13 @@ FAIL test_cl4d_mask_routes_rowcopy_raw:     AssertionError('cl4d mask ...')
 进入"全绿"的统计，成为虚假信心。所以 `12/14` 这个数字本身还是**乐观的**——真实
 失效面是 6/14。
 
+诊断出这一条之后，第一版修复只加了守卫（§5.2），**没有**动断言本身。那是不够的，
+补法见 §5.5。
+
 ### 3.5 还有一条真前置：SVE512 硬件
 
 ```cpp
-// op.cpp:122
+// op.cpp:125
 const bool hw_sve512 = (svcntb() == 64);
 ```
 
@@ -215,7 +219,7 @@ $ python tests/test_output_layout.py
 
 | | `test_rowcopy_routes` | `test_output_layout` |
 |---|---|---|
-| 关覆盖时 | 12/14，2 fail + 4 假通过 | **25/25 全绿** |
+| 关覆盖时 | 修复前 12/14（2 fail + 4 假通过）；修复后 8/14，6 项全挂 | **25/25 全绿** |
 | 信号 | 会叫，但叫得含糊（只说"路由不对"） | **不叫** |
 | 风险 | 误导定位（以为内核坏了） | 虚假信心（以为验证过了） |
 | 根因 | 缺"覆盖是否激活"前置声明 | 同左 |
@@ -271,7 +275,7 @@ dlopen），所以两者不会分裂。
 if not index_sve.OVERRIDE_ACTIVE:
     raise SystemExit(
         "test_rowcopy_routes 需要覆盖激活：cl4d 六项靠 x[...] 验证路由，覆盖关闭时 "
-        "2 项必挂、4 项假通过（HPC_INDEX_NO_OVERRIDE=1？）")
+        "6 项全挂（HPC_INDEX_NO_OVERRIDE=1？）")
 
 # tests/test_output_layout.py:19
 if not index_sve.OVERRIDE_ACTIVE:
@@ -286,8 +290,8 @@ if not index_sve.OVERRIDE_ACTIVE:
    消失；而且 `assert` 混在测试断言里，读者分不清"环境错"和"被测代码错"。
    `SystemExit(msg)` 打印 msg 到 stderr 并给退出码 1，两层信息都清楚。
 2. **提示语必须写"没有守卫会发生什么"**：`需要覆盖激活` 只说明规则；补上
-   `2 项必挂、4 项假通过` / `25 项全绿但不验证任何东西` 才能让人一眼判断"我是不是
-   中招了"，也把本节的结论固化进代码。
+   `6 项全挂` / `25 项全绿但不验证任何东西` 才能让人一眼判断"我是不是中招了"，
+   也把本节的结论固化进代码。
 3. **放在 import 之后、测试函数之前**：模块级执行，`_harness.main(globals())` 收集
    之前就退出，不会出现"先跑一半再炸"。
 
@@ -302,6 +306,56 @@ if not index_sve.OVERRIDE_ACTIVE:
 | `docs/integration.md` §1 | 代码骨架同步加 `OVERRIDE_ACTIVE` |
 | `docs/code-walkthrough.md` §9 | 代码骨架同步，"15 行"→"17 行" |
 
+### 5.5 补记：4 项假通过也要真修掉，守卫只是第一步
+
+守卫解决的是"环境不对时别给假信号"，但它**不解决断言本身验不了东西**。守卫读的
+是环境变量；万一注册真的失效而变量正常（例如被别的库又覆盖回去），守卫照样放行，
+那 4 项仍然全绿。所以还差一件真正的事：给"某条路由**不该**被选"的负向断言配一个
+**正向控制**。
+
+做法是在两个受控入口各 +1 一个计数（`op.cpp:660` 导出为 `dispatch_count`）：
+
+```cpp
+std::atomic<uint64_t> g_dispatch{0};          // 与 g_single_1d 等同一处声明
+...
+g_dispatch.fetch_add(1, std::memory_order_relaxed);   // index_impl 与 index_out_impl 各一处
+```
+
+测试侧在负向断言旁边补一句：
+
+```python
+before_d = C.dispatch_count()
+y = x[rows]
+torch.testing.assert_close(y, ref)
+assert C.rowcopy_raw_count() == before, "must not block-copy direct"
+assert C.dispatch_count() == before_d + 1, "kernel did not run"   # 内核确实跑到了
+```
+
+**怎么证明这个修法真的有效**：把守卫骗过去（进程内把 `OVERRIDE_ACTIVE` 改成
+`True`）而实际关掉覆盖，再跑一遍——守卫放行，剩下的全靠断言自己扛：
+
+> **数据轮次：2026-10-31（n20，node 5）｜当前。**
+
+| 场景 | 结果 |
+|---|---|
+| 修前（只有守卫） | 12/14：2 fail + **4 假通过** |
+| 修后（守卫 + 正向控制） | **8/14**：6 项全挂，假通过归零 |
+
+挂掉的正好是 6 个走 `x[...]` 的用例：`test_cl4d_row_index_routes_rowcopy_raw`、
+`test_cl4d_mask_routes_rowcopy_raw`、`test_cl3d_perm_row_index_direct_values`、
+`test_cl4d_sliced_tail_excluded`、`test_cl4d_small_k_excluded`、
+`test_cl4d_half_excluded`。这才是诚实的失败面。
+
+**代价也要写清楚。** `op.cpp` 加了 5 行，`check_doc_anchors.py` 立刻报 **53 条
+锚点漂移**（`code-walkthrough.md` 一个文件占 48 条）。按行偏移机械重映射了 68 条
+显式 `op.cpp:NNN` 和 20 条裸 `:NNN`，工具复验回到 367/367。
+
+这次还撞上工具自己声明的盲区：`code-walkthrough.md` 附录 B 的"行号"列是 10 条
+裸引用，每行只有一个、没有符号紧贴，属于**只做结构校验**那一桶——漂移之后结构
+仍然合法（指向的还是一条 `m.def(...)`），于是**静默放行**。这 10 条只能按源码
+逐个重排。教训：改高频引用的源文件，前后各跑一次
+`check_doc_anchors.py`；最后一行写着 OK 不代表"仅结构校验"那 154 条没问题。
+
 ---
 
 ## 6. 验证：守卫自己也要做负向对照
@@ -314,6 +368,7 @@ if not index_sve.OVERRIDE_ACTIVE:
 |---|---|---|
 | 默认两个套件 | 绿 | `25/25`、`14/14`，rc=0 |
 | `NO_OVERRIDE=1` 两个套件 | **rc=1 + 中文提示** | 符合 |
+| 骗过守卫 + 实际关覆盖 | 6 项挂、0 假通过 | `8/14`，失败的正好 6 个 `x[...]` 用例 |
 | 全 15 套件 | 174/174 | 174/174 |
 | `verify_against_aten.py --mode both` | 44/44 | 44/44 |
 | `verify_e2e.py --mode both --threads` | 124/124 + 矩阵 OK | 符合 |
@@ -342,7 +397,7 @@ Python 隐式拼接后是 `覆盖关闭时2 项必挂`。**教训：写中文长
 
 ---
 
-## 7. 给下一个 agent 的检查表
+## 7. 给下一个 agent 的检查表（13 步）
 
 1. 先跑默认基线，记下总数（本例 174/174），后面一切都以它为参照。
 2. **读断言**，按 §2.1 四型分类。找出"负向计数"型——它们是假通过的高危区。
@@ -352,10 +407,13 @@ Python 隐式拼接后是 `覆盖关闭时2 项必挂`。**教训：写中文长
 6. 若某文件关掉特性后**仍然全绿**，立刻问：它有没有可能也在验证别的东西？→ 假通过。
 7. 若"复现不了"，仍要给出两种结论（§2.4），并指名下一个该试的变量。
 8. 修在真值源头：判据只允许有一处定义，测试引用它而不是复制它。
-9. 守卫要**大声失败**，消息里写"没守卫会发生什么"。
-10. 验证守卫要做负向对照：**退出码必须是 1**，并且真的看到消息。
-11. 注意验证脚本自身的假信号（管道/命令替换/`set -e`）。
-12. 改了代码骨架就同步文档，最后跑 `check_doc_anchors.py` + 死链检查。
+9. **负向断言必须配正向控制**（入口计数 / 命中计数），否则"特性没生效"和"特性
+   生效但走了别的路径"在测试里长得一模一样。
+10. 守卫要**大声失败**，消息里写"没守卫会发生什么"。
+11. 验证守卫要做负向对照：**退出码必须是 1**，并且真的看到消息。
+12. 注意验证脚本自身的假信号（管道/命令替换/`set -e`）。
+13. 改了代码骨架就同步文档，最后跑 `check_doc_anchors.py` + 死链检查；改高频
+    引用的源文件要前后各跑一次，并留意"仅结构校验"那一桶是真盲区。
 
 ---
 

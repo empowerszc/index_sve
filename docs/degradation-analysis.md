@@ -976,7 +976,7 @@ RESULTS §2.11.5 的序列（88% K=512 + 8% K=13824 + 3%+1% rowcopy）实测：
 | 反馈说法 | 本仓库结论 | 依据 |
 |---|---|---|
 | bucket 多线程走 `parallel_for` fork-join + **原子 CAS 归约**，固定 5-8µs | **不成立**。桶化路径无原子：`bucket_gather_pure_raw` 是两趟 `parallel_for` 夹**串行** min/max 归约 + 串行建表（`gather.cpp:430-470`）；gather.cpp 里只有两个 relaxed 计数器（`gather.cpp:17-18`），不参与归约 | 代码；RESULTS §2.11 无 5-8µs 的 TH 台阶 |
-| TH≥6 时 K512/K528 反转为 1.33-1.34x | **不成立**（本仓库：1.59-1.64x 全档平坦）。**且 K<1024 根本不进桶化**：`op.cpp:70` 先判 `K<1024 → gather_direct` | RESULTS §2.11.6 九档细扫；`op.cpp:70` |
+| TH≥6 时 K512/K528 反转为 1.33-1.34x | **不成立**（本仓库：1.59-1.64x 全档平坦）。**且 K<1024 根本不进桶化**：`op.cpp:73` 先判 `K<1024 → gather_direct` | RESULTS §2.11.6 九档细扫；`op.cpp:73` |
 | 线程池 fork-join 固定开销 ~5-8µs 不随线程下降 | **成立（但只在池冷时）**：热循环里 K=512 从 1t 到 19t 是 9.60→9.51µs（≈0）；调用间隔 200µs 后 +5.7µs，aten 也 +7.2µs | RESULTS §2.11.1 |
 | normalize 20.6µs、empty 4.8µs，每次全额发生 | **empty 成立**（4.3µs）；**normalize 20.6µs 不成立**：本仓库整条链（含 normalize）K=1 只有 6.5µs | RESULTS §2.11.2 |
 | `expand_tensors` 里有 `index.contiguous()` 拷贝 | **不成立**：张量下标直接 `emplace_back`（`normalize.cpp:68`）；只有 mask 才 `nonzero()`（`:63`），O(self.numel) | 代码 |
@@ -1045,7 +1045,7 @@ Sonata 0.980x，`index_sve/原生` 口径）。四个缺陷里三个成立（且
 
 同一组形态、同一个加权算法，本仓库称出 1.28-1.30x（本算子更快），反馈称出
 "慢 12-18%"或"持平"。分歧只能落在单形态时延上：SGI 最高频的 K512 bucket，反馈 TH=12 是
-20.5µs，本仓库是 **9.3µs**（`gather_direct`，`op.cpp:70`，1t 到 19t 都是 9.3-9.5µs，
+20.5µs，本仓库是 **9.3µs**（`gather_direct`，`op.cpp:73`，1t 到 19t 都是 9.3-9.5µs，
 RESULTS §2.11.6）。另一个易漏的点是**排序口径**：SGI 里次数最多的 K512 bucket
 （2322 次）只占 15% 时间，而次数第二的 K13824 bucket 占 **37%**，且它是唯一
 <1x 的大项；PPT 的 K55296 bucket 占 5% 的调用、33% 的时间。按次数排名和按
@@ -1080,7 +1080,7 @@ RESULTS §2.11.6）。另一个易漏的点是**排序口径**：SGI 里次数�
 | aten/hpc | 2.10x | 2.07x | 1.29x | 1.35x | 1.54x | 1.74x |
 
 - 台阶在 `n·A` 跨过 `small_single_par_threshold() = max(16384, 512·nt)`
-  （`op.cpp:327`）：A=16→32 时 hpc 从 11.6µs 跳到 18.3µs（**+6.7µs fork-join**），
+  （`op.cpp:330`）：A=16→32 时 hpc 从 11.6µs 跳到 18.3µs（**+6.7µs fork-join**），
   只多拷了 32KB。之后 hpc 平在 19-20µs，aten 随 A 涨，比值缓慢回升。
 - 于是 **A=64 是这一族的局部最差点**，而 SGI path11 的真实 A 就是 64。
   把加权表里的 A 从 64 换成 3，SGI 的加权比值从 1.304x 变成 1.418x（8.7%）——
@@ -1099,7 +1099,7 @@ RESULTS §2.11.6）。另一个易漏的点是**排序口径**：SGI 里次数�
 | 缺 bucket 形态（path3 是生产主力） | **当时成立**；`bench_production_shapes.py` 已覆盖 SGI/PPT/Sonata 热点 | RESULTS §2.12.3 |
 | 直呼 `hpc_index()` "绕过 dispatch，偏乐观" | **不成立，方向相反**：Python 包装比 `x[idx]` 慢 10µs，是偏悲观 | RESULTS §2.12.1 |
 | `--weighted` 得 SGI 1.116x / PPT 1.184x / Sonata 0.980x | **复现不了**：同形态同算法得 0.767/0.780/0.783 | RESULTS §2.12.2 |
-| bucket 在 TH≥6 反转为 1.33x（原子 CAS 归约） | **不成立**：1.59-1.64x 全线程档平坦，K<1024 不进桶化 | RESULTS §2.11.6、`op.cpp:70` |
+| bucket 在 TH≥6 反转为 1.33x（原子 CAS 归约） | **不成立**：1.59-1.64x 全线程档平坦，K<1024 不进桶化 | RESULTS §2.11.6、`op.cpp:73` |
 | 单算子小形态快 4-5x | **倍率夸大**：2.10x（A=3/16）、1.35x（A=64） | RESULTS §2.12.4 |
 | A=3 与 A=64 定性一致，不影响结论 | **定性成立、量级不成立**：加权差 8.7% | RESULTS §2.12.4 |
 | 覆盖率 12-25% 但"同 path 比值一致故方向可靠" | **方法论不成立**：次数覆盖率 ≠ 耗时覆盖率；①③外推夹住 1.0 | RESULTS §2.12.2 |

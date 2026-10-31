@@ -44,6 +44,9 @@ void sync_omp_threads() {
 
 std::atomic<uint64_t> g_single_1d{0};
 std::atomic<uint64_t> g_single_1d_sve{0};
+// 每次进入受控入口 +1：测试用它确认「内核确实被调到了」，与"某条子路由没被选"
+// 的负向断言配对，否则覆盖静默失效时负向断言会假通过。
+std::atomic<uint64_t> g_dispatch{0};
 
 // 核心路由：out 已由调用方确定为正确 shape/dtype/device（functional 分配或 out 变体校验）。
 void index_into(const at::Tensor& self, const IndexSpec& spec, at::Tensor& out) {
@@ -546,6 +549,7 @@ at::Tensor index_impl(const at::Tensor& self,
   TORCH_CHECK_INDEX(!vec.empty(), "at least one index must be provided");
   TORCH_CHECK_INDEX(vec.size() <= (size_t)self.dim(),
       "too many indices for tensor of dimension ", self.dim(), " (got ", vec.size(), ")");
+  g_dispatch.fetch_add(1, std::memory_order_relaxed);
   sync_omp_threads();
   at::Tensor out;
   if (mask_fast_path(self, vec, out)) return out;
@@ -589,6 +593,7 @@ at::Tensor index_out_impl(const at::Tensor& self,
   at::assert_no_internal_overlap(out);
   at::assert_no_overlap(out, self);
   for (const auto& idx : spec.indices) at::assert_no_overlap(out, idx);
+  g_dispatch.fetch_add(1, std::memory_order_relaxed);
   sync_omp_threads();
   if (out.is_contiguous()) {
     index_into(self, spec, out);
@@ -651,6 +656,9 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     return std::make_tuple(spec.transposed_self, spec.indexed_dims, spec.indexed_sizes,
                            spec.indexed_strides, spec.B, spec.K, spec.A, spec.out_shape,
                            spec.row_off, spec.col_off, spec.after_contiguous, spec.indices);
+  });
+  m.def("dispatch_count", []() {
+    return g_dispatch.load(std::memory_order_relaxed);
   });
   m.def("mask_fused_count", []() {
     return g_mask_fused.load(std::memory_order_relaxed);
