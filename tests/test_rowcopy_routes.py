@@ -4,6 +4,11 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import index_sve
 from index_sve import _hpc_index as C
 
+if not index_sve.OVERRIDE_ACTIVE:
+    raise SystemExit(
+        "test_rowcopy_routes 需要覆盖激活：cl4d 六项靠 x[...] 验证路由，覆盖关闭时 "
+        "2 项必挂、4 项假通过（HPC_INDEX_NO_OVERRIDE=1？）")
+
 
 def test_small_row_raw_route():
     x = torch.randn(20000, 8)

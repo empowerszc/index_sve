@@ -32,7 +32,8 @@
 from . import _hpc_index            # dlopen 时注册 torch.ops.hpc_index（+ CPU 覆盖）
 from .register_aten import install as _install_aten
 import torch, os
-if os.environ.get("HPC_INDEX_NO_OVERRIDE", "0") != "1":
+OVERRIDE_ACTIVE = os.environ.get("HPC_INDEX_NO_OVERRIDE", "0") != "1"  # 供测试判断
+if OVERRIDE_ACTIVE:
     _install_aten()                 # 兼容旧调用；实际覆盖在 C++ dlopen 时完成
 if os.environ.get("HPC_INDEX_COMPILE", "0") == "1":
     from .compile_support import enable as _enable_compile

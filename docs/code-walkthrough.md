@@ -472,14 +472,15 @@ integration.md §6.1。
 
 ## 9. Python 胶水层
 
-### __init__.py（15 行全文骨架）
+### __init__.py（17 行全文骨架）
 
 ```python
 from . import _hpc_index            # dlopen 扩展 .so：TORCH_LIBRARY_IMPL 生效（覆盖发生地，
                                     # 首次 import 时 dispatcher 打印一次性告警）
 from .register_aten import install  # 兼容层（见下）
 import torch, os
-if os.environ.get("HPC_INDEX_NO_OVERRIDE", "0") != "1":
+OVERRIDE_ACTIVE = os.environ.get("HPC_INDEX_NO_OVERRIDE", "0") != "1"
+if OVERRIDE_ACTIVE:
     _install_aten()                 # 空实现——覆盖已在上面 import 时完成
 if os.environ.get("HPC_INDEX_COMPILE", "0") == "1":
     from .compile_support import enable
@@ -488,6 +489,9 @@ def index(self, indices): ...       # torch.ops.hpc_index.index 的兼容入口
 ```
 
 import 顺序即注册顺序：dlopen 先于一切。两个环境变量都必须在 import 前设置。
+`OVERRIDE_ACTIVE` 是给测试用的同一判据：`test_rowcopy_routes` 与
+`test_output_layout` 全走 `x[...]`，覆盖未激活时前者 2 项必挂 + 4 项假通过、
+后者 25 项全绿却什么都没验证，所以在 import 时直接报错退出（README §测试）。
 
 ### register_aten.py（11 行）
 
