@@ -64,6 +64,7 @@ CPU 键覆盖，autograd 不受影响）。构建/运行契约见 `README.md` �
 | 修复 | 输出内存布局与 aten 逐维一致：`aten_out_strides` 复刻 TensorIterator 置换恢复（strides/should_swap 平局规则），`empty_strided` 分配 + 非连续 tmp→`copy_`；新增 `test_output_layout.py`（25 例，期望值为无覆盖进程实测钉入）+ `verify_e2e.py`（E2E 两进程差分 120 例，值+shape+dtype+stride 比对 + 线程矩阵；R10 后增至 124 例）；专项文档 output-layout.md | 5eaa3b1 | ✅ |
 | R10 | cl/置换布局行块直写：`rowcopy_direct_ok` 资格判定（源/出尾块同 dense 置换 + out 前导块行主序等）+ `IndexSpec::rowcopy_direct` + dispatch 顶部守卫（只允许块拷贝内核）+ `gather.cpp` rowcopy_sve 守卫放宽；cl4d 行索引 0.30-0.42x → **1.45-2.54x**；normalize.cpp 编译警告清零；test_rowcopy_routes 增至 14（直写 2 例含 1t/8t 双档 + 排除 3 + cl3d linearize 臂 1）；verify_e2e 增至 124 例（g5big 大 K 直写 4 例，线程矩阵 46 例） | （本轮） | ✅ |
 | 基准 | 生产形态基准：`bench_production_shapes.py` + `bench_production_driver.py`（K 512-55296、A=1/3/64、线程 1/6/12/19、`x[idx]` 走 dispatch、两进程交替、`--weighted`/`--gen-cases`/`--fit`）；实测 1D A=1 在 6-19t **0.66-1.10x**（1t 1.11-1.61x），机理写入 degradation §6.5 | （本轮） | ✅ |
+| 基准/裁决 | 上下文开销基准 `bench_context_overhead.py`（hot / 池冷 / 源冷 / autograd + K=1 固定链 + A 敏感性 + K=2 小形态 + mask `nonzero` + 1000 次混合序列）；对反馈"固定开销占 93-95%"逐条裁决写入 degradation §6.5.7，原始表 RESULTS §2.11 | （本轮） | ✅ |
 
 ## 3. 路由现状（op.cpp `index_impl`）
 
@@ -136,6 +137,12 @@ out 连续                          → index_into 直写
 > （生产并集）后，1D A=1 从 1t 的 1.11-1.61x 掉到 **0.66-1.10x**，rowcopy
 > 仍有 1.3-4.2x、K≤2048 桶化 1.24-1.62x。下表的 2-8x 主要来自 K=2M/10M 与
 > 32/38t 端点，**不要当模型内收益**。见 RESULTS §2.10、degradation §6.5。
+> **"模型内每次调用要多付 normalize/empty 固定开销"这条（2026-10-31 复测）**：
+> 固定链上限是 6.5µs（K=1 全链路）+5.7µs（线程池睡下）+15µs（源冷），K=512 最坏
+> 25µs；同形态 × 1/2/3/4/6/8/12/16/19t 全部 1.59-1.64x。174-193µs 的平均只能来自
+> 尾部形态（1% rowcopy 就贡献 135µs，混合序列实测预测/实测 = 0.98-1.02）。
+> 唯一"O(1)于 K 但很大"的是 mask 的 `nonzero`（1M 元素 1t 5.0ms）。见 RESULTS §2.11、
+> degradation §6.5.7。
 
 | 形态 | 1t | 8t | 38t | 备注 |
 |---|---|---|---|---|

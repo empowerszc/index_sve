@@ -33,6 +33,7 @@ import time
 
 THREADS = [int(t) for t in os.environ.get("HPC_THREADS", "1,6,12,19").split(",")]
 AFFINITY = os.environ.get("HPC_AFFINITY", "190-227")
+IDX_STRIDE = int(os.environ.get("HPC_IDX_STRIDED", "1"))
 
 # ---------------------------------------------------------------------------
 # 生产形态库
@@ -70,9 +71,17 @@ PROD_CASES = [
 ]
 
 CASES = PROD_CASES + K_SWEEP
-for _c in CASES:  # 路由标签：A==1 且 dom<=2048 走桶，A==1 走单遍，其余走行/块拷贝
-    _c["path"] = ("bucket" if _c["A"] == 1 and _c["dom"] <= 2048
+for _c in CASES:
+    # 路由标签按 op.cpp 的实际顺序：K<1024 先落 gather_direct（不建桶），
+    # K>=1024 才可能走桶；A>1 走行/块拷贝。
+    _c["path"] = ("direct" if _c["A"] == 1 and _c["K"] < 1024
+                  else "bucket" if _c["A"] == 1 and _c["dom"] <= 2048
                   else "single" if _c["A"] == 1 else "rowcopy")
+
+# HPC_SUBSET=bucket_K512,gather_K 只保留名字含任一子串的用例（细扫线程/单点复测用）
+_SUBSET = [x for x in os.environ.get("HPC_SUBSET", "").split(",") if x]
+if _SUBSET:
+    CASES = [c for c in CASES if any(x in c["name"] for x in _SUBSET)]
 
 # 诊断模式：固定 K 只扫值域，用来看桶化路径的"建表/查表"占多少固定成本
 # （dom<=2048 走桶，>2048 回退 SVE/标量单遍，两侧就是同一形态的两种内核）。
@@ -159,9 +168,20 @@ def measure(cases, threads):
         for c in cases:
             K, A, dom = c["K"], c["A"], c["dom"]
             src = x1 if A == 1 else x_multi[A]
-            idx = torch.randint(0, dom, (K,), generator=g)
+            # HPC_IDX_STRIDED=2：把下标换成 stride=2 的非连续视图（生产里很常见，
+            # 如列切片）；=0：换成 stride=0 的广播视图（`idx.expand(K)`）。
+            # 两者都会离开 fast_1d 快路径，见 degradation-analysis.md §6.5.7。
+            step = IDX_STRIDE
+            if step == 0:
+                idx = torch.randint(0, dom, (1,), generator=g).expand(K)
+            elif step > 1:
+                base = torch.randint(0, dom, (K * step,), generator=g)
+                idx = base[::step]
+            else:
+                idx = torch.randint(0, dom, (K,), generator=g)
             us, iters = _median_us(lambda: src[idx])
-            row = dict(c, mode=mode, threads=t, us=round(us, 2), iters=iters)
+            row = dict(c, mode=mode, threads=t, us=round(us, 2), iters=iters,
+                       idx_stride=step)
             rows.append(row)
             print(f"{mode:5s} {c['name']:26s} t={t:2d} {us:8.2f} us",
                   file=sys.stderr, flush=True)

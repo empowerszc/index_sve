@@ -18,6 +18,7 @@
 | `bench_realpath_driver.py` | **正式基准** | 交替启动 aten/hpc 两个子进程，真实路径全 case 对拍（含短调用、高频单元素） | 短调用 / 真实 workload 收益结论的首选依据 |
 | `bench_production_shapes.py` | 组件脚本 | 生产形态库（K 512-55296、A=1/3/64、线程 1/6/12/19、`x[idx]` 走 dispatch）单进程计时，输出 JSON；含 `--emit-cases`/`--gen-cases`/`--weighted` | 不单独用，配合 `bench_production_driver.py` |
 | `bench_production_driver.py` | **正式基准** | 交替启动 aten/hpc 两进程，汇总生产形态矩阵；`--fit` 把"固定开销 / 每元素成本"分开 | **生产收益结论的唯一依据**，任何"单算子几倍"的结论都要附这一族（RESULTS §2.10） |
+| `bench_context_overhead.py` | 诊断 | 同一形态在 hot / 线程池冷（spaced）/ 源冷 / autograd 四种上下文下的单次耗时；另含固定链（K=1）、A 敏感性、K=2 小形态、mask 的 `nonzero` 与混合序列 | 回答"模型内每次调用比 bench 贵多少"，RESULTS §2.11 |
 | `bench_regression.py` | 回归扫描 | 多形态性能回归扫描，默认 1/8/32t，比值 <0.90 打 `REGRESS` | 改内核后快速看有没有明显性能回退 |
 | `bench_ai4s.py` | 专项基准 | AI4S workload 形态（M1-M6）线程扫描，不是功能测试 | 评估 AI4S 场景收益/回归 |
 | `bench_cl_family.py` | **专项基准** | cl/置换布局行索引族前后对照：`aten`/`hpc` 两进程交替（覆盖是进程级开关），cl4d 行/掩码、cl3d 置换、contig4d 箱态对照组 | R10 直写（output-layout.md §8）等布局相关优化的验收/复现（RESULTS §2.9.2） |
@@ -92,6 +93,9 @@ K 512-55296（工作集 8KB-4MB）+ 4-19t 落在"每元素成本 / 固定开销"
 | `HPC_ITERS` | 每个 case 的迭代次数 | `25` / `40` / `100` / `200` |
 | `HPC_REPS` | `bench_smallk_driver.py` / `bench_realpath_driver.py` / `bench_production_driver.py` 的重复轮数 | `3` |
 | `HPC_DOM_SWEEP` | `bench_production_shapes.py` 诊断模式：固定该 K 只扫值域（桶化建表成本） | `8192` / 空 |
+| `HPC_CTX_KS` | `bench_context_overhead.py` 上下文组用的 K | `512,2048,8192` |
+| `HPC_SPACED_S` | `bench_context_overhead.py` `spaced` 上下文的调用间隔（秒） | `0.0002` |
+| `HPC_SUBSET` | `bench_production_shapes.py` 只保留名字含任一子串的用例（逗号分隔） | 空（全量） |
 | `HPC_LOOP_ITERS` | `bench_realpath.py` 标量循环 case 的计时轮数（每轮内含 `HPC_CALLS` 次调用） | `5` |
 | `HPC_BIG_ITERS` | `bench_realpath.py` 大输出 case（M1/M2）的计时轮数 | `20` |
 | `HPC_CALLS` | `bench_realpath.py` 高频调用 case 的每轮调用次数 | `10000` |
@@ -104,6 +108,9 @@ K 512-55296（工作集 8KB-4MB）+ 4-19t 落在"每元素成本 / 固定开销"
 - 旧脚本（`bench_index.py` 等）没有这层修正，2-36t 数据只能作历史参考。
 - `bench_smallk_driver.py` / `bench_realpath_driver.py` / `bench_production_driver.py`
   会自己在子进程里设置 `HPC_INDEX_NO_OVERRIDE`，不需要手动设。
+- `bench_context_overhead.py` 的 K=8192 档会受脚本内 768MB 源分配的堆扰动（aten
+  多线程热循环出现 550µs 级假峰，隔离复测 32µs）；看 K≤2048 的档，或先删 `cold`
+  组再跑。`forms` 组的 `nonzero` 19t 单格也可能被抖动污染，关键结论请隔离复测。
 
 ## 5. 典型命令
 
@@ -127,6 +134,10 @@ HPC_AFFINITY=190-227 HPC_THREADS=1,19 HPC_REPS=3 HPC_DOM_SWEEP=8192 \
 # 按 trace 调用次数加权（无 trace 时用示例权重，只演示算法）
 python benchmarks/bench_production_shapes.py --weighted \
   benchmarks/prod_weights.example.json --times prod_times.json
+
+# 3b. 上下文开销：hot / 线程池冷 / 源冷 / autograd + 固定链 + 混合序列平均
+HPC_AFFINITY=190-227 HPC_THREADS=1,12,19 \
+  python benchmarks/bench_context_overhead.py --ab --json ctx.json
 
 # 4. 真实 workload 两进程对拍（M5/shortq/A1/M1/M2，含短调用与高频单元素）
 HPC_AFFINITY=190-227 HPC_THREADS=1,8,16,38 \
