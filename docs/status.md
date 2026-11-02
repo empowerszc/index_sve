@@ -70,6 +70,7 @@ CPU 键覆盖，autograd 不受影响）。构建/运行契约见 `README.md` �
 | 测试补口 | 源大小路由门补边界用例（`numel*element_size > 512KB`，判据来自 degradation §5.9.1 的 4B gather 成本交叉点）：512KB 整走标量、+4B 走 SVE，两侧各钉一点；同时订正 `test_f32_i64_1d_route` 注释里被撤回的 0.63/1.2ns 旧口径为 7.1/18ns | （本轮） | ✅ |
 | 基准/裁决 2 | 基准口径审计：`bench_entry_overhead.py` 量出入口偏置（Python 包装 +10µs、`torch.ops` +9µs）；`bench_production_shapes.py` 增加 `--cases`/`--per-model`/`--total`/`--detail`/`--abr-map`/CSV fixture 与"两套口径 + ①③覆盖率区间"；按反馈热点重建 trace 复现加权，得 0.767/0.780/0.783（反馈是 1.116/1.184/0.980）。原始表 RESULTS §2.12，裁决 degradation §6.5.8 | （本轮） | ✅ |
 | 分析/文档 | **路由合并与探测成本**：三层成本模型（入口必经 / O(1) 判定 / O(K) 探测）+ 四个测量实验（先确认走了哪条路 / 门边界挪一格 / 单遍扫描裸价 / 语料普查）+ 可合并清单 M1-M6（只有 M1/M2 能换到时间，其余纯维护）+ 不该合并的两类 + 新增路由的五条检查表 + 按符号名跨版本定位。实测结论：短调用（K≤4096，含 2D A=8）不进路由链；同局部性下值域门两侧是约 2 倍台阶——原始数据与复现命令在 RESULTS §2.13，新增 `benchmarks/bench_route_probe.py`。新文档 `route-merge-analysis.md`，`status` §3/§7-R1、`code-walkthrough` §4.2、`index.md` 挂指针 | （本轮） | ✅ |
+| 基准/裁决 3 | **路径 × 规模 × 线程矩阵**：`bench_path_matrix.py`（35 用例 × 1/8/16t，aten/hpc 两进程交替，每用例写死期望路由并与计数器核对，98/98 一致）+ 兄弟对照（同工作量只翻一个谓词）；数据 RESULTS §2.14，裁决 `path-matrix.md`。结论：直写资格翻面即数量级（1t 22.9x / 16t 7.9x）；行拷贝族多线程仍稳定为正；两遍模型在 1D 小源8/16t 落到 1.00 以下（M1/M2 的直接依据）；`gather_direct` 不是快路径；mask 结论随规模翻转 | 见 RESULTS §2.14 | ✅ |
 
 ## 3. 路由现状（op.cpp `index_impl`）
 
@@ -113,6 +114,10 @@ out 连续                          → index_into 直写
 详细说明见 `architecture.md` §1 与 `optimizations.md` §9。**要不要把其中几条合并**、
 合并后能不能省掉一遍值域扫描、新增路由前该问什么，见
 `route-merge-analysis.md`（方法论 + 可合并清单 + 五条检查表）。
+
+**每条路各值多少**——包括哪些是"仅兜底"、哪些在高线程数会变成负收益——见
+`path-matrix.md`（按谓词组织的路径清单 + 兄弟对照 + 五档裁决），原始数据在
+RESULTS §2.14。该文 §3 的表就是"改哪条路由 → 跑哪些 case"的索引。
 
 ## 4. 测试
 
@@ -357,7 +362,7 @@ T4 桶化在小值域规避行放大，大值域靠预取/行 gather 等待未�
 
 | 优先级 | 项目 | 预期收益 | 工作量 | 详见 |
 |---|---|---|---|---|
-| **R1** | 1D 小源跳过 `gather_bucket_pure_raw` 前置值域扫描（并入 gather 单遍） | K=8192/65536 小源 36-38t 0.90-0.95x → ≥1x（省 ~15µs / 总 42-53µs，fork-join 占 30-50%） | 小 | degradation §5.8-C/§5.9.2、§8-2、route-merge §4.1/§4.2 |
+| **R1** | 1D 小源跳过 `gather_bucket_pure_raw` 前置值域扫描（并入 gather 单遍） | K=8192/65536 小源 36-38t 0.90-0.95x → ≥1x（省 ~15µs / 总 42-53µs，fork-join 占 30-50%）；路径矩阵里对应的就是"两遍模型在 1D 小源 8/16t 落到 1.00 以下"那两行（RESULTS §2.14.1 的 `r9_dom2049` / `r9_small_i32`），兄弟对照给出翻面差价 1.7-2.0 倍（§2.14.2） | 小 | degradation §5、path-matrix §6.8-C/§5.9.2、§8-2、route-merge §4.1/§4.2 |
 | **R2** | 非连续 mask 的 T8 stride 扩展（计数/压实按 mask stride 读，去 nonzero 物化） | 0.86-0.98x → 1.2-1.5x（8t 实测可省 ~1ms） | 中 | degradation §5.8-D、§8-3 |
 | **R3** | 端到端 AI4S 模型复测 | 验证 T0-T15 累计收益是否传导到真实负载（决策项） | 中 | performance §3/§4.1 |
 | R4 | f64+i32 下标经 `svunpklo` 加宽走 8B gather | ≈持平 → 小幅正收益 | 小 | degradation §8-4 |

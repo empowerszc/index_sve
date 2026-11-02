@@ -22,6 +22,7 @@
 | `bench_context_overhead.py` | 诊断 | 同一形态在 hot / 线程池冷（spaced）/ 源冷 / autograd 四种上下文下的单次耗时；另含固定链（K=1）、A 敏感性、K=2 小形态、mask 的 `nonzero` 与混合序列 | 回答"模型内每次调用比 bench 贵多少"，RESULTS §2.11 |
 | `bench_entry_overhead.py` | 诊断 | `x[idx]` 全链路拆解：dispatcher / `torch.ops` 查表 / Python 包装 / `torch.empty` / normalize 的各路下标表示（i32/stride2/2D/双索引） | 判断"某个基准脚本的入口口径差多少"，RESULTS §2.12.1 |
 | `bench_route_probe.py` | 诊断 | 路由成本分层探针四组：`chain` 短调用是否进链（路由由计数器读出）/ `gate` 值域门两侧同局部性 / `scan` 裸价 / `census` 语料路由分布；`--json` 出原始数据 | "路由条数是否抬高固定开销"，RESULTS §2.13 |
+| `bench_path_matrix.py` | **诊断（路径口径）** | 按**路由**组织的收益矩阵：35 个用例 × 1/8/16 线程，aten/hpc 两进程交替（`--ab`），每个用例写死期望路由并与计数器核对（不符打印 `EXPECT MISMATCH`）；`--routes` 只列期望路由，`--json` 出原始数据 | 判断"某条路值不值得保留/能不能合并"，RESULTS §2.14，裁决见 `path-matrix.md` |
 | `bench_regression.py` | 回归扫描 | 多形态性能回归扫描，默认 1/8/32t，比值 <0.90 打 `REGRESS` | 改内核后快速看有没有明显性能回退 |
 | `bench_ai4s.py` | 专项基准 | AI4S workload 形态（M1-M6）线程扫描，不是功能测试 | 评估 AI4S 场景收益/回归 |
 | `bench_cl_family.py` | **专项基准** | cl/置换布局行索引族前后对照：`aten`/`hpc` 两进程交替（覆盖是进程级开关），cl4d 行/掩码、cl3d 置换、contig4d 箱态对照组 | R10 直写（output-layout.md §8）等布局相关优化的验收/复现（RESULTS §2.9.2） |
@@ -100,9 +101,10 @@ K 512-55296（工作集 8KB-4MB）+ 4-19t 落在"每元素成本 / 固定开销"
 | `HPC_REPS` | `bench_smallk_driver.py` / `bench_realpath_driver.py` / `bench_production_driver.py` 的重复轮数 | `3` |
 | `HPC_DOM_SWEEP` | `bench_production_shapes.py` 诊断模式：固定该 K 只扫值域（桶化建表成本） | `8192` / 空 |
 | `HPC_CTX_KS` | `bench_context_overhead.py` 上下文组用的 K | `512,2048,8192` |
-| `HPC_ROUNDS` | `bench_route_probe.py` 交替轮数（每轮各 dom 都测一遍） | `5` |
+| `HPC_ROUNDS` | `bench_route_probe.py` 的交替轮数（每轮各 dom 都测一遍）；`bench_path_matrix.py --ab` 的整轮重复次数（每轮重起 aten/hpc 两进程） | `5` / `3` |
 | `HPC_GATE_K` | `bench_route_probe.py` gate 组的 K | `65536` |
 | `HPC_GATE_DOMS` | gate 组的值域扫描点 | `512,2048,2049,4096` |
+| `HPC_THREADS`（路径矩阵） | `bench_path_matrix.py` 的线程轴；`--ab` 会把它传给两个子进程 | `1,8,16` |
 | `HPC_SPACED_S` | `bench_context_overhead.py` `spaced` 上下文的调用间隔（秒） | `0.0002` |
 | `HPC_SUBSET` | `bench_production_shapes.py` 只保留名字含任一子串的用例（逗号分隔） | 空（全量） |
 | `HPC_CASES` | 用 `--gen-cases` / `--emit-cases` 的 JSON 直接当用例库（等价于 `--cases`） | 空 |

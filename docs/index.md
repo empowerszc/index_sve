@@ -17,6 +17,7 @@
 | [benchmarks.md](benchmarks.md) | **benchmarks/ 目录指南**：逐脚本用途、公共环境变量、典型命令、真实 workload 覆盖与预测力矩阵、与功能测试的区别 | 想知道"该跑哪个基准、结果能不能外推"的读者 |
 | [degradation-analysis.md](degradation-analysis.md) | **性能退化与线程扩展分析**（矩阵为 T15 时点历史；当前值见该文文首 R10 表）：1/2/4/8/16/32/36 线程矩阵、逐 case 微架构定位（x[:,i]、2B/1B、非连续 mask、小规模并行）、perf 方法、**§5.9 残余劣化的硬件根因**、**§6.5 生产形态（小 K + 6-19t）的劣化家族**（含 §6.5.7 对"固定开销占 93-95%"的逐项裁决、§6.5.8 benchmarks 口径审计）、优化优先级 | 想知道"哪个线程数慢、为什么慢"的读者 |
 | [route-merge-analysis.md](route-merge-analysis.md) | **路由合并与探测成本分析（方法优先、跨版本可迁移）**：三层成本模型、把"路径条数"和"开销"拆开的四个实验（先确认走了哪条路 / 门边界挪一格 / 单遍扫描裸价 / 语料普查）、本仓实测结论（短调用根本不进链；同局部性下门两侧是 2 倍台阶，数据见 RESULTS §2.13）、可合并清单 M1-M6（哪些能省一遍扫描、哪些只省代码）、不该合并的两类、新增路由的五条检查表、按符号名跨版本定位 | 要判断"该不该合并路由"、要新增一条路由、接手同类实现的 agent |
+| [path-matrix.md](path-matrix.md) | **路径收益矩阵（按路由组织，不是按场景）**：路径清单与谓词（改代码按谓词找 case）、两条镜头（vs ATen / vs 兄弟路径）、五档裁决（强/中/弱兜底/会变负/结论不稳）、会翻转结论的变量（线程数、规模、A、源大小）、与 M1/M2 及 R1 的关系、已知局限（无 kill switch、4 条路无计数器） | 要判断"某条路值不值得保留/该不该合并"、准备新增路由的开发者 |
 | [optimizations.md](optimizations.md) | **T0-T15 优化/修复轮记录（编年史，非状态文档）**：自适应粒度、rowcopy A>=4、M1 skip-linearize、融合单遍、小值域桶化、1 线程单遍、跨设备校验、mask 单遍压实、小 K 精简路径、compile opt-in、T12-T15（strided run 块/multi raw/raw 放宽/4B 直连 SVE）；变更、路由、实测数据、复测 | 想了解"做了哪些优化"的读者 |
 | [fallback-analysis.md](fallback-analysis.md) | **慢场景/回退路径深度分析**（文首有当前 <1x 速查；已修项标【历史·已修】）：为什么某些形态慢（4B 随机 gather 的 64B 行放大 + DRAM 延迟、两遍模型、串行阶段、无内核 dtype）、受限于什么、为何不做 fallback、判定速查表 | 想搞清"为什么慢、能不能修"的读者 |
 | [integration.md](integration.md) | 默认覆盖 `aten::index.Tensor` 机制、运行时环境契约、逃逸开关、慢场景 fallback 决策（不改） | 集成部署、排障 |
@@ -55,6 +56,8 @@
 - **要改内核/调优**：[kernels.md](kernels.md) → [architecture.md](architecture.md)
   → [optimizations.md](optimizations.md) §4 路由 → [degradation-analysis.md](degradation-analysis.md)
   §7 微架构证据 → [route-merge-analysis.md](route-merge-analysis.md)（合并/新增路由前的方法与判据）
+  → [path-matrix.md](path-matrix.md)（**每条路由值多少**：按谓词找 case、兄弟对照、
+  哪些路是"仅兜底/会变负"）
   → [fallback-analysis.md](fallback-analysis.md)
   → [archive/index_sve_vs_fastindex_gap_20261023.md](archive/index_sve_vs_fastindex_gap_20261023.md)
   （fastindex 能力差异与待补项，历史快照）。
@@ -68,8 +71,9 @@
 > （31 场景 × 1/2/4/8/16/32/36/38t + realpath + cl 家族专项）、**§2.10**
 > （生产形态轴：K 512-55296 × 1/6/12/19t，`x[idx]` 走 dispatch）、**§2.11**
 > （上下文开销：hot/池冷/源冷/autograd + 固定链 + 混合序列）、**§2.12**
-> （基准口径审计：入口偏置 / A-br 映射 / 加权与覆盖率）与 **§2.13**
-> （路由成本分层探针：chain / gate / scan / census）。§2 顶部的轮次索引表标明
+> （基准口径审计：入口偏置 / A-br 映射 / 加权与覆盖率）、**§2.13**
+> （路由成本分层探针：chain / gate / scan / census）与 **§2.14**（路径 × 规模 ×
+> 线程矩阵 + 兄弟对照）。§2 顶部的轮次索引表标明
 > 每小节是哪个轮次、是否当前；其它文档只写结论 + 指针，不复制全矩阵——**新测的
 > 任何数字（含诊断/探针）都先开 RESULTS 小节，再被引用**。
 > §2 之前任何标着 2-36t 的旧数据还受"libomp/libgomp 双 ICV"影响（degradation §3.1），

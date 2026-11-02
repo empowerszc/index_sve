@@ -54,6 +54,9 @@ aten::index），受限于什么**。这是"回退到 aten"类问题（integrati
 > **代号消歧**：本表的 M1-M4 是**机制**代号；performance/RESULTS 里的
 > M1-M6 是 **AI4S 负载**代号（权重块、spconv 特征等），两套互不相干。
 > 全部场景/负载代号与形状记号的白话速查见 `glossary.md`。
+>
+> **按路径看**：本文按"机制"和"场景"解释慢在哪；若想知道"每条路由各自值多少、
+> 哪些只是兜底"，见 [path-matrix.md](path-matrix.md)（数据 RESULTS §2.14）。
 
 ## 2. 路由与回退路径全图
 
