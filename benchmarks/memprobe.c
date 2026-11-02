@@ -229,9 +229,9 @@ static void idxgather(size_t size,uint64_t acc,int nt,int chains){
         if(sink==1e30f) src[0]=sink;
     }
     double nacc=(double)per;
-    printf("idxgather size=%zuMB threads=%d chains=%d acc/thread=%.0f "
+    printf("idxgather size=%zuKB threads=%d chains=%d acc/thread=%.0f "
         "ns/access=%.2f line_GBps=%.2f\n",
-        size/1024/1024,nt,chains,nacc,1e9*best/nacc,
+        size/1024,nt,chains,nacc,1e9*best/nacc,
         nacc*(double)nt*64/best/1e9);
     free(idx); free(src);
 }
@@ -326,7 +326,8 @@ int main(int argc,char**argv){
     else if(!strcmp(argv[1],"bandwidth")) bandwidth(atol(argv[2])*1024ULL*1024,atoi(argv[3]),!strcmp(argv[4],"cp"),argc>5?atoi(argv[5]):1);
     else if(!strcmp(argv[1],"gathermt")) gather_mt(atol(argv[2])*1024ULL*1024,strtoull(argv[3],0,10),atoi(argv[4]),!strcmp(argv[5],"rand")?1:0);
     else if(!strcmp(argv[1],"mlp")) mlp(atol(argv[2])*1024ULL*1024,atoi(argv[3]),strtoull(argv[4],0,10));
-    else if(!strcmp(argv[1],"idxgather")) idxgather(atol(argv[2])*1024ULL*1024,strtoull(argv[3],0,10),atoi(argv[4]),atoi(argv[5]));
+    // 源大小支持小数 MB（L1 常驻的桶化形态要 8KB 级工作集，整数 MB 进不去）
+    else if(!strcmp(argv[1],"idxgather")) idxgather((size_t)(atof(argv[2])*1048576.0),strtoull(argv[3],0,10),atoi(argv[4]),atoi(argv[5]));
     else if(!strcmp(argv[1],"rowgather")) {
         int mode=0;
         if(argc>6){

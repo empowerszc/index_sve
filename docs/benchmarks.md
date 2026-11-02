@@ -34,7 +34,7 @@
 | `perf_one.py` | perf 驱动 | 单 case 循环执行，供 `perf stat/record` 采样；行拷贝形态 `r3`/`r16raw`/`r16`/`r64`/`r256` 覆盖 raw 与 linearize 两条落点 | 需要微架构计数（cache/TLB/指令数）时用 |
 | `perf_analyze.py` | perf 分析 | 调 `perf stat` 量每行周期/指令/IPC/L1-2-3 缺行数，反推"等效在飞条数"；**每格跑两段（3s+9s）相减**，否则 `import torch` 的 7.2s 启动会把周期放大 4 倍；`--record` 出热点符号 | 回答"某条实现到底几条 line 在飞、时间花在哪个循环"，RESULTS §2.19 |
 | `bench_pf_ab.py` | 预取 A/B | 只变 `HPC_PF_DIST`（运行时旋钮），同一进程扫完 D；aten 侧分进程。输出 ns/行、`vs D0`、`aten/hpc` | H1 验收与调参，RESULTS §2.18 |
-| `memprobe.c` | 硬件探针 | 纯 C 的微基准，与 torch 无关：`latency`（指针追逐）/`bandwidth`（带 `REPS`，单遍会把冷建队算进去）/`mlp`（S 条**独立依赖链**，精确设"在飞条数"）/`gathermt`/`idxgather`（下标从内存顺序读，看内核循环形态）/`rowgather`（`plain`/`memcpy`/`pipe`/`pf8`/`pf16` 五写法，`NOHP=1` 关大页） | 测内存系统上限、排除算子本身因素；在飞条数曲线与行拷贝分解见 RESULTS §2.16 |
+| `memprobe.c` | 硬件探针 | 纯 C 的微基准，与 torch 无关：`latency`（指针追逐）/`bandwidth`（带 `REPS`，单遍会把冷建队算进去）/`mlp`（S 条**独立依赖链**，精确设"在飞条数"）/`gathermt`/`idxgather`（下标从内存顺序读，看内核循环形态；源大小支持小数 MB，才能测 8KB 级的 L1 常驻形态）/`rowgather`（`plain`/`memcpy`/`pipe`/`pf8`/`pf16` 五写法，`NOHP=1` 关大页） | 测内存系统上限、排除算子本身因素；在飞条数曲线与行拷贝分解见 RESULTS §2.16，L1/L2 地板（0.66-0.71 vs 5.6-6.0 ns/元素）见 §2.20 |
 | `sveprobe.c` | 硬件探针（SVE） | 独立编译单元（`-march=armv8.2-a+sve2`，避免改掉 `memprobe` 的自动向量化）：`copyhot` L1 常驻源的 512-bit 拷贝指令地板、`copystream` 普通 vs 非临时 `stnt1d`、`gather` SVE gather vs 标量展开 | 回答"指令/发射是不是瓶颈"，RESULTS §2.17 |
 | `bench_hw_traffic.py` | 内核线流量 | 真实 `aten::index` 1D gather 的绝对带宽，换算成 64B 行流量，用来和 `memprobe` 的上限对照 | 判断"是否撞到带宽墙" |
 | `RESULTS.md` | 结果报告 | 正式性能结果与历史轮次数据，不是脚本 | 查数据、写结论、对齐口径 |

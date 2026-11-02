@@ -39,8 +39,9 @@ backward 不受影响。
 - 想改内核：`docs/kernels.md` → `docs/architecture.md` → `docs/optimizations.md`
   → `docs/archive/index_sve_vs_fastindex_gap_20261023.md`（fastindex 差异与待补项）。
 - 想知道“还剩多少空间”：[`docs/headroom.md`](docs/headroom.md)——成本 = 延迟 ÷
-  在飞条数（本机 137ns、每核 16-20 条）、line 放大、逐族“现状/上限/剩余”、
-  已兑现 27-80%（H1 软件预取已实做，行拷贝 2.3-2.9x）与欠账 H1-H7。
+  在飞条数（本机 137ns、每核 16-20 条）、**两种地板**（DRAM 5.6-6.0 vs L1 0.66-0.71
+  ns/元素）、aten 的瓶颈清单、逐族“现状/地板/剩余/已兑现”（H1 预取已实做，
+  行拷贝 2.3-2.9x）与欠账 H1-H8。
 - 想接续开发：`docs/status.md` §7（演进方向优先级表 R1-R9 + H1-H5：R1 小源扫描
   合并、R2 mask stride、R3 端到端验证，含预期收益与根因交叉引用）。
 - 想集成/排障：`docs/integration.md` → `docs/override-mechanism.md` → `docs/status.md`。
