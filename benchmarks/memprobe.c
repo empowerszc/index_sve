@@ -22,6 +22,27 @@ static void freq(uint64_t it){
            (unsigned long)it,1e9*t/(double)it,(double)it/t,(unsigned long)a);
 }
 
+// 精确足迹的依赖链：把 0..n-1 洗成一个序列再首尾相接，所以沿环走 n 步正好回到
+// 起点——**工作集精确 = n×8 字节**，不像随机置换那样"环长 < n"（足迹不确定）。
+// 这是量"命中率 vs 工作集"的正确探针：横轴就是数组大小。
+static void chase(size_t size, uint64_t acc){
+    size_t n=size/8;
+    uint64_t *p=aligned_alloc(64,size);
+    uint64_t *seq=malloc(n*sizeof(uint64_t));
+    for(size_t i=0;i<n;i++) seq[i]=i;
+    uint64_t s=88172645463325252ULL;
+    for(size_t i=n-1;i>0;i--){uint64_t j=xs(&s)%(i+1);uint64_t t=seq[i];seq[i]=seq[j];seq[j]=t;}
+    for(size_t i=0;i<n;i++) p[seq[i]]=seq[(i+1==n)?0:(i+1)];
+    uint64_t cur=seq[0];
+    for(uint64_t i=0;i<acc/10+10;i++) cur=p[cur];
+    double t0=now();
+    for(uint64_t i=0;i<acc;i++) cur=p[cur];
+    double t=now()-t0;
+    printf("chase size=%zuKB footprint=%zuKB accesses=%lu ns/access=%.2f line_GBps=%.2f sink=%lu\n",
+           size/1024,size/1024,acc,1e9*t/(double)acc,(double)acc*64/t/1e9,(unsigned long)cur);
+    free(seq); free(p);
+}
+
 static void latency(size_t size, uint64_t acc){
     uint64_t n=size/8; uint64_t *p=aligned_alloc(64,size);
     for(uint64_t i=0;i<n;i++) p[i]=i;
@@ -332,10 +353,11 @@ static void rowgather(size_t size,int A,int nt,uint64_t rows,int mode){
 }
 
 int main(int argc,char**argv){
-    if(argc<2){fprintf(stderr,"usage: %s latency SIZE_KB ACC | bandwidth SIZE_MB THREADS RD|CP [REPS] | gather SIZE_MB ACC seq|s16|rand | gathermt SIZE_MB ACC THREADS seq|rand | rowgather SIZE_MB A THREADS ROWS [pipe] | mlp SIZE_MB STREAMS ACC | idxgather SIZE_MB ACC THREADS CHAINS | freq ITERS\n",argv[0]);return 1;}
+    if(argc<2){fprintf(stderr,"usage: %s latency SIZE_KB ACC | bandwidth SIZE_MB THREADS RD|CP [REPS] | gather SIZE_MB ACC seq|s16|rand | gathermt SIZE_MB ACC THREADS seq|rand | rowgather SIZE_MB A THREADS ROWS [pipe] | mlp SIZE_MB STREAMS ACC | idxgather SIZE_MB ACC THREADS CHAINS | freq ITERS | chase SIZE_KB ACC\n",argv[0]);return 1;}
     if(!strcmp(argv[1],"latency")) latency(atol(argv[2])*1024ULL,strtoull(argv[3],0,10));
     else if(!strcmp(argv[1],"bandwidth")) bandwidth(atol(argv[2])*1024ULL*1024,atoi(argv[3]),!strcmp(argv[4],"cp"),argc>5?atoi(argv[5]):1);
     else if(!strcmp(argv[1],"gathermt")) gather_mt(atol(argv[2])*1024ULL*1024,strtoull(argv[3],0,10),atoi(argv[4]),!strcmp(argv[5],"rand")?1:0);
+    else if(!strcmp(argv[1],"chase")) chase(atol(argv[2])*1024ULL,strtoull(argv[3],0,10));
     else if(!strcmp(argv[1],"freq")) freq(strtoull(argv[2],0,10));
     else if(!strcmp(argv[1],"mlp")) mlp(atol(argv[2])*1024ULL*1024,atoi(argv[3]),strtoull(argv[4],0,10));
     // 源大小支持小数 MB（L1 常驻的桶化形态要 8KB 级工作集，整数 MB 进不去）
