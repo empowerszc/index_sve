@@ -69,7 +69,7 @@ CPU 键覆盖，autograd 不受影响）。构建/运行契约见 `README.md` �
 | 文档核查 | 全量核对 `op.cpp` 行号引用：§4 步骤清单/小节范围/附录 A/B 共 40 余处晚 3-5 行（注册行写成 633 应为 630、`index_into` 写成 49 应为 52 等）；根因是 `check_doc_anchors.py` 把 §4 的裸引用判给了 gather.cpp（上一张表出现过 `gather.cpp:750`）。工具收紧四条规则：小节标题文件优先、`符号 :NNN` 定义精确匹配、紧邻符号必须落在函数体内或 ±3 行内被调用、表格行按符号配对；四条均做反证 | （本轮） | ✅ |
 | 测试补口 | 源大小路由门补边界用例（`numel*element_size > 512KB`，判据来自 degradation §5.9.1 的 4B gather 成本交叉点）：512KB 整走标量、+4B 走 SVE，两侧各钉一点；同时订正 `test_f32_i64_1d_route` 注释里被撤回的 0.63/1.2ns 旧口径为 7.1/18ns | （本轮） | ✅ |
 | 基准/裁决 2 | 基准口径审计：`bench_entry_overhead.py` 量出入口偏置（Python 包装 +10µs、`torch.ops` +9µs）；`bench_production_shapes.py` 增加 `--cases`/`--per-model`/`--total`/`--detail`/`--abr-map`/CSV fixture 与"两套口径 + ①③覆盖率区间"；按反馈热点重建 trace 复现加权，得 0.767/0.780/0.783（反馈是 1.116/1.184/0.980）。原始表 RESULTS §2.12，裁决 degradation §6.5.8 | （本轮） | ✅ |
-| 分析/文档 | **路由合并与探测成本**：三层成本模型（入口必经 / O(1) 判定 / O(K) 探测）+ 四个测量实验（先确认走了哪条路 / 门边界挪一格 / 单遍扫描裸价 / 语料普查）+ 可合并清单 M1-M6（只有 M1/M2 能换到时间，其余纯维护）+ 不该合并的两类 + 新增路由的五条检查表 + 按符号名跨版本定位。实测：K≤4096 连 2D A=8 都被 `small_single` 兜住（6.2-6.6µs，不进链）；被排除后多付 3.3µs（normalize + 通用路由，不是 if 链）；同局部性下探测落选 54.7→113.9µs（2.08x）。新文档 `route-merge-analysis.md`，`status` §3/§7-R1、`code-walkthrough` §4.2、`index.md` 挂指针 | （本轮） | ✅ |
+| 分析/文档 | **路由合并与探测成本**：三层成本模型（入口必经 / O(1) 判定 / O(K) 探测）+ 四个测量实验（先确认走了哪条路 / 门边界挪一格 / 单遍扫描裸价 / 语料普查）+ 可合并清单 M1-M6（只有 M1/M2 能换到时间，其余纯维护）+ 不该合并的两类 + 新增路由的五条检查表 + 按符号名跨版本定位。实测结论：短调用（K≤4096，含 2D A=8）不进路由链；同局部性下值域门两侧是约 2 倍台阶——原始数据与复现命令在 RESULTS §2.13，新增 `benchmarks/bench_route_probe.py`。新文档 `route-merge-analysis.md`，`status` §3/§7-R1、`code-walkthrough` §4.2、`index.md` 挂指针 | （本轮） | ✅ |
 
 ## 3. 路由现状（op.cpp `index_impl`）
 
