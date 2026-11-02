@@ -11,6 +11,17 @@
 static double now(void){struct timespec ts;clock_gettime(CLOCK_MONOTONIC,&ts);return ts.tv_sec+ts.tv_nsec*1e-9;}
 static uint64_t xs(uint64_t *s){uint64_t x=*s;x^=x<<13;x^=x>>7;x^=x<<17;*s=x;return x;}
 
+// 主频核对：一次依赖加法/迭代。配合 `perf stat -e cpu_cycles`，拍数 ÷ 墙钟 = 实际
+// 主频。标称值（lscpu 的 CPU max MHz）不一定等于跑起来的值，换算"拍 ↔ ns"前先核一下。
+static void freq(uint64_t it){
+    volatile uint64_t a=1;
+    double t0=now();
+    for(uint64_t i=0;i<it;i++) a=a+1;
+    double t=now()-t0;
+    printf("freq iters=%lu ns/iter=%.3f iters_per_s=%.3f sink=%lu\n",
+           (unsigned long)it,1e9*t/(double)it,(double)it/t,(unsigned long)a);
+}
+
 static void latency(size_t size, uint64_t acc){
     uint64_t n=size/8; uint64_t *p=aligned_alloc(64,size);
     for(uint64_t i=0;i<n;i++) p[i]=i;
@@ -321,10 +332,11 @@ static void rowgather(size_t size,int A,int nt,uint64_t rows,int mode){
 }
 
 int main(int argc,char**argv){
-    if(argc<2){fprintf(stderr,"usage: %s latency SIZE_KB ACC | bandwidth SIZE_MB THREADS RD|CP [REPS] | gather SIZE_MB ACC seq|s16|rand | gathermt SIZE_MB ACC THREADS seq|rand | rowgather SIZE_MB A THREADS ROWS [pipe] | mlp SIZE_MB STREAMS ACC | idxgather SIZE_MB ACC THREADS CHAINS\n",argv[0]);return 1;}
+    if(argc<2){fprintf(stderr,"usage: %s latency SIZE_KB ACC | bandwidth SIZE_MB THREADS RD|CP [REPS] | gather SIZE_MB ACC seq|s16|rand | gathermt SIZE_MB ACC THREADS seq|rand | rowgather SIZE_MB A THREADS ROWS [pipe] | mlp SIZE_MB STREAMS ACC | idxgather SIZE_MB ACC THREADS CHAINS | freq ITERS\n",argv[0]);return 1;}
     if(!strcmp(argv[1],"latency")) latency(atol(argv[2])*1024ULL,strtoull(argv[3],0,10));
     else if(!strcmp(argv[1],"bandwidth")) bandwidth(atol(argv[2])*1024ULL*1024,atoi(argv[3]),!strcmp(argv[4],"cp"),argc>5?atoi(argv[5]):1);
     else if(!strcmp(argv[1],"gathermt")) gather_mt(atol(argv[2])*1024ULL*1024,strtoull(argv[3],0,10),atoi(argv[4]),!strcmp(argv[5],"rand")?1:0);
+    else if(!strcmp(argv[1],"freq")) freq(strtoull(argv[2],0,10));
     else if(!strcmp(argv[1],"mlp")) mlp(atol(argv[2])*1024ULL*1024,atoi(argv[3]),strtoull(argv[4],0,10));
     // 源大小支持小数 MB（L1 常驻的桶化形态要 8KB 级工作集，整数 MB 进不去）
     else if(!strcmp(argv[1],"idxgather")) idxgather((size_t)(atof(argv[2])*1048576.0),strtoull(argv[3],0,10),atoi(argv[4]),atoi(argv[5]));

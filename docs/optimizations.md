@@ -662,7 +662,7 @@ T13 矩阵残余的三类退化：
 
 1. **大 K 下 raw 反而慢 12-32%**（A=64 E=1M i32 8t 7982→10378µs、rc A=16
    K=200k 1724→2286µs、M2 (20000,64) +12%）：raw 每行做内联检查/负归一/
-   `v*stride` 地址链，冷源（L3/DRAM）行拷贝下拖慢发射；linearize 的预校验
+   `v*stride` 地址链，冷源（超出 L2、走 DRAM）行拷贝下拖慢发射；linearize 的预校验
    偏移 + 无检查拷贝两遍反而快。小 K（B*K≤65536）省一遍 fork-join 收益更大，
    raw 赢——实测分界清晰，条件定为 `A<=64 && B*K<=65536`。
 2. **小源下 4B SVE gather 每元素成本高于标量**（实测每线程每元素：小源
@@ -670,7 +670,7 @@ T13 矩阵残余的三类退化：
    ~19 vs ~10ns，机理与推导见 degradation-analysis.md §5.9）：C 经
    linearize→`gather_index` 是 4 遍 fork-join（bucket 扫描 ×2 + linearize +
    SVE），K=65536 56→110µs；直连单遍内核也要 92-102µs。
-   分界是**源驻留级**而非 K：8MB 源（L3/DRAM）gather 的 8 路在飞负载把
+   分界是**源驻留级**而非 K：8MB 源（远超 768KB L2）gather 的 8 路在飞负载把
    延迟摊薄（K=10M 8t 1.32→1.93x），16KB 源（L1）标量的乱序重叠已把延迟
    藏住、指令更少——最终给内核加源>512KB（L2 实测 768KB，取其下保守界）
    门，小源保持标量。ACLE 无 32 位数据的 64 位下标 gather intrinsic，
