@@ -1052,7 +1052,9 @@ HPC_THREADS=12 HPC_REPS=3 \
 #### 2.13.1 短调用有没有进入路由链（chain）
 
 输出都不超过 4 元素，dtype 一致；"实际路由"列由计数器读出，不靠条件推断
-（`<no counter>` = 该路没有专属计数器，本仓有 3 条这样的路，见 §2.13.4）。
+（`<no counter>` = 该路没有专属计数器。本仓目前有 **4 条**路由没有：`gather_direct`、
+桶化 `bucket_gather_pure_raw`、两遍模型 `linearize`+`gather_index`、`gather_fused`；
+另有 `rowcopy_raw` 这一个计数器同时覆盖 raw 与 fused 两种行拷贝，见 §2.13.4）。
 
 | 用例 | 实际路由 | µs |
 |---|---|---|
@@ -1125,8 +1127,11 @@ K=65536、A=1、f32、下标 i32；源 4MB，`dom≤4096` 时只摸前 16KB（�
 `rowcopy_sve`（无计数器）。
 
 结论：语料里实际只用到 4-5 条路，其余是退化形态兜底。**"删路"要看 trace 覆盖，
-不能只看条数。** 已知缺口：桶化 / `gather_direct` / `rowcopy_sve` 三条没有专属
-计数器，补计数需重编译，列入待办（届时本表可精确到路）。
+不能只看条数。** 已知缺口（补计数需重编译，列入待办）：`gather_direct`、桶化
+`bucket_gather_pure_raw`、两遍模型 `linearize`+`gather_index`、`gather_fused`
+四条路由没有专属计数器；`rowcopy_raw` 一个计数器同时盖住 #0/#2/#4/#8 四种行拷贝
+入口（raw 与 fused 不可分）。补上之后"路由计数器之和 == `dispatch_count`" 才能
+当作不变量来测——那才是这套计数的真正价值，不只是让本表更细。
 
 #### 2.13.5 复现
 
