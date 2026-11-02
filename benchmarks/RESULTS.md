@@ -2043,6 +2043,11 @@ perf report --no-children --percent-limit 1 -i /tmp/a.data --stdio
 > 本节把 `idxgather` 的源大小放开到小数 MB（之前是整数 MB，进不到 L1），量出这条
 > 地板曲线。
 
+三条结论先写在前面：**(1)** L1 常驻的 gather 地板是 **0.66-0.71 ns/元素**，比 DRAM
+口径（5.62-5.98）快 **8-9 倍**；**(2)** 它 1t 就到、**不随线程数变化**，所以桶化在
+多线程下的空间要按"每线程元素数 × 每线程 ns"算；**(3)** CHAINS 1→16 在 8KB 上仍有
+**2.3x**，说明"批量化"对桶化输出段同样有效（`headroom.md` §7-H2b 的依据）。
+
 #### 2.20.1 工作集 × 在飞条数 × 线程数
 
 `memprobe idxgather SIZE_MB ACC THREADS CHAINS`（下标表 1M 项顺序读、数据随机取，
@@ -2119,6 +2124,9 @@ perf report --no-children --percent-limit 1 -i /tmp/a.data --stdio
   加一部分在飞条数。
 - Sonata：每线程 42667，4.53ns/元素 ≈ 5.07ns 的 L1 延迟 ÷ 1.1——**一条在飞**，
   是纯粹的"输出段逐元素查表"，落在 H2（批量化）。
+
+一句话：**同一张"桶化"标签下有三种成本结构，先分清是哪一种再决定改什么**——
+SGI/PPT 改固定成本与串行段（H4/H7），Sonata 改输出段的在飞条数（H2b）。
 
 #### 2.20.4 复现
 
