@@ -189,6 +189,10 @@ Python __getitem__
 | 9 | op.cpp:176 | A==1 ∨ (after_contiguous ∧ A≥4 ∧ f32/f64) | linearize + gather_index | **两遍模型**：物化偏移 → SVE 族 |
 | 10 | op.cpp:182 | 其余（A∈[2,4)、非连续等） | gather_fused（gather.cpp:1016） | 兜底单遍融合，不物化 idx |
 
+这 11 条的**合并候选与代价分析**（哪些合并能省掉一遍扫描、哪些只是省代码）见
+[route-merge-analysis.md](route-merge-analysis.md) §4；要新增或合并一条路由前，
+先过一遍该文 §6 的五条检查表。
+
 容易漏的细节：
 
 - **顺序就是优先级**：#1 在 #2 之前——K<1024 时哪怕形状是 M1 也走 direct。

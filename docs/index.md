@@ -16,6 +16,7 @@
 | [performance.md](performance.md) | 基准方法论、**当前轮（R10）模型场景结果表**、**胜出场景的硬件根因（§4.3：rowcopy/gather MLP/遍数消除/固定开销/桶化/串行边界）**、已知硬件限制、如何复测 | 性能评估、验收、想知道"为什么快"的读者 |
 | [benchmarks.md](benchmarks.md) | **benchmarks/ 目录指南**：逐脚本用途、公共环境变量、典型命令、真实 workload 覆盖与预测力矩阵、与功能测试的区别 | 想知道"该跑哪个基准、结果能不能外推"的读者 |
 | [degradation-analysis.md](degradation-analysis.md) | **性能退化与线程扩展分析**（矩阵为 T15 时点历史；当前值见该文文首 R10 表）：1/2/4/8/16/32/36 线程矩阵、逐 case 微架构定位（x[:,i]、2B/1B、非连续 mask、小规模并行）、perf 方法、**§5.9 残余劣化的硬件根因**、**§6.5 生产形态（小 K + 6-19t）的劣化家族**（含 §6.5.7 对"固定开销占 93-95%"的逐项裁决、§6.5.8 benchmarks 口径审计）、优化优先级 | 想知道"哪个线程数慢、为什么慢"的读者 |
+| [route-merge-analysis.md](route-merge-analysis.md) | **路由合并与探测成本分析（方法优先、跨版本可迁移）**：三层成本模型、把"路径条数"和"开销"拆开的四个实验（先确认走了哪条路 / 门边界挪一格 / 单遍扫描裸价 / 语料普查）、本仓实测（短调用根本进不了链 6.2 vs 9.5µs、同局部性下探测落选 54.7→113.9µs）、可合并清单 M1-M6（哪些能省一遍扫描、哪些只省代码）、不该合并的两类、新增路由的五条检查表、按符号名跨版本定位 | 要判断"该不该合并路由"、要新增一条路由、接手同类实现的 agent |
 | [optimizations.md](optimizations.md) | **T0-T15 优化/修复轮记录（编年史，非状态文档）**：自适应粒度、rowcopy A>=4、M1 skip-linearize、融合单遍、小值域桶化、1 线程单遍、跨设备校验、mask 单遍压实、小 K 精简路径、compile opt-in、T12-T15（strided run 块/multi raw/raw 放宽/4B 直连 SVE）；变更、路由、实测数据、复测 | 想了解"做了哪些优化"的读者 |
 | [fallback-analysis.md](fallback-analysis.md) | **慢场景/回退路径深度分析**（文首有当前 <1x 速查；已修项标【历史·已修】）：为什么某些形态慢（4B 随机 gather 的 64B 行放大 + DRAM 延迟、两遍模型、串行阶段、无内核 dtype）、受限于什么、为何不做 fallback、判定速查表 | 想搞清"为什么慢、能不能修"的读者 |
 | [integration.md](integration.md) | 默认覆盖 `aten::index.Tensor` 机制、运行时环境契约、逃逸开关、慢场景 fallback 决策（不改） | 集成部署、排障 |
@@ -53,7 +54,8 @@
   源码，含路由表与调试出口）→ 遇到"为什么这样设计"回 [architecture.md](architecture.md)。
 - **要改内核/调优**：[kernels.md](kernels.md) → [architecture.md](architecture.md)
   → [optimizations.md](optimizations.md) §4 路由 → [degradation-analysis.md](degradation-analysis.md)
-  §7 微架构证据 → [fallback-analysis.md](fallback-analysis.md)
+  §7 微架构证据 → [route-merge-analysis.md](route-merge-analysis.md)（合并/新增路由前的方法与判据）
+  → [fallback-analysis.md](fallback-analysis.md)
   → [archive/index_sve_vs_fastindex_gap_20261023.md](archive/index_sve_vs_fastindex_gap_20261023.md)
   （fastindex 能力差异与待补项，历史快照）。
 - **集成 / 排障 / 与 compile 共存**：[integration.md](integration.md)

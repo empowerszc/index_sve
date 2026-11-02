@@ -69,6 +69,7 @@ CPU 键覆盖，autograd 不受影响）。构建/运行契约见 `README.md` �
 | 文档核查 | 全量核对 `op.cpp` 行号引用：§4 步骤清单/小节范围/附录 A/B 共 40 余处晚 3-5 行（注册行写成 633 应为 630、`index_into` 写成 49 应为 52 等）；根因是 `check_doc_anchors.py` 把 §4 的裸引用判给了 gather.cpp（上一张表出现过 `gather.cpp:750`）。工具收紧四条规则：小节标题文件优先、`符号 :NNN` 定义精确匹配、紧邻符号必须落在函数体内或 ±3 行内被调用、表格行按符号配对；四条均做反证 | （本轮） | ✅ |
 | 测试补口 | 源大小路由门补边界用例（`numel*element_size > 512KB`，判据来自 degradation §5.9.1 的 4B gather 成本交叉点）：512KB 整走标量、+4B 走 SVE，两侧各钉一点；同时订正 `test_f32_i64_1d_route` 注释里被撤回的 0.63/1.2ns 旧口径为 7.1/18ns | （本轮） | ✅ |
 | 基准/裁决 2 | 基准口径审计：`bench_entry_overhead.py` 量出入口偏置（Python 包装 +10µs、`torch.ops` +9µs）；`bench_production_shapes.py` 增加 `--cases`/`--per-model`/`--total`/`--detail`/`--abr-map`/CSV fixture 与"两套口径 + ①③覆盖率区间"；按反馈热点重建 trace 复现加权，得 0.767/0.780/0.783（反馈是 1.116/1.184/0.980）。原始表 RESULTS §2.12，裁决 degradation §6.5.8 | （本轮） | ✅ |
+| 分析/文档 | **路由合并与探测成本**：三层成本模型（入口必经 / O(1) 判定 / O(K) 探测）+ 四个测量实验（先确认走了哪条路 / 门边界挪一格 / 单遍扫描裸价 / 语料普查）+ 可合并清单 M1-M6（只有 M1/M2 能换到时间，其余纯维护）+ 不该合并的两类 + 新增路由的五条检查表 + 按符号名跨版本定位。实测：K≤4096 连 2D A=8 都被 `small_single` 兜住（6.2-6.6µs，不进链）；被排除后多付 3.3µs（normalize + 通用路由，不是 if 链）；同局部性下探测落选 54.7→113.9µs（2.08x）。新文档 `route-merge-analysis.md`，`status` §3/§7-R1、`code-walkthrough` §4.2、`index.md` 挂指针 | （本轮） | ✅ |
 
 ## 3. 路由现状（op.cpp `index_impl`）
 
@@ -109,7 +110,9 @@ out 连续                          → index_into 直写
 > `self.is_contiguous()` 守卫，输出恒连续不受影响。机制与移植指南见
 > `output-layout.md` §5/§8。
 
-详细说明见 `architecture.md` §1 与 `optimizations.md` §9。
+详细说明见 `architecture.md` §1 与 `optimizations.md` §9。**要不要把其中几条合并**、
+合并后能不能省掉一遍值域扫描、新增路由前该问什么，见
+`route-merge-analysis.md`（方法论 + 可合并清单 + 五条检查表）。
 
 ## 4. 测试
 
@@ -354,7 +357,7 @@ T4 桶化在小值域规避行放大，大值域靠预取/行 gather 等待未�
 
 | 优先级 | 项目 | 预期收益 | 工作量 | 详见 |
 |---|---|---|---|---|
-| **R1** | 1D 小源跳过 `gather_bucket_pure_raw` 前置值域扫描（并入 gather 单遍） | K=8192/65536 小源 36-38t 0.90-0.95x → ≥1x（省 ~15µs / 总 42-53µs，fork-join 占 30-50%） | 小 | degradation §5.8-C/§5.9.2、§8-2 |
+| **R1** | 1D 小源跳过 `gather_bucket_pure_raw` 前置值域扫描（并入 gather 单遍） | K=8192/65536 小源 36-38t 0.90-0.95x → ≥1x（省 ~15µs / 总 42-53µs，fork-join 占 30-50%） | 小 | degradation §5.8-C/§5.9.2、§8-2、route-merge §4.1/§4.2 |
 | **R2** | 非连续 mask 的 T8 stride 扩展（计数/压实按 mask stride 读，去 nonzero 物化） | 0.86-0.98x → 1.2-1.5x（8t 实测可省 ~1ms） | 中 | degradation §5.8-D、§8-3 |
 | **R3** | 端到端 AI4S 模型复测 | 验证 T0-T15 累计收益是否传导到真实负载（决策项） | 中 | performance §3/§4.1 |
 | R4 | f64+i32 下标经 `svunpklo` 加宽走 8B gather | ≈持平 → 小幅正收益 | 小 | degradation §8-4 |
