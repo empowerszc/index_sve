@@ -299,6 +299,62 @@ def test_cl4d_half_excluded():
         torch.set_num_threads(old)
 
 
+def test_int32_data_raw_route():
+    # M1 raw 支的 dtype 白名单原为 f32/f64。int32 同形同 K 落 gather_fused：
+    # RESULTS §2.14 表 B，A=3 K=8192 8t，int32 0.57x vs f32 1.67x（2.9x），
+    # 而两侧 ATen 仅差 1µs —— 差距全在换路，不在数据搬运量。
+    # A=64 一并钉住：行宽 256B 走向量臂而非 <=64B 的 memcpy 臂。
+    old = torch.get_num_threads()
+    try:
+        torch.set_num_threads(8)
+        for A in (3, 64):
+            x = torch.randint(-10000, 10000, (20000, A), dtype=torch.int32)
+            idx = torch.randint(0, 20000, (8192,), dtype=torch.int64)
+            ref = torch.index_select(x, 0, idx)
+            before = C.rowcopy_raw_count()
+            y = index_sve.index(x, [idx])
+            torch.testing.assert_close(y, ref)
+            assert C.rowcopy_raw_count() == before + 1, \
+                f"int32 A={A} did not take raw rowcopy"
+    finally:
+        torch.set_num_threads(old)
+
+
+def test_int64_data_i32_index_raw_route():
+    # int64 数据（8B 向量臂）+ int32 下标（rowcopy_raw_single 的另一份实例化）。
+    # A=16 → 行宽 128B > 64B，覆盖向量臂；块拷贝若只认浮点会静默不拷。
+    old = torch.get_num_threads()
+    try:
+        torch.set_num_threads(8)
+        x = torch.randint(-10000, 10000, (20000, 16), dtype=torch.int64)
+        idx = torch.randint(0, 20000, (8192,), dtype=torch.int32)
+        ref = torch.index_select(x, 0, idx)
+        before = C.rowcopy_raw_count()
+        y = index_sve.index(x, [idx])
+        torch.testing.assert_close(y, ref)
+        assert C.rowcopy_raw_count() == before + 1, "int64 + i32 idx did not take raw rowcopy"
+    finally:
+        torch.set_num_threads(old)
+
+
+def test_half_data_excluded_from_raw_route():
+    # 白名单只放开 4B/8B 整数：2B element 没有向量块拷贝臂，留在 gather_fused。
+    x = torch.randn(20000, 3).half()
+    idx = torch.randint(0, 20000, (8192,), dtype=torch.int64)
+    ref = torch.index_select(x, 0, idx)
+    old = torch.get_num_threads()
+    try:
+        torch.set_num_threads(8)
+        before = C.rowcopy_raw_count()
+        before_d = C.dispatch_count()
+        y = index_sve.index(x, [idx])
+        torch.testing.assert_close(y, ref)
+        assert C.rowcopy_raw_count() == before, "f16 must stay off raw rowcopy"
+        assert C.dispatch_count() == before_d + 1, "kernel did not run"
+    finally:
+        torch.set_num_threads(old)
+
+
 if __name__ == "__main__":
     sys.path.insert(0, __file__.rsplit("/", 1)[0])
     import _harness

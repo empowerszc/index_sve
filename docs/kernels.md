@@ -122,7 +122,10 @@ rowcopy_sve<T, IdxT, NT> → copy_contig_sve<T, NT>
 - 条件：`A>1 && after_contiguous && sve_512_ok() && A>=4 && dtype∈{f32,f64}`。
   `after_contiguous` 保证 `col_off[c]==c`（dims_after 连续），元素
   `out[p*A + c] = src[row_off[r] + idx[k] + c]` 变成**一段连续 A 拷贝**。
-- `copy_contig_sve`：8B 用 `svld1_f64/svst1_f64`，4B 用 `svld1_f32/svst1_f32`；
+- `copy_contig_sve`：按 `sizeof(T)` 选臂——8B 用 `svld1_f64/svst1_f64`，4B 用
+  `svld1_f32/svst1_f32`。只搬运位模式、不做算术，所以 4B/8B 的整数类型复用同一份
+  主体（i32/i64 与 float/double 等价）；2B/1B 与 complex128 走整块 `memcpy` 兜底
+  （T16 之前这里对非浮点 dtype 是空函数体，行宽 >64B 时一字不拷）；
   **4×VL 多寄存器展开**维持内存级并行，之后 VL 步进 + `whilelt` 尾数；NT 时
   store 换 `svstnt1_*`。
 - **≤64B 小行/短 run 走 `memcpy`**：4-16 个 f32 或 4-8 个 f64 正好 1-2 条
@@ -130,6 +133,12 @@ rowcopy_sve<T, IdxT, NT> → copy_contig_sve<T, NT>
   40B/64B run 也走这里（实测 run10 由 0.72-0.89x 提升到 0.98-1.42x）。
 - 行拷贝只读一次 idx（`src + row_off[r] + idx[k]`），A 元素连续向量化 ——
   这是 S1 spconv / P1 图消息路径 ~4x（1 线程）/ ~1.9x（38 线程）的收益来源。
+- **软件预取（H1，T17）**：`rowcopy_sve` 与 `rowcopy_raw_single` 都从下标数组
+  提前读第 `k+D` 行、对它首地址发 `prfm pldl1keep`，再拷第 `k` 行。D 只按行字节
+  分档（≤64B → 16；65-512B → 8；>512B → 关掉，A=256 的 1KB 行为典型），因为窗口一大预取会自己把 L1 与
+  miss 队列挤掉。实测 A=3/16/32/64 每行成本降 1.2-2.5x（对 aten 从 1.6-2.6x
+  升到 2.1-6.0x），缺行数不变、周期数掉 2.5-3.1 倍。数据与边界见 RESULTS
+  §2.18，机理见 `headroom.md` §6。
 
 **门槛**：T1 起从 A>=16 放宽到 **A>=4**（微基准 A-sweep 显示 A=4-16 短行在
 1 线程即有 1.1-17x 收益，A>=16 长行路径不变）。A∈[2,3] 落标量 `scalar_gather`。
@@ -152,6 +161,7 @@ rowcopy_raw_single<T, IdxT, NT>（入口：gather_rowcopy_raw，op.cpp 短路）
   （A 大）收益显著：M1 weight.view(K,C,o)[ki] 1 线程 2-13x。
 - `B==1` 单独分支：`k=p`，去掉每行 `p/K`、`p%K`；A=8/15 多线程再提升
   1.2-1.4x（见 §3.2）。
+- 同样带 H1 的软件预取（越界下标不预取，越界报错仍按原顺序发生在第 1 个坏下标上）。
 
 ### 3.2 非连续尾维 strided-rows（T12）
 

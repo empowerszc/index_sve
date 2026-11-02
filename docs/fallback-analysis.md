@@ -70,7 +70,7 @@ index_impl(self, indices)
   ├─ 单 mask && 覆盖前 m 维 && 连续 && CPU → gather_mask（T8 单遍压实）
   ├─ 单整数下标 && K<=4096 && 连续 && CPU → small_single_index（T9）
   ├─ K < 1024                    → gather_direct（快速路径，无 linearize）
-  ├─ 单索引 && (A>=4096||A<16||(A<=64&&B*K<=65536)) && 连续 && f32/f64
+  ├─ 单索引 && (A>=4096||A<16||(A<=64&&B*K<=65536)) && 连续 && f32/f64/i32/i64
   │                                    → M1 raw rowcopy（skip-linearize）★主路径
   ├─ 单索引 && B==1 && A==1      → T4 raw 桶化（值域≤2048 查表）
   │     ├─ 值域>2048 && f32/i32 数据+i64 下标 && 源>512KB && >1t

@@ -71,6 +71,10 @@ CPU 键覆盖，autograd 不受影响）。构建/运行契约见 `README.md` �
 | 基准/裁决 2 | 基准口径审计：`bench_entry_overhead.py` 量出入口偏置（Python 包装 +10µs、`torch.ops` +9µs）；`bench_production_shapes.py` 增加 `--cases`/`--per-model`/`--total`/`--detail`/`--abr-map`/CSV fixture 与"两套口径 + ①③覆盖率区间"；按反馈热点重建 trace 复现加权，得 0.767/0.780/0.783（反馈是 1.116/1.184/0.980）。原始表 RESULTS §2.12，裁决 degradation §6.5.8 | （本轮） | ✅ |
 | 分析/文档 | **路由合并与探测成本**：三层成本模型（入口必经 / O(1) 判定 / O(K) 探测）+ 四个测量实验（先确认走了哪条路 / 门边界挪一格 / 单遍扫描裸价 / 语料普查）+ 可合并清单 M1-M6（只有 M1/M2 能换到时间，其余纯维护）+ 不该合并的两类 + 新增路由的五条检查表 + 按符号名跨版本定位。实测结论：短调用（K≤4096，含 2D A=8）不进路由链；同局部性下值域门两侧是约 2 倍台阶——原始数据与复现命令在 RESULTS §2.13，新增 `benchmarks/bench_route_probe.py`。新文档 `route-merge-analysis.md`，`status` §3/§7-R1、`code-walkthrough` §4.2、`index.md` 挂指针 | （本轮） | ✅ |
 | 基准/裁决 3 | **路径 × 规模 × 线程矩阵**：`bench_path_matrix.py`（35 用例 × 1/8/16t，aten/hpc 两进程交替，每用例写死期望路由并与计数器核对，98/98 一致）+ 兄弟对照（同工作量只翻一个谓词）；数据 RESULTS §2.14，裁决 `path-matrix.md`。结论：直写资格翻面即数量级（1t 22.9x / 16t 7.9x）；行拷贝族多线程仍稳定为正；两遍模型在 1D 小源8/16t 落到 1.00 以下（M1/M2 的直接依据）；`gather_direct` 不是快路径；mask 结论随规模翻转 | 见 RESULTS §2.14 | ✅ |
+| T16 | **int32/int64 数据进 raw 行拷贝**：M1 raw 支 dtype 白名单加 `kInt/kLong`（另两处守卫不动——strided-rows/多索引仍要在 raw 下解码）；同时补 `copy_contig_sve` 的宽度分派（原来只有 float/double 两个 `if constexpr`，**其它 dtype 行宽 >64B 时一字不拷**，是静默正确性地雷），2B/1B/complex128 退回 memcpy 兜底。A=3 8t 100→35.5µs（0.57x→1.64x，与 f32 兄弟同档）；测试 +3（含 f16 负向对照），全量 178/178；数据 RESULTS §2.15 | 见 RESULTS §2.15 | ✅ |
+| T17 | **H1 行拷贝软件预取**：`rowcopy_raw_single`/`rowcopy_sve` 提前 D 行读下标 + `prfm pldl1keep`，D 按行字节分档（≤64B→16、65-512B→8、>512B→关），运行时旋钮 `HPC_PF_DIST`；越界下标不预取、报错仍落第 1 个坏下标。1t 实测 A=3 79.1→31.9、A=16 83.0→28.5、A=32 94.5→36.7、A=64 108.2→48.0 ns/行（对 aten 1.6-2.6x → 2.1-6.0x），A=256 全档为负故关掉；perf 证明缺行数不变、周期数掉 2.5-3.1 倍。测试 +7（`test_rowcopy_pf.py`），数据 RESULTS §2.18/§2.19 | 见 RESULTS §2.18 | ✅ |
+| 分析/文档 | **perf 在飞条数**：`perf_analyze.py`（两段相减规避 7.2s 启动；`L1rf/行` 当缺行数）把"aten 只有 1 条 line 在飞"从推断变实测（0.85-1.05 条，三种形态两种口径互校），`perf record` 确认热点是 `loop_2d_from_1d`；H1 的机理证据（缺行数 1.02→1.02、周期 152→49）；宽行 A=256 已有 ~16 条在飞（故预取无用）。数据 RESULTS §2.19 | 见 RESULTS §2.19 | ✅ |
+| 分析/文档 | **理论空间（roofline）**：`memprobe` 新增 `mlp`（S 条独立依赖链，精确设"在飞条数"）/`idxgather`（下标从内存读）/`rowgather`（plain/memcpy/pipe/pf8/pf16 五写法）/THP 开关，新探针 `sveprobe.c`（SVE 拷贝指令地板、SVE gather、NT store），`bench_roofline.py`（aten/hpc 分进程 + `index_select` 同库参考）。结论：成本 = 137ns ÷ 在飞条数，硬件每核给 16-20 条（饱和 8.6-8.9ns），aten 行路径实测 ≈1 条在飞、本仓 1.7-1.8 条；**预取是最大杠杆（1.8-4.6x）**，逐族剩余 2.6-7.1x、已兑现 14-39%；指令/NT store/大页/排序四条为负结果或陷阱。数据 RESULTS §2.16/§2.17，新文档 `headroom.md` | 见 RESULTS §2.16/§2.17 | ✅ |
 
 ## 3. 路由现状（op.cpp `index_impl`）
 
@@ -362,7 +366,14 @@ T4 桶化在小值域规避行放大，大值域靠预取/行 gather 等待未�
 
 | 优先级 | 项目 | 预期收益 | 工作量 | 详见 |
 |---|---|---|---|---|
-| **R1** | 1D 小源跳过 `gather_bucket_pure_raw` 前置值域扫描（并入 gather 单遍） | K=8192/65536 小源 36-38t 0.90-0.95x → ≥1x（省 ~15µs / 总 42-53µs，fork-join 占 30-50%）；路径矩阵里对应的就是"两遍模型在 1D 小源 8/16t 落到 1.00 以下"那两行（RESULTS §2.14.1 的 `r9_dom2049` / `r9_small_i32`），兄弟对照给出翻面差价 1.7-2.0 倍（§2.14.2） | 小 | degradation §5、path-matrix §6.8-C/§5.9.2、§8-2、route-merge §4.1/§4.2 |
+| **H1 ✅** | **行拷贝软件预取（已实做，T17）**：`rowcopy_raw_single` 与 `rowcopy_sve` 提前 D 行读下标、对行首地址发 `prfm pldl1keep`。D 只按行字节分档（≤64B→16、65-512B→8、>512B→关），运行时旋钮 `HPC_PF_DIST` | **实测 2.26-2.91x**（1t：A=3 79.1→31.9、A=16 83.0→28.5、A=32 94.5→36.7、A=64 108.2→48.0 ns/行；对 aten 从 1.6-2.6x 抬到 2.1-6.0x）。缺行数不变、周期数掉 2.5-3.1 倍；A=256 全档为负故关掉 | 小（只动循环结构） | RESULTS §2.18/§2.19、`headroom.md` §6-H1 |
+| **H2** | 元素 gather「算完一批再取」：1D 路径把越界检查 + 地址计算整批挪到取数之前（**手工展开 loop 没用**：CHAINS=1 就已 ~10ns，展开不提在飞条数）。SVE gather 可以用——实测 4.7-5.2 比标量展开 5.8-6.2 ns/元素 略快，但一批只有 8 条 lane。**端到端杠杆比 H1 大**：三个生产模型各自最费时间的形态（占 33-39%）全是这一族，且当前 0.71-1.20x | **2-3.5x**（1D 族；现状 22.3 → 探针 5.65-6.04 ns/元素） | 中（越界检查要批量化） | `headroom.md` §6-H2/§5.1、RESULTS §2.16.3/§2.17.3 |
+| **H3** | 两遍模型的输出段：A≥128 在 16/36t 0.80-0.89x，`index_select` 是同形态 2 倍 | 1.5-2x（宽行高线程） | 中 | `headroom.md` §6-H3、§2.16.5 |
+| **H4** | 去掉桶化的串行段（串行归约 + 串行建表，19t 占 4.4µs / 每元素 26%） | 1.1-1.2x，把"高线程反而更差"翻正 | 小 | `headroom.md` §6-H4、degradation §6.5.2 |
+| **H5** | 遍数与 fork-join 的堵漏：`K<1024` 短路悬崖（同 A、K 减半慢 5.4x）、1D 小源两遍 <1.0x | 不是提速，是堵漏 | 中 | `headroom.md` §6-H5、path-matrix §4 |
+| **H6** | H1 的尾巴：预取记账在 1t 上多 26 条指令/行（80→105，占 49 周期里的 ~12），改成"每 4 行一批算 4 个地址 + 发 4 条 prfm"；顺手给 `strided_rows_raw`/`rowcopy_fused` 也加预取 | 1.1-1.2x（1 条 line 的行） | 小 | RESULTS §2.19.5、`headroom.md` §6-H6 |
+| **H7** | 每调用固定成本 ≈0.54ms（`t=F+c·K` 拟合；K≲32768 时把 ns/行 抬 2-3 倍）：输出分配 first-touch（8MB = 2048 缺页）+ 两遍 fork-join | 小 K 场景 1.5-3x | 中 | RESULTS §2.18.5、`headroom.md` §6-H7 |
+| **R1** | 1D 小源跳过 `gather_bucket_pure_raw` 前置值域扫描（并入 gather 单遍） | K=8192/65536 小源 36-38t 0.90-0.95x → ≥1x（省 ~15µs / 总 42-53µs，fork-join 占 30-50%）；路径矩阵里对应的就是"两遍模型在 1D 小源 8t 落到 1.0 附近（0.96-0.98）"那两行（RESULTS §2.14.1 的 `r9_dom2049` / `r9_small_i32`），兄弟对照给出翻面差价 1.7-2.0 倍（§2.14.2） | 小 | degradation §5、path-matrix §6.8-C/§5.9.2、§8-2、route-merge §4.1/§4.2 |
 | **R2** | 非连续 mask 的 T8 stride 扩展（计数/压实按 mask stride 读，去 nonzero 物化） | 0.86-0.98x → 1.2-1.5x（8t 实测可省 ~1ms） | 中 | degradation §5.8-D、§8-3 |
 | **R3** | 端到端 AI4S 模型复测 | 验证 T0-T15 累计收益是否传导到真实负载（决策项） | 中 | performance §3/§4.1 |
 | R4 | f64+i32 下标经 `svunpklo` 加宽走 8B gather | ≈持平 → 小幅正收益 | 小 | degradation §8-4 |

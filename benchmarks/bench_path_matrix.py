@@ -101,6 +101,7 @@ def build(torch):
     x_a256 = torch.randn(8192, 256, generator=g)                 # 8MB
     x_a3 = torch.randn(1 << 18, 3, generator=g)
     x_a3i = torch.randint(0, 1 << 20, (1 << 18, 3), generator=g).to(torch.int32)
+    x_a64i = torch.randint(0, 1 << 20, (8192, 64), generator=g).to(torch.int32)
     x_perm = torch.randn(64, 200, 10, generator=g).permute(1, 0, 2)   # A=640，run=10
     x_t = torch.randn(64, 20000, generator=g).t()                     # A=64，run=1
     x_cl = torch.randn(4, 32, 14, 14, generator=g).to(memory_format=torch.channels_last)
@@ -230,12 +231,18 @@ def build(torch):
         {"1": "single_1d_count", "8": "<no counter>", "16": "<no counter>"},
         threads=T3, scale="K=65536", sibling="r6_sve_k65536")
 
-    # ---- R10 fused vs R2 raw：只差数据 dtype（A=3 无 raw 内核） ------------
-    add("r10_i32_a3", "R10 gather_fused", "x(256k,3) int32 K=8192",
-        x_a3i, i64(8192, 1 << 18), "<no counter>", threads=T3, scale="K=8192")
-    add("r2_f32_a3", "R2 rowcopy_raw", "同上但 f32（有 raw 行拷贝内核）", x_a3,
+    # ---- R10 fused vs R2 raw：dtype 门 ------------------------------------
+    # 该 case 曾用于「同形同 K、只差 int32/f32」的换路对照（0.57x vs 1.67x）。放开
+    # dtype 白名单后两侧同落 rowcopy_raw，对照退化成「同一内核下 int32 vs f32 的
+    # 位宽成本」，key 保留原编号以免丢掉历史序列。
+    add("r10_i32_a3", "R2 rowcopy_raw", "x(256k,3) int32 K=8192（原 R10 fused）",
+        x_a3i, i64(8192, 1 << 18), "rowcopy_raw_count", threads=T3, scale="K=8192")
+    add("r2_f32_a3", "R2 rowcopy_raw", "同上但 f32", x_a3,
         i64(8192, 1 << 18), "rowcopy_raw_count", threads=T3, scale="K=8192",
         sibling="r10_i32_a3")
+    add("r2_i32_a64", "R2 rowcopy_raw", "x(8192,64) int32 K=8192（宽行 dtype 成本）",
+        x_a64i, i64(8192, 8192), "rowcopy_raw_count", threads=T3, scale="K=8192",
+        sibling="r2_raw_k8192")
     return C
 
 
@@ -348,7 +355,11 @@ def main():
 
     if args.routes:
         for c in build(__import__("torch")):
-            print(f"{c['key']:14s} {c['path']:22s} expect={c['expect']:20s} "
+            exp = c["expect"]
+            if isinstance(exp, dict):
+                exp = "{" + " ".join(f"t{k}={v}" for k, v in sorted(
+                    exp.items(), key=lambda kv: int(kv[0]))) + "}"
+            print(f"{c['key']:14s} {c['path']:22s} expect={exp:20s} "
                   f"sibling={c['sibling']}")
         return
 

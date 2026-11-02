@@ -34,8 +34,9 @@ index_impl(self, indices)
        a. K < 1024 → gather_direct
             └ A==1 单索引全长连续 → 预校验紧凑循环（T11）
        b. M1: 单索引 && 连续 idx && after_contiguous && A>1
-              && (A>=4096 || A<16 || (A<=64 && B*K<=65536)) && f32/f64
-            → gather_rowcopy_raw（跳过 linearize，T2/T12；T15 放行小 K 中等行宽）
+              && (A>=4096 || A<16 || (A<=64 && B*K<=65536)) && f32/f64/i32/i64
+            → gather_rowcopy_raw（跳过 linearize，T2/T12；T15 放行小 K 中等行宽；
+              T16 放开 4B/8B 整数——这条只搬整行、不依赖索引值域，与下面 b2/b3 不同）
        b2. 单索引 && !after_contiguous && A>1 && 连续 idx && f32/f64
               && col_off 存在 ≥4 连续 run
             → gather_strided_rows_raw（run 块拷贝，T12）
@@ -157,7 +158,7 @@ L1/L2 常驻查找表的标量随机读避免了 64B 行放大，远优于大值
 
 | 短路 | 条件 | 内核 |
 |---|---|---|
-| M1 raw rowcopy | 单索引 && after_contiguous && A>1 && (A>=4096 \|\| A<16 \|\| (A<=64 && B*K<=65536)) && f32/f64 | `rowcopy_raw_single<T,IdxT,NT>` |
+| M1 raw rowcopy | 单索引 && after_contiguous && A>1 && (A>=4096 \|\| A<16 \|\| (A<=64 && B*K<=65536)) && f32/f64/i32/i64 | `rowcopy_raw_single<T,IdxT,NT>` |
 | strided rows | 单索引 && !after_contiguous && col_off 有 ≥4 run | `strided_rows_raw<T,IdxT,NT>` |
 | 多索引 raw | 多索引 && after_contiguous && A>=4 && ≥16t | `rowcopy_fused_sve<T,NT>` |
 | T4 raw 桶化 | 单索引 && B==1 && A==1（1D 纯 gather） | `bucket_gather_pure_raw<T,IdxT>` |

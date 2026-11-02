@@ -31,7 +31,7 @@
 2. **B-K-A 几何**——输出元素按行优先展开为 `p = r*K + k`（r∈[0,B)、k∈[0,K)），
    每个 p 对应源里一段 A 元素的"行"。B = 前段（未索引维）积、K = 广播下标元素数、
    A = 后段（尾部维）积。§3 有逐字段表和算例。
-3. **两级路由**——`index_impl`（op.cpp:546）先试三个"免 normalize"快路径
+3. **两级路由**——`index_impl`（op.cpp:550）先试三个"免 normalize"快路径
    （mask / small_single / small_multi），不中才 normalize 出 IndexSpec，进
    `index_into`（op.cpp:52）大路由；大路由按 K/A/线程数/dtype 依次选内核。
 
@@ -39,18 +39,18 @@
 
 ```
 x[idx] ─► dispatcher（aten::index.Tensor 的 CPU 键已被 op.cpp:630 覆盖）
-  └► index_impl                     op.cpp:546    入口校验 + sync_omp_threads
-     ├► mask_fast_path              op.cpp:190   ─► gather_mask          gather.cpp:1023
-     ├► small_single_index          op.cpp:338    免 normalize
-     ├► small_multi_index           op.cpp:225    免 normalize
+  └► index_impl                     op.cpp:550    入口校验 + sync_omp_threads
+     ├► mask_fast_path              op.cpp:194   ─► gather_mask          gather.cpp:1023
+     ├► small_single_index          op.cpp:342    免 normalize
+     ├► small_multi_index           op.cpp:229    免 normalize
      ├► normalize_index             normalize.cpp:126 ─► IndexSpec
      └► index_into                  op.cpp:52     大路由（§4.2 十一条路由）
         ├► gather_direct                          gather.cpp:750
-        ├► gather_rowcopy_raw                     gather.cpp:866
+        ├► gather_rowcopy_raw                     gather.cpp:934
         ├► gather_strided_rows_raw                gather.cpp:981
         ├► gather_rowcopy_fused                   gather.cpp:965
-        ├► gather_bucket_pure_raw                 gather.cpp:781
-        ├► gather_single_1d_sve / single_1d       gather.cpp:826 / 799
+        ├► gather_bucket_pure_raw                 gather.cpp:851
+        ├► gather_single_1d_sve / single_1d       gather.cpp:877 / 799
         ├► linearize                linearize.cpp:85（两遍模型第一遍）
         └► gather_index                          gather.cpp:657（第二遍 + 分发树）
 ```
@@ -76,7 +76,7 @@ x[idx] ─► dispatcher（aten::index.Tensor 的 CPU 键已被 op.cpp:630 覆�
 
 1. `normalize.h` 全文（5 分钟）+ §3 逐字段表 → *B/K/A 各是什么？after_contiguous
    怎么判定？*
-2. `op.cpp:546-575`（index_impl）→ *四个快路径的尝试顺序是什么？为什么能免
+2. `op.cpp:550-579`（index_impl）→ *四个快路径的尝试顺序是什么？为什么能免
    normalize？*
 3. `op.cpp:52-184`（index_into）对照 §4.2 路由表 → *x(50000,64) f32、i 长 1M、
    36 线程，走哪条路？（答案见 §2）*
@@ -96,34 +96,34 @@ Python __getitem__
     unsqueeze 解决，从不进入本算子。传给 dispatcher 的是 aten::index.Tensor
     (self, Tensor?[] indices)；列表里的 None/undefined = "该维跳过"占位（x[:, i] 的 :）
  └► dispatcher：CPU key 已被 op.cpp:630 的 TORCH_LIBRARY_IMPL(aten, CPU) 指到 index_impl
-     └► index_impl                      op.cpp:546
-        ① to_vec(:548)                  List → vector
-        ② 校验(:549-551)                空列表 / 索引数超过维数
-        ③ sync_omp_threads(:553)        omp_set_num_threads(at::get_num_threads())
+     └► index_impl                      op.cpp:550
+        ① to_vec(:552)                  List → vector
+        ② 校验(:553-555)                空列表 / 索引数超过维数
+        ③ sync_omp_threads(:557)        omp_set_num_threads(at::get_num_threads())
                                         （T11：双 OpenMP runtime 的 ICV 同步，§8.3）
-        ④ mask_fast_path(:555)          不中——idx 是 int64 不是 mask
-        ⑤ small_single_index(:556)      不中——K = 1M > 4096
-        ⑥ small_multi_index(:557)      不中——单索引
-        ⑦ normalize_index(:558)        → IndexSpec：B=1、K=1M、A=64、
+        ④ mask_fast_path(:559)          不中——idx 是 int64 不是 mask
+        ⑤ small_single_index(:560)      不中——K = 1M > 4096
+        ⑥ small_multi_index(:561)      不中——单索引
+        ⑦ normalize_index(:562)        → IndexSpec：B=1、K=1M、A=64、
                                         after_contiguous=true（本例不 permute）
-        ⑧ empty_strided(:560)          y (1M, 64)；连续 out → 直进 index_into
-                                        （非连续且 rowcopy_direct_ok 也直进 :563-566）
-        ⑨ index_into(:562)             op.cpp:52，逐条试探：
+        ⑧ empty_strided(:564)          y (1M, 64)；连续 out → 直进 index_into
+                                        （非连续且 rowcopy_direct_ok 也直进 :567-570）
+        ⑨ index_into(:566)             op.cpp:52，逐条试探：
            · #1 K<1024 ?                 否
-           · #2 M1 raw(:84-89)？         A=64∈[16,64] 但 B*K=1M>65536 ✗、
+           · #2 M1 raw(:87-93)？         A=64∈[16,64] 但 B*K=1M>65536 ✗、
                                         A<16 ✗、A≥4096 ✗ → 不中
-           · #3 strided(:99)?           after_contiguous → ✗
-           · #4 多索引 raw(:106)?        单索引 ✗
-           · #5-#7 1D 族(:121)?          A≠1 ✗
-           · #8 1 线程特判(:170)?        36 线程 ✗
-           · #9(:179)：after_contiguous ∧ A=64≥4 ∧ f32 ✓
+           · #3 strided(:103)?           after_contiguous → ✗
+           · #4 多索引 raw(:110)?        单索引 ✗
+           · #5-#7 1D 族(:125)?          A≠1 ✗
+           · #8 1 线程特判(:174)?        36 线程 ✗
+           · #9(:183)：after_contiguous ∧ A=64≥4 ∧ f32 ✓
              → linearize(spec, idx)     linearize.cpp:85
-                 use_i32（op.cpp:156）：numel=3.2M < 2^31 且 f32 → 物化成 int32 偏移
+                 use_i32（op.cpp:160）：numel=3.2M < 2^31 且 f32 → 物化成 int32 偏移
                  all_full_contig → 直读 idx[k]，内联检查+负归一，一遍写完
              → gather_index(spec, idx, y)  gather.cpp:657
                  A>1 ∧ after_contiguous ∧ SVE512 ∧ A≥4 ∧ f32
                  → rowcopy_sve<float,int32_t,false>（gather.cpp:351）
-                     [0, B*K) 并行，p=r*K+k，整行 copy_contig_sve（gather.cpp:251）
+                     [0, B*K) 并行，p=r*K+k，整行 copy_contig_sve（gather.cpp:305）
 ```
 
 读这棵树的要领：**路由条件全部显式写在 index_into 里**（§4.2 表），没有隐藏开关；
@@ -143,7 +143,7 @@ Python __getitem__
 | col_off | [A] 表：后段扁平坐标 c → 源列偏移 | normalize.cpp:201（decode_offsets） |
 | after_contiguous | 尾段是否原样连续 ⇔ col_off[c]==c 对所有 c 成立 | normalize.cpp:203-208 |
 | out_shape | 输出形状 = before + 广播形状 + after | normalize.cpp:193-195 |
-| rowcopy_direct | R10：源/出尾块同 dense 置换，cl/置换 out 走行块直写（非 normalize 字段，默认 false） | op.cpp:563-565（`rowcopy_direct_ok` 判定见 op.cpp:491） |
+| rowcopy_direct | R10：源/出尾块同 dense 置换，cl/置换 out 走行块直写（非 normalize 字段，默认 false） | op.cpp:563-565（`rowcopy_direct_ok` 判定见 op.cpp:495） |
 
 **B-K-A 算例**（x 形状 (5,6,7)，strides (42,7,1)）：
 
@@ -154,7 +154,7 @@ Python __getitem__
 | `x[i, j]`，i(3,1)、j(1,4) | 1 | 12 | 7 | (3,4,7) | 广播成 (3,4)；索引 numel≠K，linearize 走 bfactor 解码分支 |
 
 最后是全库坐标约定：**p = r*K + k**——输出扁平编号 p，恢复 `r = p/K`、`k = p%K`
-（或增量维护，见 gather_direct:520-524），源行首 =
+（或增量维护，见 gather_direct:610），源行首 =
 `transposed_self + row_off[r] + Σ v_j·indexed_strides[j]`，行内第 c 列 = `col_off[c]`。
 
 ## 4. op.cpp 逐段精读
@@ -179,13 +179,13 @@ Python __getitem__
 |---|---|---|---|---|
 | 0 | op.cpp:59 | `spec.rowcopy_direct`（仅由 `index_impl` 的 `rowcopy_direct_ok` 置位：源/出尾块同 dense 置换 ∧ out 前导块行主序） | 块拷贝臂：`gather_rowcopy_raw`，否则 linearize + `gather_index` | R10：cl/置换 out 直接整块写，省掉 tmp+copy_ 一趟输出带宽；**此臂绝不可落 col_off 类路径**（对置换 out 是错位写） |
 | 1 | op.cpp:73 | `K < 1024` | gather_direct（gather.cpp:750） | 小 K 时物化一遍偏移纯属固定开销 |
-| 2 | op.cpp:84 | 单索引 ∧ after_contiguous ∧ 下标连续 ∧ A>1 ∧ (A≥4096 ∨ A<16 ∨ (A≤64 ∧ B·K≤65536)) ∧ f32/f64 | gather_rowcopy_raw（gather.cpp:866） | M1 大块跳过 linearize，边查边整行拷 |
-| 3 | op.cpp:96 | 单索引 ∧ **非**after_contiguous ∧ A>1 ∧ 下标连续 ∧ f32/f64（入口内再判 max_run≥4） | gather_strided_rows_raw（gather.cpp:981） | 尾维有 ≥4 连续 run 时按 run 块拷 |
+| 2 | op.cpp:87 | 单索引 ∧ after_contiguous ∧ 下标连续 ∧ A>1 ∧ (A≥4096 ∨ A<16 ∨ (A≤64 ∧ B·K≤65536)) ∧ f32/f64/i32/i64（T16：只搬整行故可放宽，下面 #3/#4 仍限浮点） | gather_rowcopy_raw（gather.cpp:934） | M1 大块跳过 linearize，边查边整行拷 |
+| 3 | op.cpp:100 | 单索引 ∧ **非**after_contiguous ∧ A>1 ∧ 下标连续 ∧ f32/f64（入口内再判 max_run≥4） | gather_strided_rows_raw（gather.cpp:981） | 尾维有 ≥4 连续 run 时按 run 块拷 |
 | 4 | op.cpp:103 | 多索引 ∧ after_contiguous ∧ A≥4 ∧ **线程≥16** ∧ f32/f64 | gather_rowcopy_fused（gather.cpp:965） | 多索引大并行下跳过两遍模型 |
-| 5 | op.cpp:118 | 单索引 ∧ B==1 ∧ A==1 ∧ 下标连续，且值域≤2048（内核内判） | gather_bucket_pure_raw（gather.cpp:781） | 1D 小值域建查找表（M3 keys[order]、M4 形态） |
-| 6 | op.cpp:139 | #5 未中 ∧ i64 下标 ∧ SVE512 ∧ 线程>1 ∧ f32/i32 ∧ stride₀==1 ∧ size<2³² ∧ 源>512KB | gather_single_1d_sve（gather.cpp:826） | T15-C：大源 4B 单遍 SVE（uzp1 收窄 i64 下标） |
-| 7 | op.cpp:147 | 下标连续 ∧ (无 SVE 内核的 dtype 组合 ∨ 单线程) | gather_single_1d（gather.cpp:799） | 单遍标量——这种组合下两遍模型纯亏 |
-| 8 | op.cpp:167 | 单线程 ∧ 单索引 ∧ A>1：A≥4 连续 f32/f64 → raw；否则 fused | raw / gather_fused | 1 线程放宽 #2 的规模门槛（T15） |
+| 5 | op.cpp:122 | 单索引 ∧ B==1 ∧ A==1 ∧ 下标连续，且值域≤2048（内核内判） | gather_bucket_pure_raw（gather.cpp:851） | 1D 小值域建查找表（M3 keys[order]、M4 形态） |
+| 6 | op.cpp:143 | #5 未中 ∧ i64 下标 ∧ SVE512 ∧ 线程>1 ∧ f32/i32 ∧ stride₀==1 ∧ size<2³² ∧ 源>512KB | gather_single_1d_sve（gather.cpp:877） | T15-C：大源 4B 单遍 SVE（uzp1 收窄 i64 下标） |
+| 7 | op.cpp:147 | 下标连续 ∧ (无 SVE 内核的 dtype 组合 ∨ 单线程) | gather_single_1d（gather.cpp:818） | 单遍标量——这种组合下两遍模型纯亏 |
+| 8 | op.cpp:171 | 单线程 ∧ 单索引 ∧ A>1：A≥4 连续 f32/f64 → raw；否则 fused | raw / gather_fused | 1 线程放宽 #2 的规模门槛（T15） |
 | 9 | op.cpp:176 | A==1 ∨ (after_contiguous ∧ A≥4 ∧ f32/f64) | linearize + gather_index | **两遍模型**：物化偏移 → SVE 族 |
 | 10 | op.cpp:182 | 其余（A∈[2,4)、非连续等） | gather_fused（gather.cpp:1016） | 兜底单遍融合，不物化 idx |
 
@@ -202,7 +202,7 @@ Python __getitem__
 - `sve_ok`(:129-131) 只描述"这个 dtype/下标组合有没有 SVE 内核"：i32 下标配
   f32/i32，i64 下标配 f64/i64。**f32 数据 + i64 下标不在内**——那是 #6（T15-C
   专用内核）的地盘；#6 不中且多线程时落 #9（两遍模型 + gather_index 的 8B/4B 分支）。
-- `use_i32`(:156-157)：`self.numel() < 2³¹ && (f32 ∨ i32)` 才用 int32 偏移数组，
+- `use_i32`(:160-161)：`self.numel() < 2³¹ && (f32 ∨ i32)` 才用 int32 偏移数组，
   省一半物化内存/带宽；**溢出自动退 int64**——gather_index 的 4B SVE 分支要求
   idx32，退了就自然落 dispatch_scalar（注释 :154-155）。
 - 非 SVE512 机器（`svcntb()!=64`）一切照跑：#6 不中、gather_index 里
@@ -214,13 +214,13 @@ Python __getitem__
 准入：恰好一个索引、是 bool/byte mask、两者同 CPU、mask 维数在 1..self.dim()、
 两者都连续、逐维 shape 相等（不等按 aten 文案报错 :203-208）。uint8 顺带发
 deprecation 警告（:210-213，与 normalize.cpp:50-53 文案一致）。命中 →
-`gather_mask`（gather.cpp:1023）。
+`gather_mask`（gather.cpp:1091）。
 
 **为什么在 normalize 之前**：aten 的 mask 语义要先把 mask 转 nonzero 下标再
 gather；本路径一遍扫描直接写出结果，normalize 的 expand/permute/vector 分配全
 用不上（T8）。mask 覆盖前 md 维的形状校验在这里提前做掉了。
 
-### 4.4 small_multi_index（:225-325）
+### 4.4 small_multi_index（:229-329）
 
 T13 免 normalize 路径。准入：≥2 个索引、全部 int64/int32、同 shape、连续、
 CPU、self 连续、n≤65536（op.cpp:228-246）。要点：
@@ -236,29 +236,29 @@ CPU、self 连续、n≤65536（op.cpp:228-246）。要点：
 
 T9。准入：单 int64/int32 下标、`K = idx.size(-1) ≤ 4096`（op.cpp:347）、self/idx
 连续。A≥2 每行 memcpy（op.cpp:377-380，注释解释 A=3 标量循环比 memcpy 慢 ~2x 的实测）；
-A==1 纯标量（op.cpp:381-383）。
+A==1 纯标量（op.cpp:385-387）。
 
-**并行阈值** `small_single_par_threshold()`(op.cpp:330-334) = `max(16384, 512·线程数)`：
+**并行阈值** `small_single_par_threshold()`(op.cpp:334-338) = `max(16384, 512·线程数)`：
 small K 下 fork-join 开销可能超过收益，且按总元素数 `n*A` 而非 n 判断——
 注释 op.cpp:327-329 记录了只看 n 导致 2D A=16 K=4096 在 8-36t 掉到 0.55-0.66x 的教训。
 
-### 4.6 index_impl / index_out_impl（:546-575 / :579-606）
+### 4.6 index_impl / index_out_impl（:550-579 / :583-610）
 
 - `index_impl`：§2 的九步。快路径试探顺序固定为 **mask → small_single →
   small_multi → normalize**；分配后用 `aten_out_strides` 决定输出布局：连续 out
-  直进 `index_into`（op.cpp:561-562），非连续但 `rowcopy_direct_ok` 则置
-  `spec.rowcopy_direct` 后直写（op.cpp:563-566，R10），否则 tmp+copy_（op.cpp:567-573）。
-- `index_out_impl`(:579)：out= 变体**不走任何免 normalize 快路径**，直接
+  直进 `index_into`（op.cpp:565-566），非连续但 `rowcopy_direct_ok` 则置
+  `spec.rowcopy_direct` 后直写（op.cpp:563-566，R10），否则 tmp+copy_（op.cpp:571-577）。
+- `index_out_impl`(:583)：out= 变体**不走任何免 normalize 快路径**，直接
   normalize；dtype/device 校验与 aten 结构化 out 语义对齐（op.cpp:587-591），需要时
-  resize（op.cpp:592），然后 `assert_no_internal_overlap` / `assert_no_overlap`
+  resize（op.cpp:596），然后 `assert_no_internal_overlap` / `assert_no_overlap`
   （op.cpp:593-595）。**非连续 out 走临时张量 + copy_**（op.cpp:600-603）——语义正确性优先
   （test_index_out.py 对拍的就是这些边界）。
 
-### 4.7 注册三件套（:608-636）
+### 4.7 注册三件套（:612-640）
 
 ```
-TORCH_LIBRARY(hpc_index, m)          :608  只 def schema，不挂 CompositeImplicitAutograd
-TORCH_LIBRARY_IMPL(hpc_index, CPU)   :614  本家 op 的 CPU 实现
+TORCH_LIBRARY(hpc_index, m)          :612  只 def schema，不挂 CompositeImplicitAutograd
+TORCH_LIBRARY_IMPL(hpc_index, CPU)   :618  本家 op 的 CPU 实现
 TORCH_LIBRARY_IMPL(aten, CPU, m)    :630  把 aten::index.Tensor / index.Tensor_out 的
                                          CPU 键改指到 index_impl / index_out_aten
 ```
@@ -267,10 +267,10 @@ TORCH_LIBRARY_IMPL(aten, CPU, m)    :630  把 aten::index.Tensor / index.Tensor_
   再注册 fake/meta（torch.compile / torch.export 需要，compile_support.py 靠这个）。
 - 在 C++ 覆盖而非 Python `torch.library.impl`：Python 覆盖每次调用多一次解释器
   往返，小 K 实测 10-20µs（:619-620 注释）；register_aten.py 因此退役。
-- `HPC_INDEX_NO_OVERRIDE`(:631-635)：dlopen 时决定要不要劫持——基准对拍逃生门，
+- `HPC_INDEX_NO_OVERRIDE`(:635-639)：dlopen 时决定要不要劫持——基准对拍逃生门，
   在 import 前设置才生效。
 
-### 4.8 pybind 调试出口（:638-689）
+### 4.8 pybind 调试出口（:642-693）
 
 13 个导出（附录 B 全表）。最常用的三个：`debug_spec`（看 normalize 结果——
 调试路由第一步）、`linearize_spec`（看物化出的偏移数组）、各路由命中计数器。
@@ -338,7 +338,7 @@ row_off（B 个）与 col_off（A 个）都由它生成。O(num·dims)，B/A 通
 
 - `bfactor`(linearize.cpp:14-17)：broadcast_shape 的行优先混合进制因子——`c_d = (k/bfactor[d]) % bshape[d]`
   把 k 拆成各维坐标。这就是"广播下标 → 每维各自取元素"的解码器；gather_direct
-  (:520-524)、gather_fused(:623-625)、rowcopy_fused_sve(:938-940) 里的同款是同一
+  (:571-575)、gather_fused(:623-625)、rowcopy_fused_sve(:938-940) 里的同款是同一
   逻辑（A7 手段）。
 - 预提取（linearize.cpp:20-31）：指针/stride/esize/is_long 提到循环外——注释 linearize.cpp:18-19 点明
   at::Tensor 方法的引用计数+虚调用是单线程开销根因。
@@ -356,72 +356,73 @@ row_off（B 个）与 col_off（A 个）都由它生成。O(num·dims)，B/A 通
 
 ## 7. gather.cpp 逐段精读——内核族谱（三层）
 
-1095 行按"原语 → 中层 → 顶层入口"三层组织。自上而下读会迷路，建议先读
-gather_index 分发树（:657），再按需跳转。
+1163 行按"原语 → 中层 → 顶层入口"三层组织。自上而下读会迷路，建议先读
+gather_index 分发树（:708），再按需跳转。
 
-### 7.1 第 0 层：SVE 原语（:16-221，4b_i64idx 到 :219）
+### 7.1 第 0 层：SVE 原语（:17-246，4b_i64idx 到 :246）
 
 | 函数 | 行号 | 做什么 |
 |---|---|---|
-| `PREFETCH_DIST` | :16 | 预取距离常量 16（微基准 {0,16,32,64} 扫出的默认） |
-| `sve_512_ok()` | :20 | `svcntb()==64` 才启用全部 SVE 路径（编译按 512-bit 定长） |
-| `gather8_f64` / `gather8_s64` | :27/:32 | NT 模板二选一：`svldnt1_gather`（绕缓存）或 `svld1_gather` |
-| `store8_f64` / `store4_f32` / `store4_s32` | :37-55 | store 侧的同款 NT 模板 |
-| `pure_gather_sve_8b_f64` / `_8b_s64` | :59/:85 | 8B gather 主循环：预取循环 + 主循环 + `svwhilelt` 尾数 |
-| `pure_gather_sve_4b_f32` / `_4b_s32` | :112/:138 | 4B 同构，每迭代 svcntw()=16 路 |
-| `pure_gather_sve_4b_i64idx` | :168 | T15-C：f32/i32 数据 + **原始 i64 下标**。ACLE 没有"32 位数据配 64 位下标"的 gather，先向量检查/负归一（:171-187），`uzp1` 把各 i64 低 32 位收窄成 u32 偏移（:176-177），复用 u32index gather；主循环三段式见 :197-220 |
+| `PREFETCH_DIST` | :17 | **元素 gather** 的预取距离常量 16（微基准 {0,16,32,64} 扫出的默认） |
+| `prefetch_lines` / `rowcopy_pf_dist` | :25/:35 | **行拷贝**的预取（H1）：`prfm pldl1keep` + 按行字节选 D（≤64B→16、65-512B→8、>512B→0）；`HPC_PF_DIST` 可覆盖。见 RESULTS §2.18 |
+| `sve_512_ok()` | :47 | `svcntb()==64` 才启用全部 SVE 路径（编译按 512-bit 定长） |
+| `gather8_f64` / `gather8_s64` | :54/:59 | NT 模板二选一：`svldnt1_gather`（绕缓存）或 `svld1_gather` |
+| `store8_f64` / `store4_f32` / `store4_s32` | :64-82 | store 侧的同款 NT 模板 |
+| `pure_gather_sve_8b_f64` / `_8b_s64` | :86/:112 | 8B gather 主循环：预取循环 + 主循环 + `svwhilelt` 尾数 |
+| `pure_gather_sve_4b_f32` / `_4b_s32` | :139/:165 | 4B 同构，每迭代 svcntw()=16 路 |
+| `pure_gather_sve_4b_i64idx` | :195 | T15-C：f32/i32 数据 + **原始 i64 下标**。ACLE 没有"32 位数据配 64 位下标"的 gather，先向量检查/负归一（:198-216），`uzp1` 把各 i64 低 32 位收窄成 u32 偏移（:203-204），复用 u32index gather；主循环三段式见 :227-247 |
 
-读原语的钥匙：**三段式循环**（pf 预取 :200-208 / 主循环 :209-213 / whilelt
-尾数 :214-219）+ 4b_i64idx 里"检查用 64 位谓词、取数用 32 位谓词"（:198/:216）。
+读原语的钥匙：**三段式循环**（pf 预取 :227-235 / 主循环 :236-240 / whilelt
+尾数 :241-247）+ 4b_i64idx 里"检查用 64 位谓词、取数用 32 位谓词"（:206/:243）。
 
-### 7.2 第 1 层：中层内核（:226-470）
+### 7.2 第 1 层：中层内核（:250-521）
 
 | 函数 | 行号 | 做什么 | 谁调用 |
 |---|---|---|---|
-| `pure_gather_sve_flat` | :226 | A==1 纯 gather：[0,B·K) 并行，块内按行切段（块可能跨行 :231-245） | gather_index |
-| `copy_contig_sve` | :251 | A 元素连续块拷贝：≤64B 直接 memcpy（谓词构造不划算 :253-258）；否则 4×VL 展开 + whilelt 尾数；NT 模板 | rowcopy/strided/mask 各处 |
-| `ColRun` / `make_col_runs` | :304/:312 | 把 col_off 里相邻 +1 的元素合并成 {dst,src,len} run 段 | strided 路径 |
-| `strided_rows_raw` | :327 | 尾维非连续：行内按 run 块拷（内联检查 :337-339） | gather_strided_rows_raw |
-| `rowcopy_sve` | :351 | A>1 且 after_contiguous：整行 copy_contig（**无检查**——两遍模型的 idx 已安全） | gather_index |
-| `scalar_gather` / `dispatch_scalar` | :364/:380 | 兜底标量：`d[c]=s[col_off[c]]`，支持全部 dtype | gather_index |
-| `bucket_gather_pure` | :389 | 两遍模型后的小值域查表：分块求 min/max → 值域≤2048 建 L1 常驻表 | gather_index |
-| `bucket_gather_pure_raw` | :430 | T4 raw 版：免 linearize，直接在原始下标上求值域+查表（内联检查 :443-445） | index_into #5 |
+| `pure_gather_sve_flat` | :253 | A==1 纯 gather：[0,B·K) 并行，块内按行切段（块可能跨行 :257-271） | gather_index |
+| `copy_contig_sve` | :332 | A 元素连续块拷贝：≤64B 直接 memcpy（谓词构造不划算 :334-339）；否则 4×VL 展开 + whilelt 尾数；NT 模板 | rowcopy/strided/mask 各处 |
+| `ColRun` / `make_col_runs` | :350/:358 | 把 col_off 里相邻 +1 的元素合并成 {dst,src,len} run 段 | strided 路径 |
+| `strided_rows_raw` | :373 | 尾维非连续：行内按 run 块拷（内联检查 :382-385） | gather_strided_rows_raw |
+| `rowcopy_sve` | :397 | A>1 且 after_contiguous：整行 copy_contig（**无检查**——两遍模型的 idx 已安全）+ H1 预取第 k+D 行 | gather_index |
+| `scalar_gather` / `dispatch_scalar` | :415/:431 | 兜底标量：`d[c]=s[col_off[c]]`，支持全部 dtype | gather_index |
+| `bucket_gather_pure` | :440 | 两遍模型后的小值域查表：分块求 min/max → 值域≤2048 建 L1 常驻表 | gather_index |
+| `bucket_gather_pure_raw` | :481 | T4 raw 版：免 linearize，直接在原始下标上求值域+查表（内联检查 :494-496） | index_into #5 |
 
-### 7.3 第 2 层：顶层入口（:474-1095）
+### 7.3 第 2 层：顶层入口（:708-1163）
 
 | 入口 | 行号 | 路由来源 | 内部结构 |
 |---|---|---|---|
-| `gather_direct` | :750 | #1（K<1024） | 预提取 + **A==1 单索引全长连续的预校验无检查紧凑循环**（:502-527，vbuf 先把 K 个下标查/归一一遍）+ 通用逐元素循环（:528-562，bfactor 解码 + 内联检查） |
-| `gather_fused` | :1016 | #8 否则 / #10 | 与 direct 同源但**不物化 idx**；面向 A<4 或非连续小块（T3） |
-| `gather_index` | :657 | #9 | **分发树**（下表） |
-| `gather_single_1d` | :799 | #7 | 1 线程/无 SVE 组合的 1D 单遍标量（内联检查 :771-773） |
-| `gather_single_1d_sve` | :826 | #6 | T15-C：parallel_for 直接分段调 pure_gather_sve_4b_i64idx（:818-824） |
-| `gather_bucket_pure_raw` | :781 | #5 | AT_DISPATCH 后按 idx32/i64 调 bucket raw；返回是否值域命中 |
-| `gather_rowcopy_raw` | :866 | #2、#8 | AT_DISPATCH + NT×idx32 四实例 → `rowcopy_raw_single`(:843)：B==1 或通用 B·K 并行，**内联检查**（:850-853），逐行 copy_contig |
-| `gather_rowcopy_fused` | :965 | #4 | f32/f64 × NT → `rowcopy_fused_sve`(:895)：多索引逐行解码 + 内联检查 + copy_contig；all_full_contig 直读快路径（:916-935） |
-| `gather_strided_rows_raw` | :981 | #3 | 先 make_col_runs；**max_run<4 不接管**（:986，返回 false 落回后续路由）；dtype 门 f32/f64（:988） |
-| `gather_mask` | :1023 | mask_fast_path | 两遍：分块计数（**n<1MB 串行** :1042——小掩码并行实测慢 ~2x）→ offsets 前缀和（:1048-1051）→ 压实拷贝（A≥4 且 f32/f64 用 copy_contig :1073-1083，否则逐元素 :1085） |
+| `gather_direct` | :801 | #1（K<1024） | 预提取 + **A==1 单索引全长连续的预校验无检查紧凑循环**（:536-578，vbuf 先把 K 个下标查/归一一遍）+ 通用逐元素循环（:579-612，bfactor 解码 + 内联检查） |
+| `gather_fused` | :1084 | #8 否则 / #10 | 与 direct 同源但**不物化 idx**；面向 A<4 或非连续小块（T3） |
+| `gather_index` | :708 | #9 | **分发树**（下表） |
+| `gather_single_1d` | :850 | #7 | 1 线程/无 SVE 组合的 1D 单遍标量（内联检查 :822-824） |
+| `gather_single_1d_sve` | :877 | #6 | T15-C：parallel_for 直接分段调 pure_gather_sve_4b_i64idx（:872-874） |
+| `gather_bucket_pure_raw` | :832 | #5 | AT_DISPATCH 后按 idx32/i64 调 bucket raw；返回是否值域命中 |
+| `gather_rowcopy_raw` | :934 | #2、#8 | AT_DISPATCH + NT×idx32 四实例 → `rowcopy_raw_single`(:894)：B==1 或通用 B·K 并行，**内联检查**（:901-904），逐行 copy_contig + H1 预取（越界下标不预取，报错仍落第 1 个坏下标） |
+| `gather_rowcopy_fused` | :1033 | #4 | f32/f64 × NT → `rowcopy_fused_sve`(:963)：多索引逐行解码 + 内联检查 + copy_contig；all_full_contig 直读快路径（:984-1003） |
+| `gather_strided_rows_raw` | :1049 | #3 | 先 make_col_runs；**max_run<4 不接管**（:1054，返回 false 落回后续路由）；dtype 门 f32/f64（:1056） |
+| `gather_mask` | :1091 | mask_fast_path | 两遍：分块计数（**n<1MB 串行** :1110——小掩码并行实测慢 ~2x）→ offsets 前缀和（:1116-1120）→ 压实拷贝（A≥4 且 f32/f64 用 copy_contig :1141-1151，否则逐元素 :1153） |
 
-`gather_index`(:657-746) 分发树（两遍模型的第二遍）：
+`gather_index`(:708-799) 分发树（两遍模型的第二遍）：
 
 | 顺序 | 条件 | 内核 |
 |---|---|---|
-| 1 | A==1（pure）且值域≤2048 | bucket_gather_pure（:668-672，idx32/i64 两实例） |
-| 2 | pure ∧ i64 偏移 ∧ SVE512 ∧ f64/i64 | pure_gather_sve_flat 8B（:673-693） |
-| 3 | pure ∧ i32 偏移 ∧ SVE512 ∧ f32/i32 | pure_gather_sve_flat 4B（:695-715） |
-| 4 | A>1 ∧ (after_contiguous ∨ rowcopy_direct) ∧ SVE512 ∧ A≥4 ∧ f32/f64 | rowcopy_sve（:719-739） |
-| 5 | 其余 | dispatch_scalar（:742-745）——**全部 dtype 的最终兜底** |
+| 1 | A==1（pure）且值域≤2048 | bucket_gather_pure（:719-723，idx32/i64 两实例） |
+| 2 | pure ∧ i64 偏移 ∧ SVE512 ∧ f64/i64 | pure_gather_sve_flat 8B（:724-745） |
+| 3 | pure ∧ i32 偏移 ∧ SVE512 ∧ f32/i32 | pure_gather_sve_flat 4B（:746-767） |
+| 4 | A>1 ∧ (after_contiguous ∨ rowcopy_direct) ∧ SVE512 ∧ A≥4 ∧ f32/f64 | rowcopy_sve（:770-791） |
+| 5 | 其余 | dispatch_scalar（:793-797）——**全部 dtype 的最终兜底** |
 
 ### 7.4 AT_DISPATCH 白名单 = dtype 支持面的唯一真相
 
 9 处 `AT_DISPATCH_ALL_TYPES_AND_COMPLEX_AND3(kHalf, kBFloat16, kBool, ...)`：
-op.cpp:296（small_multi）、op.cpp:363（small_single）、gather.cpp:664（gather_index）、
-gather.cpp:751（direct）、gather.cpp:785（bucket raw）、gather.cpp:802（single_1d）、
-gather.cpp:870（rowcopy_raw）、gather.cpp:1016（fused）、gather.cpp:1061（mask）。白名单之外的 dtype 在这里抛
+op.cpp:300（small_multi）、op.cpp:367（small_single）、gather.cpp:715（gather_index）、
+gather.cpp:853（direct）、gather.cpp:836（bucket raw）、gather.cpp:802（single_1d）、
+gather.cpp:938（rowcopy_raw）、gather.cpp:1084（fused）、gather.cpp:1129（mask）。白名单之外的 dtype 在这里抛
 NotImplementedError——要扩 dtype 先查这 9 处（支持矩阵见 kernels.md §1）。
 
-另有 3 个入口**没有** AT_DISPATCH：gather_rowcopy_fused(:965)、
-gather_strided_rows_raw(:981)、gather_single_1d_sve(:826)——它们只收 f32/f64
+另有 3 个入口**没有** AT_DISPATCH：gather_rowcopy_fused(:1033)、
+gather_strided_rows_raw(:1049)、gather_single_1d_sve(:877)——它们只收 f32/f64
 （或 f32/i32），dtype 由路由条件在 index_into 里先行把关，入口内直接 cast。
 
 ## 8. grain.h 与并行约定
@@ -535,7 +536,7 @@ integration.md §3。
    bucket_raw），循环内必须自己 `TORCH_CHECK_INDEX(v >= -size && v < size)` 并
    `if (v < 0) v += size;`——样板见 gather.cpp:850-851。漏写 = 越界读（段错误）
    或负索引静默错数据。
-3. **p = r*K + k** 是全库统一坐标（§8.2）；增量维护版本见 gather_direct:520-524。
+3. **p = r*K + k** 是全库统一坐标（§8.2）；增量维护版本见 gather_direct:610。
 4. **after_contiguous ⇔ col_off[c]==c**（normalize.cpp:203-208）：决定"整行块拷贝"
    还是"逐列取数"，是路由 #2/#9 与 #3 的分水岭。
 5. **dtype 支持面 = 9 处 AT_DISPATCH 白名单**（§7.4）。barebones dtype 抛
@@ -543,7 +544,7 @@ integration.md §3。
 6. **双 OpenMP runtime**：一切并行走 at::parallel_for（libomp），入口
    sync_omp_threads 同步 ICV（op.cpp:37/:553/:597）。新内核忘了这两条，
    torch.set_num_threads 就管不住它。
-7. **use_i32 门槛**（op.cpp:156-157）：`numel < 2³¹ ∧ (f32∨i32)`。numel≥2³¹ 时
+7. **use_i32 门槛**（op.cpp:160-161）：`numel < 2³¹ ∧ (f32∨i32)`。numel≥2³¹ 时
    偏移装不进 int32，自动退 int64 → 4B SVE 分支要求 idx32 不触发 → dispatch_scalar
    兜底——正确性机制，性能代价（见 degradation-analysis.md）。
 8. **计数器是 relaxed atomic**：g_* 计数器只供 pybind 诊断（附录 B），不参与任何
@@ -551,17 +552,17 @@ integration.md §3。
 9. **out= 语义优先**：非连续 out 走临时张量+copy_（op.cpp:601-603）；overlap
    断言（:593-595）。别在 out 变体上为性能抄近路。
 10. **并行阈值是标定出来的**：small_multi 的 n·A≥2048（op.cpp:318）、
-    small_single 的 max(16384, 512·nt)（:330-334）、mask 计数的 1MB
+    small_single 的 max(16384, 512·nt)（:334-338）、mask 计数的 1MB
     （gather.cpp:1042）。改任何一个都要带多线程实测，否则历史重演
-    （:327-329 注释里 0.55x 的教训）。
+    （:346-348 注释里 0.55x 的教训）。
 
 ## 附录 A：函数 → 行号速查表
 
 **op.cpp**：to_vec :21 · non_temporal_enabled :29 · sync_omp_threads :37 ·
-index_into :52 · mask_fast_path :190 · small_multi_index :225 ·
-small_single_par_threshold :330 · small_single_index :338 · aten_out_strides :402 ·
-rowcopy_direct_ok :491 · index_impl :546 · index_out_impl :579 ·
-TORCH_LIBRARY(hpc_index) :608 · TORCH_LIBRARY_IMPL(hpc_index,CPU) :614 ·
+index_into :52 · mask_fast_path :194 · small_multi_index :229 ·
+small_single_par_threshold :334 · small_single_index :342 · aten_out_strides :406 ·
+rowcopy_direct_ok :495 · index_impl :550 · index_out_impl :583 ·
+TORCH_LIBRARY(hpc_index) :612 · TORCH_LIBRARY_IMPL(hpc_index,CPU) :618 ·
 TORCH_LIBRARY_IMPL(aten,CPU) :630 · PYBIND11_MODULE :638
 
 **normalize.cpp**：is_defined :9 · check_index_types :14 · check_indices_on_cpu :28 ·
@@ -570,32 +571,33 @@ decode_offsets :102 · normalize_index :126
 
 **linearize.cpp**：linearize_i64 :9 · linearize :85
 
-**gather.cpp**：sve_512_ok :20 · gather8_f64 :27 · gather8_s64 :32 ·
-（store 助手 :37-55）· pure_gather_sve_8b_f64 :59 · _8b_s64 :85 · _4b_f32 :112 ·
-_4b_s32 :138 · pure_gather_sve_4b_i64idx :168 · pure_gather_sve_flat :226 ·
-copy_contig_sve :251 · ColRun :304 · make_col_runs :312 · strided_rows_raw :327 ·
-rowcopy_sve :351 · scalar_gather :364 · dispatch_scalar :380 · bucket_gather_pure :389 ·
-bucket_gather_pure_raw :430 · gather_direct 模板 :474 / 包装 :750 ·
-gather_fused 模板 :569 / 包装 :1016 · gather_index :657 ·
-gather_single_1d 模板 :764 / 包装 :799 · gather_bucket_pure_raw 包装 :781 ·
-gather_single_1d_sve_impl :818 / 包装 :826 · rowcopy_raw_single :843 ·
-gather_rowcopy_raw :866 · rowcopy_fused_sve :895 · gather_rowcopy_fused :965 ·
-gather_strided_rows_raw :981 · gather_mask :1023 · 计数函数 :1094-1095
+**gather.cpp**：sve_512_ok :47 · gather8_f64 :54 · gather8_s64 :59 ·
+（store 助手 :64-82）· prefetch_lines :25 · rowcopy_pf_dist :35 ·
+pure_gather_sve_8b_f64 :86 · _8b_s64 :112 · _4b_f32 :139 ·
+_4b_s32 :165 · pure_gather_sve_4b_i64idx :195 · pure_gather_sve_flat :253 ·
+copy_contig_sve :332 · ColRun :350 · make_col_runs :358 · strided_rows_raw :373 ·
+rowcopy_sve :397 · scalar_gather :415 · dispatch_scalar :431 · bucket_gather_pure :440 ·
+bucket_gather_pure_raw :481 · gather_direct 模板 :525 / 包装 :801 ·
+gather_fused 模板 :620 / 包装 :1084 · gather_index :708 ·
+gather_single_1d 模板 :815 / 包装 :850 · gather_bucket_pure_raw 包装 :832 ·
+gather_single_1d_sve_impl :869 / 包装 :877 · rowcopy_raw_single :894 ·
+gather_rowcopy_raw :934 · rowcopy_fused_sve :963 · gather_rowcopy_fused :1033 ·
+gather_strided_rows_raw :1049 · gather_mask :1091 · 计数函数 :1162-1163
 
 **grain.h**：adaptive_grain :9
 
-## 附录 B：pybind 调试出口（`index_sve._hpc_index.*`，op.cpp:638-689）
+## 附录 B：pybind 调试出口（`index_sve._hpc_index.*`，op.cpp:642-693）
 
 | 导出 | 行号 | 用途 |
 |---|---|---|
-| `index(self, indices)` | :639 | 绕过 __getitem__ 直达 dispatcher（对拍/计时不走 Python 切片层；无 autograd 公式，直调丢梯度——训练用 `x[...]`） |
+| `index(self, indices)` | :643 | 绕过 __getitem__ 直达 dispatcher（对拍/计时不走 Python 切片层；无 autograd 公式，直调丢梯度——训练用 `x[...]`） |
 | `linearize_spec(self, indices)` | :646 | 返回物化后的 int64 偏移数组——看 linearize 到底算了什么 |
 | `debug_spec(self, indices)` | :653 | **调试路由第一步**：完整 IndexSpec（B/K/A/row_off/col_off/after_contiguous/indices…） |
-| `dispatch_count` | :660 | **入口计数**（`index_impl`/`index_out_impl` 各 +1）：给"某条子路由不该被选"的负向断言配正向控制，覆盖静默失效时不会假通过 |
-| `mask_fused_count` | :663 | mask 快路径命中次数 |
-| `small_single_count` / `small_multi_count` | :666/:669 | 两个免 normalize 路径命中次数 |
-| `strided_rows_count` / `rowcopy_raw_count` | :672/:673 | strided / raw rowcopy（含 fused）命中次数 |
-| `single_1d_count` / `single_1d_sve_count` | :674/:677 | 1D 单遍标量 / T15-C SVE 命中次数 |
+| `dispatch_count` | :664 | **入口计数**（`index_impl`/`index_out_impl` 各 +1）：给"某条子路由不该被选"的负向断言配正向控制，覆盖静默失效时不会假通过 |
+| `mask_fused_count` | :667 | mask 快路径命中次数 |
+| `small_single_count` / `small_multi_count` | :670/:673 | 两个免 normalize 路径命中次数 |
+| `strided_rows_count` / `rowcopy_raw_count` | :676/:677 | strided / raw rowcopy（含 fused）命中次数 |
+| `single_1d_count` / `single_1d_sve_count` | :678/:681 | 1D 单遍标量 / T15-C SVE 命中次数 |
 | `debug_ss_parallel(n, A)` | :680 | small_single 是否并行的判定镜像（测试断言用） |
 | `debug_grain(n)` | :683 | adaptive_grain 结果镜像 |
 | `idx_dtype_choice(numel, dtype)` | :684 | use_i32 判定镜像（测试 f32 溢出回退） |

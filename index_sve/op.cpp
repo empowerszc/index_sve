@@ -81,12 +81,16 @@ void index_into(const at::Tensor& self, const IndexSpec& spec, at::Tensor& out) 
   // 两遍，32/36t 0.73/0.76x）。大 K 不放行：linearize 的预校验偏移+无检查拷贝更快
   // （A/B 实测 raw 慢 12-32%：A=64 E=1M 8t +30%、A=16 K=200k 8t +32%、M2 (20000,64)
   // 8t +12%）——raw 逐行检查/负归一/v*stride 链在冷源（L3/DRAM）行拷贝下拖慢发射。
+  // dtype 白名单比下方 strided-rows / 多索引两处宽：raw 行拷贝只做连续块整行搬运
+  // （块拷贝按 4B/8B 宽度选向量臂，位保真），不依赖索引值域；值域探测删掉后省一遍
+  // 数据扫描，而其它两处仍要在 raw 下解码 col_off / 多下标，故仍限 f32/f64。
   if (spec.indices.size() == 1 && spec.after_contiguous &&
       spec.indices[0].is_contiguous() &&
       (spec.A >= 4096 || spec.A < 16 ||
        (spec.A <= 64 && spec.B * spec.K <= 65536)) &&
       spec.A > 1 &&
-      (out.scalar_type() == at::kFloat || out.scalar_type() == at::kDouble)) {
+      (out.scalar_type() == at::kFloat || out.scalar_type() == at::kDouble ||
+       out.scalar_type() == at::kInt || out.scalar_type() == at::kLong)) {
     gather_rowcopy_raw(spec, out, g_nt);
     return;
   }

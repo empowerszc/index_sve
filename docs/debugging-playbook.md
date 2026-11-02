@@ -111,8 +111,8 @@ $ python tests/test_rowcopy_routes.py
 
 | 判据 | 位置 | 读的是什么 |
 |---|---|---|
-| 多索引 raw 路由 | `op.cpp:104` | `at::get_num_threads() >= 16` |
-| 并行台阶 | `op.cpp:330`（函数）、`:333`（返回） | `max(16384, 512 * at::get_num_threads())` |
+| 多索引 raw 路由 | `op.cpp:108` | `at::get_num_threads() >= 16` |
+| 并行台阶 | `op.cpp:334`（函数）、`:337`（返回） | `max(16384, 512 * at::get_num_threads())` |
 | 自适应粒度 | `grain.h:14` | `n / (at::get_num_threads() * 8)` |
 
 全仓 `grep hardware_concurrency` **零命中**。也就是说：判据只跟随 `torch.set_num_threads`
@@ -317,7 +317,7 @@ if not index_sve.OVERRIDE_ACTIVE:
 那 4 项仍然全绿。所以还差一件真正的事：给"某条路由**不该**被选"的负向断言配一个
 **正向控制**。
 
-做法是在两个受控入口各 +1 一个计数（`op.cpp:660` 导出为 `dispatch_count`）：
+做法是在两个受控入口各 +1 一个计数（`op.cpp:664` 导出为 `dispatch_count`）：
 
 ```cpp
 std::atomic<uint64_t> g_dispatch{0};          // 与 g_single_1d 等同一处声明
@@ -369,7 +369,7 @@ assert C.dispatch_count() == before_d + 1, "kernel did not run"   # 内核确实
 
 更有意思的是工具为什么没报。`pick_file` 的优先级是"本段最近的符号 > 上一条显式
 引用"，而 §4.2 的路由表里写着 `gather.cpp:750` 等目标行——从那一行往后，`sym_ctx`
-一直是 `gather.cpp`。于是 §4.2/§4.6 里的裸 `:551`、`:126-128` 全部拿
+一直是 `gather.cpp`。于是 §4.2/§4.6 里的裸 `:602`、`:126-128` 全部拿
 **gather.cpp 的行号**去校验，行号落在 gather.cpp 的合法位置上，自然全绿。等于
 "锚点校验器在检查错的文件"，比没检查更危险。
 
@@ -399,6 +399,15 @@ override/index 等当前态声明（历史轮次里的 174 保留）。
 四条新规则都做了反证：把 `④ mask_fast_path` 的行号改回 551、附录 A 的
 `index_into` 改回 49、附录 B 的 `mask_fused_count` 改回 660、`single_1d` 两行
 对调，工具分别报出对应的 DRIFT；改回来即 `377/377`。
+
+**改源码导致的行号漂移不必手工搬**：`tools/shift_doc_anchors.py` 用
+`difflib` 把 `git show HEAD:<file>` 与工作区文件做行级对齐，读出
+`check_doc_anchors.py` 报的每一处引用并按 old→new 映射改写。先
+`python tools/shift_doc_anchors.py --dry-run` 看清单，确认没有"内容被改写"的
+跳过项再实跑；跑完必须重新 `check_doc_anchors.py`（工具只处理纯位移，被重写
+目标的引用要人工补）。T16 那次 129 处漂移就是它一次性搬完的，但仍有 3 处
+校验器漏判（M1 路由的行区间、`index_into` 的调用点、`rowcopy_direct_ok` 分支
+的区间）需要人读一遍——工具对齐的是"行位置"，不判断"这句话是否还成立"。
 
 ---
 
