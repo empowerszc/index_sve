@@ -83,7 +83,8 @@ index_impl(self, indices)
         │
         ▼ gather_index 内部分支（按优先级）
   pure(A==1):
-     1. 值域≤2048 ? bucket_gather_pure（查表）★主路径
+     1. 值域≤2048 ? bucket_gather_pure（查表；raw 版在 size≤2048 时免值域扫描、
+        跨度≤64KB 直查源，2026-11-03 起）★主路径
      2. !idx32 && f64/i64        → 8B SVE gather ★主路径（高效）
      3. idx32  && f32/i32        → 4B SVE gather ⚠（M1 硬件限制）
      4. 其他 dtype/idx 组合      → dispatch_scalar ←【回退】

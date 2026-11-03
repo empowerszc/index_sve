@@ -97,7 +97,7 @@ aten::index.Tensor ──► index_impl(self, indices)
         │                 ├─ M1 ? gather_rowcopy_raw()       (单索引 A>1 && (≥4096||<16||(≤64&&B·K≤65536)))
         │                 ├─ 非连续尾维有 ≥4 run ? strided_rows_raw()  (T12)
         │                 ├─ 多索引 A>=4 && ≥16t ? rowcopy_fused_sve() (T12)
-        │                 ├─ T4 ? gather_bucket_pure_raw()   (单索引 B==1 A==1 小值域查表)
+        │                 ├─ T4 ? gather_bucket_pure_raw()   (单索引 B==1 A==1；size≤2048 免扫描，跨度≤64KB 直查源)
         │                 │        ├─ 大值域 && f32/i32+i64 && 源>512KB && >1t ? gather_single_1d_sve()  (T15-C 单遍 SVE)
         │                 │        └─ 其余大值域 ? gather_single_1d()  (单遍标量)
         │                 ├─ 1 线程 && 单索引 && A>1 ? A>=4 连续 ? raw rowcopy : fused

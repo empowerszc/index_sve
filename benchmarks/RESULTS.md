@@ -2396,6 +2396,22 @@ for K,t in ((13824,12),(55296,19),(256000,6)):
 | **PPT K=55296 / 19t** | **41.03** | **30.80** | **1.33x** | 1.52x |
 | **Sonata K=256000 / 6t** | **175.98** | **121.39** | **1.45x** | 1.55x |
 
+逐轮原始数据（5 轮，每轮 = 40 次取中位数；**故意全贴出来**，读法在下面）：
+
+| 轮 | HEAD 版 512 | 2048 | 13824 | 55296 | 256000 | 补丁版 512 | 2048 | 13824 | 55296 | 256000 |
+|---|---|---|---|---|---|---|---|---|---|---|
+| 1 | 9.55 | 17.19 | 29.59 | 41.42 | 190.60 | 9.82 | 17.45 | 22.25 | 31.32 | 126.74 |
+| 2 | 9.59 | 17.28 | 34.33 | 48.23 | 175.98 | 10.16 | 17.77 | 22.49 | 30.80 | 121.39 |
+| 3 | 9.67 | 17.35 | 34.55 | 47.51 | 191.49 | 9.98 | 17.41 | 23.56 | 32.30 | 124.42 |
+| 4 | 9.63 | 17.24 | 29.19 | 41.03 | 189.25 | 9.88 | 17.45 | 23.06 | 31.22 | 123.09 |
+| 5 | 9.86 | 17.40 | 34.70 | 47.42 | 193.69 | 10.04 | 17.71 | 27.78 | 38.28 | 124.54 |
+
+这张表本身有三个可学的点：① 512/2048 两档改前改后**逐轮几乎重合**——后来才查明是
+`K ≤ 4096` 被 `small_single_index` 提前接走，补丁根本没参与，这档的差值全部是噪声的
+样子（±3%）；② HEAD 版的 13824/55296 呈**两簇**（29.2 vs 34.5、41.0 vs 47.4），不是
+均匀抖动——同一二进制同一命令，簇间差 16%，所以**取最小值**（每簇下沿）而不是平均；
+③ 补丁版第 5 轮有一个孤立高点（27.78/38.28），单轮读数不可信，5 轮才够。
+
 判读：
 
 - **大 K 三格 1.31-1.45x（按中位数 1.49-1.55x）**，绝对值省下 6.9 / 10.2 / 54.6µs。
@@ -2416,18 +2432,164 @@ for K,t in ((13824,12),(55296,19),(256000,6)):
 `test_correctness` 25/25、`test_errors` 6/6、`test_sve` 25/25、`test_rowcopy_routes`
 18/18、`test_autograd` 16/16 全过；另加一组专测快路径的两进程对拍（K=4097/20000 ×
 size=2048/1000/7 × 9 种 dtype × 正负混合下标 + 首尾边界 + 重复）54/54 逐值一致
-（`agent_space/verify_bucket_fast.py`）。
+（`tests/verify_bucket_fast.py`，当时 54 例，§2.21.3 扩到 57 例）。
 
 复现（每次切换后都要全量重编，单次约 18 分钟）：
 
 ```bash
 cp index_sve/gather.cpp /tmp/gather_new.cpp
 git checkout HEAD -- index_sve/gather.cpp && python setup.py build_ext --inplace
-numactl --physcpubind=190-227 --membind=5 python agent_space/ab_bench.py
+numactl --physcpubind=190-227 --membind=5 python benchmarks/ab_bench.py
 cp /tmp/gather_new.cpp index_sve/gather.cpp && python setup.py build_ext --inplace
-numactl --physcpubind=190-227 --membind=5 python agent_space/ab_bench.py
+numactl --physcpubind=190-227 --membind=5 python benchmarks/ab_bench.py
 ```
 
+
+#### 2.21.3 表本身是串行建的：跨度 ≤64KB 时连表都不建，直查源最快
+
+§2.21.1 省掉的是 pass 1（值域扫描），但**表还在**——2048 个表项是**单线程**填的
+（2048 次读 + 2048 次写）。表的意义是把"散在大跨度源里的行"压缩进一块 L1 常驻
+内存；如果源跨度本来就在 L1/L2 里，这一趟纯属多付。`bucketprobe` 加了 `notab`
+变体（免 pass 1 也免表，直接 `dst[k]=src[v*stride]`）并按跨度扫描（f32，
+`size=2048`，跨度 = 2048×stride×4B；best of 7，µs）：
+
+| 形态 | stride | 跨度 | `nop1`（建表） | `notab`（直查源） | 直查/建表 |
+|---|---|---|---|---|---|
+| SGI 13824/12t | 1 | 8KB | 13.62 | **6.06** | **2.25x** |
+| SGI 13824/12t | 8 | 64KB | 13.56 | **6.25** | 2.17x |
+| SGI 13824/12t | 32 | 256KB | 13.37 | **6.18** | 2.16x |
+| SGI 13824/12t | 128 | 1MB | 15.77 | **7.97** | 1.98x |
+| SGI 13824/12t | 4096 | 32MB | 14.26 | **6.07** | 2.35x |
+| PPT 55296/19t | 64 | 512KB | 20.26 | **13.19** | 1.54x |
+| PPT 55296/19t | 4096 | 32MB | 20.62 | **11.22** | 1.84x |
+| Sonata 256000/6t | 1 | 8KB | 102.40 | **97.72** | 1.05x |
+| Sonata 256000/6t | 64 | 512KB | **115.17** | 190.31 | **0.60x（表赢 1.65x）** |
+| Sonata 256000/6t | 4096 | 32MB | **114.03** | 116.94 | 0.98x（表小赢） |
+
+判读（K/size：SGI 6.75、PPT 27、Sonata 125）：
+
+- **跨度 ≤1MB 且 K/size ≤27：直查源全赢（1.5-2.4x）**。原因不是缓存——是**表的
+  建造是串行的**（一个核填 2048 项），而直查把同样的 miss 摊给 12/19 个核并行消化。
+  跨度到 32MB（DRAM）直查仍然赢，说明"表省 miss"在这档 K 上抵不过"单核串行"。
+- **跨度 ≥512KB 且 K/size=125：表反超（512KB 上 1.65x）**。K 是 size 的 125 倍，
+  表的建造成本被 125 次复用摊平；而且每核 L2 私有，6 个核直查会把同一批行各拉一遍。
+- **生产三格全部是 stride0==1（跨度 8-16KB）**，落在"直查源赢"那一侧：SGI/PPT
+  2.2x/1.5x，Sonata 1.05x。
+- 因此内核门放在 **跨度 ≤64KB（2×L1d）直查源**：生产三格全走直查；64KB 以上保留
+  表——Sonata 形态在大跨度上确实靠表（1.65x），不能一刀切。中间地带（64KB-1MB）
+  对 SGI/PPT 直查更好、对 Sonata 表更好，按"宁可不退化"选表，这是明确的保守取舍。
+
+内核落地与验证：`bucket_gather_pure_raw` 在 size≤2048 快路径内再分档——跨度
+（`size×stride0×sizeof(T)`）≤64KB 时连表都不建，直接 `dst[k]=src[v*stride0]`；
+越界检查与负索引归一折进同一个循环，语义与 §2.21.1 相同。正确性：
+`tests/verify_bucket_fast.py` 扩到 **57 例**（+3：跨度 512KB 走表对照、size>2048
+正/负窗回退对照）两进程对拍 **57/57**，`test_correctness` 等全量套件同过。**内核
+A/B 顺延**：当日机器进入慢态（§2.22），按 §2.21.2 同法（重编切换 × 5 轮取最小）
+待机器恢复后补测；探针口径 8KB 跨度 2.25x 是上界预期（§2.21.2 经验：内核兑现约
+探针的七成）。
+
+复现：
+
+```bash
+gcc -O3 -fopenmp -o bucketprobe benchmarks/bucketprobe.c
+for str in 1 8 32 128 4096; do
+  numactl --physcpubind=190-227 --membind=5 ./bucketprobe 13824 2048 12 7 nop1 $str
+  numactl --physcpubind=190-227 --membind=5 ./bucketprobe 13824 2048 12 7 notab $str; done
+for str in 64 4096; do for v in nop1 notab; do
+  numactl --physcpubind=190-227 --membind=5 ./bucketprobe 55296 2048 19 7 $v $str
+  numactl --physcpubind=190-227 --membind=5 ./bucketprobe 256000 2048 6 7 $v $str; done; done
+```
+
+
+#### 2.22 机器级慢态事故（2026-11-03）：为什么那天的基准全部作废
+
+**数据轮次**：2026-11-03 15:15-16:30，node 5（cpus 190-227 / membind 5），12t（C++
+行为注明 t）。以下全部是**慢态期间**的原样记录（每项的轮数见各表）；健康基线取自
+§1.1（chase/freq）、§2.12.1（Python 各臂）、§2.21.2（hpc 臂），均为此前健康轮次。
+
+**时间线**（文件 mtime 钉死）：10:42/11:14 补丁 1 的 A/B 数据落地，金丝雀 hpc
+`x[idx]` K512 = 9.82µs——健康态；14:28 入口探针已慢（≈21µs）。**翻转发生在
+11:14-14:28 之间**。14:50 的 load-39 突发是干扰项（慢态先于它开始）。慢态数字随
+时间漂移（aten 臂 50.7 → 39.2µs），机器在振荡/部分恢复。
+
+**慢态 vs 健康基线**（µs，3-10 轮的中位区间；「层」= 代码路径宽度）：
+
+| 探针（层） | 健康基线 | 慢态实测 | 倍数 |
+|---|---|---|---|
+| Python `torch.empty(512)`（薄：1 个 op） | 4.26 | 8.5-11.4 | 2.0-2.7x |
+| Python aten `x[idx]` K512 12t（厚：多 op） | 15.49 | 39.2-50.7 | 2.5-3.3x |
+| Python aten `x[idx]` K2048 12t | 21.84 | 45.0-55.9 | 2.1-2.6x |
+| hpc `x[idx]` K512（本仓 .so，中厚；t=1 与 12t 同带） | 9.38-9.82 | 19.2-21.8 | 2.0-2.3x |
+| hpc `x[idx]` K2048 12t | 17.49 | 26.1-28.3 | 1.5-1.6x |
+| Python 纯解释循环 20 万次加法 | — | 19.6-20.1ms | （无基线） |
+| C++ `at::empty(512)`（t=1，薄） | ≈1.2 | 1.16-1.18 | **1.0x** |
+| C++ `at::index` K512（t=1/12/19/38 四档持平） | ≤14.5（推断①） | 27.8-29.7 | ≈2x |
+| `bucketprobe cur_real`（C，突发短跑） | 10.7-11.3 | 10.74-11.26 | **1.0x** |
+| `chase` 32KB/512KB/8MB/64MB（ns/访问） | 2.00/8.59/94.54/128.13 | 2.01/9.38/94.79/129.53 | 1.0-1.1x |
+| `idxgather` 256KB 16/32 chains（ns/元素） | 1.11-1.26 | 1.12/1.17 | **1.0x** |
+| `memprobe freq`（ns/iter） | 4.02 | 4.95（15:40）→3.88（15:55 起） | 0.81x→1.04x |
+| PMU 实测循环核频率（perf stat 挂 python 循环） | 1.99-2.0GHz | **1.55GHz**（15:45） | 0.78x |
+
+① C++ 无健康态直测；由 Python aten 15.49µs 减去 Python 绑定层推出上界。当轮
+`a+b`=22-25µs、纯解释循环等无基线项仅记录不判读。
+
+**罚金与「代码路径宽度」成正比**是本表的核心形状：1 条指令的 freq 循环、几 KB
+足迹的 bucketprobe、延迟型的 chase/idxgather 全部免疫；单 op 的 `at::empty`
+在 C++ 里健康、在 Python 里罚 2x（解释器层）；多 op 的 `at::index`（TensorIterator
++ AdvancedIndex + ~10 次内部分发）罚 2x；纯 CPython 循环也慢。**内存系统本身没变**
+（chase 全尺寸精确等于基线），慢的是「执行宽足迹代码的持续负载」。
+
+**排除清单**（每项都有当轮证据，全部排除）：
+
+- **本仓代码**：不 import 本仓的纯 torch 进程同样慢（39-51µs）；不碰 Python 的
+  纯 C++ 二进制 `at::index` 同样 2x 慢——.so、补丁 2、Python 绑定层全部洗清。
+- **线程数/fork-join**：C++ `at::index` 在 t=1/12/19/38 四档持平（28.0-29.7µs），
+  t=1 无并行域照样慢。
+- **OpenBLAS 自旋线程**（`import torch` → numpy → openblas 起 37 个按核掩码定尺寸
+  的 server 线程，休眠态）：`OPENBLAS_NUM_THREADS=1` 与屏蔽 numpy（进程只剩 1 线
+  程）都仍然慢。
+- **调度/抢占**：`utime=wall`、`ru_nivcsw=0`；strace 循环段 0 syscall。
+- **缺页**：1000 次调用窗口 `ru_minflt=ru_majflt=0`。
+- **THP**：`chase` 256MB/2GB 与随机 gather 2GB 的 THP vs NOHP 完全无差（136.3 vs
+  135.9ns）；活进程 AnonHugePages=0 是红鲱鱼（madvise 的探针缓冲区能拿到 THP）。
+  附带记录：tuned 活动 profile `throughput-performance` 配置写
+  `transparent_hugepages=never` 而 sysfs 实读 `[always]`，历史不一致，但当轮无效。
+- **内存压力**：MemFree ≈915GB、node 5 free 61GB、无 dirty/writeback/swap churn。
+- **cgroup**：v1 布局，`cpu.cfs_quota_us=-1`、`nr_throttled=0`、无 memory.max。
+- **温控**：`thermal_zone` 45/42/49°C（当轮实测），远离降频区。
+- **他人负载**：整机 1 个可运行进程（我们的），其余全 S/I 态；load ≈2 来自短命
+  进程；跨 node 5/7 同慢（非 NUMA 局部）。
+- **sysctl**：`find /proc/sys -newermt 当天` 零命中。
+- **环境文件**：conda 环境、HPCKit、`~/.bashrc` mtime 全在 10-12 之前；无
+  MALLOC_*/LD_PRELOAD；无 Python trace/audit 钩子。
+- **统一降频**：慢态中同分钟 freq 探针读满频（258-260M/s）而 `at::index` 仍 2x
+  慢——不是全机统一降频；sysfs `scaling_cur_freq` 恒 2.0（userspace governor，读数
+  不可信，PMU 才可信）。
+- **perf 剖面单点异常**：C++ `at::index` 慢态剖面分布宽而平（TensorIterator 构造
+  ≈20%、structured meta 7.5%、index kernel 8.9%、mimalloc ≈6%……），无单点热点，
+  即「同一份代码整体变慢」，不是某个组件坏了。
+
+**定性结论**：机器级状态翻转（11:14-14:28 之间发生），对宽足迹持续负载罚 2-3x，
+对短爆发小足迹负载与延迟型负载免疫，一切 OS 可见计数器（缺页/抢占/系统调用/节流/
+sysctl/温控/他人负载）均无异常；PMU 只在慢态采到 1.55GHz。**控制机制在 OS 之下
+（固件/BMC/电源管理层），未定位**；本仓无关，无需改任何代码。事故期间的一切绝对
+数字作废，等金丝雀恢复再测。
+
+**金丝雀纪律（修订版）**：C 探针（bucketprobe/chase/idxgather/freq）对此类慢态全部
+或半失明，不能当机器健康金丝雀。判干净必须用**双臂金丝雀**（`benchmarks/canary.py`，
+纯 torch 不 import 本仓）：
+
+```bash
+numactl --physcpubind=190-227 --membind=5 python benchmarks/canary.py
+# 健康判据（任一项超基线 1.5x 即慢态）：
+#   empty512        ≈ 4.3µs
+#   aten x[idx] K512  ≈ 15.5µs
+#   aten x[idx] K2048 ≈ 21.8µs
+# （add512 无健康基线，只看趋势不设阈值）
+```
+
+A/B 的两臂必须在同一机器态下测量；跨态数字不可比。编译期间与他人负载期间不跑基准
+（原有纪律不变）。
 
 ---
 
@@ -2884,6 +3046,9 @@ python benchmarks/bench_index.py
 # 定点门禁（1/38t）
 HPC_INDEX_NO_OVERRIDE=1 HPC_AFFINITY=190-227 HPC_THREADS=1,38 \
   python benchmarks/bench_gate.py
+
+# 机器健康金丝雀（§2.22；跑任何基准前先跑这个，慢态当天的数字全部作废）
+numactl --physcpubind=190-227 --membind=5 python benchmarks/canary.py
 ```
 
 注意：扩展需 `-fopenmp` 且 `LD_LIBRARY_PATH` 含 BiSheng `libomp.so`；在仓库根

@@ -36,6 +36,7 @@ static int32_t *g_idx;
 static float *g_src, *g_dst, *g_table;
 static int64_t g_n;
 static int g_dom;
+static int g_str = 1;
 static int64_t g_chunk;
 
 // pass 1：与原内核同构（读下标、负索引归一、求 min/max）
@@ -200,7 +201,7 @@ SIGN_VARIANT(run_bl, 1, 1, 1)
 // 归一折进 pass 2 的一条比较 + 一条 csel。这一步改的是算法（少一趟），不是写法。
 static void run_nop1(void) {
   const int64_t size = g_dom;
-  for (int64_t v = 0; v < size; ++v) g_table[v] = g_src[v];
+  for (int64_t v = 0; v < size; ++v) g_table[v] = g_src[v * g_str];
   const int64_t n = g_n, chunk = g_chunk;
 #pragma omp parallel for schedule(static)
   for (int64_t c = 0; c < n; c += chunk) {
@@ -210,6 +211,24 @@ static void run_nop1(void) {
       if ((uint64_t)(v + size) >= (uint64_t)(2 * size)) { g_bad = 1; v = 0; }
       v += (v < 0 ? size : 0);
       g_dst[k] = g_table[v];
+    }
+  }
+}
+
+// notab：快路径再进一步——源跨度已在缓存里时连表都不建，直接 dst[k]=src[v*stride]。
+// 表的意义是把"散在大跨度源里的行"压缩进一块 L1 常驻内存；跨度本身就在 L1/L2 里时
+// 拷一遍纯属多付一趟（串行！）。g_str 扫 {1,8,32,128,4096} 找"表开始赢"的跨度。
+static void run_notab(void) {
+  const int64_t size = g_dom;
+  const int64_t n = g_n, chunk = g_chunk;
+#pragma omp parallel for schedule(static)
+  for (int64_t c = 0; c < n; c += chunk) {
+    int64_t hi = c + chunk < n ? c + chunk : n;
+    for (int64_t k = c; k < hi; ++k) {
+      int64_t v = g_idx[k];
+      if ((uint64_t)(v + size) >= (uint64_t)(2 * size)) { g_bad = 1; v = 0; }
+      v += (v < 0 ? size : 0);
+      g_dst[k] = g_src[v * g_str];
     }
   }
 }
@@ -262,7 +281,7 @@ BATCH(run_b32, 32)
 
 int main(int argc, char **argv) {
   if (argc < 5) {
-    fprintf(stderr, "usage: %s N DOM THREADS REPS [cur|b16|b32|all]\n", argv[0]);
+    fprintf(stderr, "usage: %s N DOM THREADS REPS [variant|all] [stride]\n", argv[0]);
     return 1;
   }
   g_n = atoll(argv[1]);
@@ -274,19 +293,22 @@ int main(int argc, char **argv) {
   g_chunk = g_n / (t * 8);
   if (g_chunk < 64) g_chunk = 64;
 
+  if (argc > 6) g_str = atoi(argv[6]);
+  const int64_t span = (int64_t)g_dom * g_str;
   g_idx = aligned_alloc(64, g_n * sizeof(int32_t));
-  g_src = aligned_alloc(64, g_dom * sizeof(float));
+  g_src = aligned_alloc(64, span * sizeof(float));
   g_table = aligned_alloc(64, g_dom * sizeof(float));
   g_dst = aligned_alloc(64, g_n * sizeof(float));
   uint64_t s = 88172645463325252ULL;
   for (int64_t k = 0; k < g_n; ++k) g_idx[k] = (int32_t)(xs(&s) % (uint64_t)g_dom);
-  for (int i = 0; i < g_dom; ++i) g_src[i] = (float)(i + 1);
+  for (int i = 0; i < g_dom; ++i) g_src[i * g_str] = (float)(i + 1);
 
   struct { const char *name; void (*fn)(void); } cases[] = {
       {"cur", run_cur}, {"b16", run_b16}, {"b32", run_b32},
       {"cur_real", run_cur_real}, {"chk_only", run_chk}, {"sign_only", run_sign},
-      {"half_sign", run_half}, {"bl_sign", run_bl}, {"nop1", run_nop1}};
-  for (int i = 0; i < 9; ++i) {
+      {"half_sign", run_half}, {"bl_sign", run_bl}, {"nop1", run_nop1},
+      {"notab", run_notab}};
+  for (int i = 0; i < 10; ++i) {
     if (strcmp(which, "all") && strcmp(which, cases[i].name)) continue;
     double best = 1e18;
     for (int r = 0; r < reps; ++r) {

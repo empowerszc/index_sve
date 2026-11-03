@@ -167,6 +167,10 @@ vs 标量查表），相加只能验证量级。
 
 ### 4.1 M1：把已经算出来的值域判定往下传（真省一遍）
 
+> **2026-11-03 更新**：`size ≤ 2048` 的 1D 纯 gather 已经**完全不走探测**——
+> 免 pass 1、跨度 ≤64KB 时连表都不建（RESULTS §2.21-§2.21.3）。本节 M1/M2 的
+> 讨论范围因此缩小到 `size > 2048` 的形态（值域可能远小于 `size`，扫描仍有价值）。
+
 **现状**：1D 纯 gather 的值域探测（`bucket_gather_pure_raw`）在 `index_into`
 里跑一次，落选后若落到两遍模型（`linearize` + `gather_index`），
 `gather_index` 里的 `bucket_gather_pure` **又对物化后的偏移重扫一遍**，得到的
