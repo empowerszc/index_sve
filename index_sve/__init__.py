@@ -3,7 +3,9 @@ from .register_aten import install as _install_aten  # noqa: F401
 import torch
 import os
 
-if os.environ.get("HPC_INDEX_NO_OVERRIDE", "0") != "1":
+OVERRIDE_ACTIVE = os.environ.get("HPC_INDEX_NO_OVERRIDE", "0") != "1"
+
+if OVERRIDE_ACTIVE:
     _install_aten()  # 直接覆盖 aten::index.Tensor（CPU）；HPC_INDEX_NO_OVERRIDE=1 跳过（基准对拍用）
 
 if os.environ.get("HPC_INDEX_COMPILE", "0") == "1":

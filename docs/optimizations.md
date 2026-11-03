@@ -7,12 +7,6 @@ T6-T11 依次修复 index_out/autograd、mask 单遍、小 K 路径、compile op
 线程数方法学；对应性能数据见 `benchmarks/RESULTS.md` §3.8、§2 与
 `performance.md` §3-§4。
 
-> **这篇讲什么**：T0-T15 每一轮为什么改、怎么改、改完多少——按轮次排的优化编年史。
-> **读完你能回答**：某轮解决的是哪个真实负载？改动落在哪个文件、哪条路由？当时
-> 实测多少？怎么复测？哪些方案试过但放弃了？
-> **本篇代号**：T0-T15（优化轮）、M1-M6/A1/shortq（真实负载）、S1/P1/P3（基准
-> 场景）。完整对照见 [glossary.md](glossary.md)。
-
 > **本文是编年史**：逐轮记录"当时为什么改、怎么改、改完是多少"。**它不是状态
 > 文档**——当前状态看 `status.md` §5（性能）与 §3（路由）、当前数字唯一出处
 > `benchmarks/RESULTS.md` §2.9。本文的数值只在该轮时点成立，跨轮只比形态。
@@ -22,29 +16,6 @@ T6-T11 依次修复 index_out/autograd、mask 单遍、小 K 路径、compile op
 > 记录问题、改动、实测。**历史性能表（T0-T10）中 2-36t 的标签不可用**：旧扩展
 > 用 libomp 默认 team，`torch.set_num_threads` 改的是 libgomp（详见
 > `degradation-analysis.md` §3.1）；只有 1t/38t 与 T11 之后的数据有效。
-
-## 目录
-
-- [1. 背景与目标](#1-背景与目标)
-- [2. 变更清单（对应 commit）](#2-变更清单对应-commit)
-- [3. 逐项详解](#3-逐项详解)
-- [4. 路由优先级总览（优化后）](#4-路由优先级总览优化后)
-- [5. 性能结果汇总（pin node 5，interleaved median，RESULTS §3.8）](#5-性能结果汇总pin-node-5interleaved-medianresults-38)
-- [6. 验证](#6-验证)
-- [7. 复测](#7-复测)
-- [8. 后续可优化项（未做）](#8-后续可优化项未做)
-- [9. T5：1 线程回归修复（线性化两遍模型 vs aten 单遍）](#9-t51-线程回归修复线性化两遍模型-vs-aten-单遍)
-- [10. T6：跨设备索引校验 + `aten::index.Tensor_out` 覆盖（正确性/覆盖）](#10-t6跨设备索引校验--atenindextensor_out-覆盖正确性覆盖)
-- [11. T7（实验，未落地）：`torch.compile` fallback](#11-t7实验未落地torchcompile-fallback)
-- [12. T8：mask 单遍融合（跳过 nonzero）](#12-t8mask-单遍融合跳过-nonzero)
-- [13. T9：小 K 单整数下标精简路径 + C++ 直接覆盖](#13-t9小-k-单整数下标精简路径--c-直接覆盖)
-- [14. T10：`torch.compile` opt-in（HPC_INDEX_COMPILE=1）](#14-t10torchcompile-opt-inhpc_index_compile1)
-- [15. T11：线程数方法学修正 + 路由/正确性修复](#15-t11线程数方法学修正--路由正确性修复)
-- [16. T12：fastindex 差异补齐（本轮）](#16-t12fastindex-差异补齐本轮)
-- [17. T13：多索引小 K 入口快路径](#17-t13多索引小-k-入口快路径)
-- [18. T14：`small_single_index` 短行 memcpy（A>=2）](#18-t14small_single_index-短行-memcpya2)
-- [19. T15：中等行宽 raw 放行（小 K）+ f32+i64 大源单遍 SVE + 阈值线程缩放](#19-t15中等行宽-raw-放行小-k-f32i64-大源单遍-sve--阈值线程缩放)
-- [20. 之后的轮次（不在本文范围）](#20-之后的轮次不在本文范围)
 
 ## 1. 背景与目标
 
@@ -240,7 +211,7 @@ index_impl
 | P3 x[mask] C=16 (T8，8t/32t 标签失效) | **2.1x** | ~~8.0x~~ | ~~7.2x~~ | 1.1-1.5x |
 
 注：8t/32t 共享箱噪声大（aten 单格曾摆动 104→426us）；可靠数字是交错
-aten/本算子 的 median。4B f32 K=10M 大值域随机 gather 仍是硬件上限（1t 0.7x、
+aten/hpc 的 median。4B f32 K=10M 大值域随机 gather 仍是硬件上限（1t 0.7x、
 高线程 0.2x），T4 桶化因值域 >>2048 不启用。
 
 ## 6. 验证
@@ -284,7 +255,7 @@ for t in tests/test_smoke.py tests/test_normalize.py tests/test_correctness.py \
 > 丢掉了 SVE rowcopy（1t 只有 1.06x）。T11 起 1 线程 A>=4 连续改回 raw rowcopy
 > （S1 1t 4.46x、rowcopy A=4 1t 2.41x）。修正矩阵见 RESULTS §2。
 
-### 问题
+### 背景
 
 回归扫描（`benchmarks/bench_regression.py`，interleaved median，pin node 5）发现
 1 线程下多形态劣化（0.6-0.9x），2+ 线程全部占优（rowcopy A=4 2t 7x、1D pure 2t
@@ -297,7 +268,7 @@ for t in tests/test_smoke.py tests/test_normalize.py tests/test_correctness.py \
 - 融合单遍（`gather_fused`）每元素做 at::Tensor 方法访问（element_size/stride/
   dtype/data_ptr，引用计数 + 虚调用），5M 元素下反而更慢（0.22-0.53x）。
 
-### 改动
+### 变更
 
 | 项 | 变更 | 代码 | 1 线程效果 |
 |---|---|---|---|
@@ -348,19 +319,13 @@ rowcopy 短行、1 线程大值域纯 gather、linearize 快/慢路径一致性�
   100% 走真 aten（实测 rowcopy A=64 K=200k：真 aten ≈5.7ms vs 本算子 ≈0.58ms，
   约 10x 收益丢失）。
 
-### 改动
+### 变更
 
 | 项 | 变更 | 代码 |
 |---|---|---|
 | T6-1 | 入口复刻 `checkIndicesOnCpuOrSelfDevice`：非 CPU 索引抛 aten 同文错误（`indices should be either on cpu or on the same device as the indexed tensor (cpu)`），不再段错误。T10 后 `hpc_index::*` 改为 schema-only + CPU kernel，meta 输入由 PT2 报 "no Meta kernel"（干净错误，不崩溃）；`HPC_INDEX_COMPILE=1` 时注册 fake 后可正常 tracing | normalize.cpp / op.cpp |
 | T6-2 | 抽出 `index_into(self, spec, out)` 核心路由；新增 `index_out_impl` 写入调用方 out（形状不符 `resize_`；非连续 out 先算到临时连续张量再 `copy_`；校验 dtype/device/overlap） | op.cpp |
 | T6-3 | 注册 `hpc_index::index_out` 并覆盖 `aten::index.Tensor_out` CPU key；`HPC_INDEX_NO_OVERRIDE=1` 仍可整体关闭，基准对拍语义不变 | op.cpp / register_aten.py |
-
-### 实测
-
-本轮是正确性与覆盖修复，没有独立的性能回归；`out=` 变体从 100% 走真
-aten 回到本算子后，问题段那组 rowcopy A=64 K=200k 的约 10x 收益才真正生效
-（T6 时点数字，当前口径见 `benchmarks/RESULTS.md` §2.9）。
 
 ### 验证
 
@@ -388,7 +353,7 @@ opt-in 实现（§14）。
 再 linearize + gather。两段完整遍历，且 nonzero 输出长度数据相关、并行度差，P3
 在高线程只有 1.0-1.9x（§5 注）。
 
-### 改动
+### 变更
 
 - `op.cpp` 入口新增 `mask_fast_path`：仅当 `indices` 恰为一个 bool/byte mask、
   mask 覆盖 self 前 `md` 维且形状逐维匹配、mask 与 self 均连续、均在 CPU 时启用；
@@ -413,7 +378,7 @@ opt-in 实现（§14）。
 
 其它形态（8t，aten/新）：C=64 d=0.1 1.9-2.1x、1D A=1 1M 1.1-2.2x、全维 mask
 512² 1.6-1.8x、2D mask→8 2.1-2.5x、byte 1.5-1.7x、空 mask 0.9x。共享箱上 aten
-绝对时间波动大（同一 P3 8t 曾 1.1-5.9ms），本算子侧 0.66-0.77ms 稳定。
+绝对时间波动大（同一 P3 8t 曾 1.1-5.9ms），hpc 侧 0.66-0.77ms 稳定。
 
 ### 验证
 
@@ -436,7 +401,7 @@ opt-in 实现（§14）。
   `gather_bucket_pure_raw` + `linearize` + `gather_bucket_pure` 的多次并行扫描
   （即使值域过大最终仍走 SVE），固定 ~120us；`K=1024` 8t 仅 0.37x。
 
-### 改动
+### 变更
 
 | 项 | 变更 | 代码 |
 |---|---|---|
@@ -480,7 +445,7 @@ opt-in 实现（§14）。
 需要一条"显式开启就让 compile 用回本算子"的路径，同时不改变默认行为与用户的
 编译缓存。
 
-### 改动
+### 变更
 
 | 项 | 变更 | 代码 |
 |---|---|---|
@@ -506,7 +471,7 @@ opt-in 实现（§14）。
 ### 问题
 
 1. **线程数失真**：扩展链接 BiSheng libomp，`torch.set_num_threads(t)` 只改
-   aten 的 libgomp ICV；2-36t 实际都用 libomp 默认 team（本机 38），旧矩阵的
+   ATen 的 libgomp ICV；2-36t 实际都用 libomp 默认 team（本机 38），旧矩阵的
    低线程相对值被严重高估。
 2. **1 线程 A>=4 误伤**：T5 的 "1t 单索引 A>1 全走 `gather_fused`" 让 S1/P1
    （A=64）在 1t 丢掉 SVE rowcopy，只有 1.06x。
@@ -516,7 +481,7 @@ opt-in 实现（§14）。
 5. **非连续 stride 正确性**：`bucket_gather_pure_raw`/`gather_single_1d`/
    `rowcopy_raw` 平坦读 idx，非连续下标会算错（旧 "1.37x" 是错误路径的假加速）。
 
-### 改动
+### 变更
 
 | 项 | 变更 | 代码 |
 |---|---|---|
@@ -552,15 +517,7 @@ complex 1t 0.95x、S4/multi 8/16t 0.91-0.98x、1D K=65536 16-36t 0.81-0.88x、
 
 ## 16. T12：fastindex 差异补齐（本轮）
 
-
-### 问题
-
-与 fastindex 的差异集中在三处：非连续尾维（置换布局）只能逐元素标量拷贝；
-≤64B 的短行/run 走 masked SVE 谓词，固定开销高于 `memcpy`；单索引 A<16 与
-多索引 A≥4 的多线程仍走 `linearize` 两遍。另外 `adaptive_grain` 的下限是 1，
-小任务会被切得过碎。
-
-### 改动
+### 变更
 
 | 项 | 变更 | 代码 |
 |---|---|---|
@@ -606,7 +563,7 @@ complex 1t 0.95x、S4/multi 8/16t 0.91-0.98x、1D K=65536 16-36t 0.81-0.88x、
 
 实测 K=512、A=1、8t：0.74x；1t：0.67x（见 `benchmarks/RESULTS.md` §3.15）。
 
-### 改动
+### 变更
 
 | 项 | 变更 | 代码 |
 |---|---|---|
@@ -650,7 +607,7 @@ A=2/3/4 一律 ~33µs（i64 下标无 int32 转换开销，是强基线），因
 此问题在既有基准里不可见：`bench_threads.py` 的 A=2/3 场景 K=200k（不走
 small_single），smallk 只有 A=1/A=16 —— 只有真实尺寸的 shortq 才暴露。
 
-### 改动
+### 变更
 
 | 项 | 变更 | 代码 |
 |---|---|---|
@@ -665,8 +622,8 @@ small_single），smallk 只有 A=1/A=16 —— 只有真实尺寸的 shortq 才
 | shortq A=3 K=512 i64 | 1.15-1.22x | **2.75-2.82x** |
 | shortq A=3 K=512 i32 | 1.62-1.69x | **3.72-3.90x** |
 
-本算子绝对时间 A=3 从 35.5µs 降到 24.5µs，与 A=2（23.7µs）/A=4（24.5µs）拉平；
-7 轮聚焦复测本算子 spread 1.05。M5 标量 2D A=3（K=1）不受影响——单次调用
+hpc 绝对时间 A=3 从 35.5µs 降到 24.5µs，与 A=2（23.7µs）/A=4（24.5µs）拉平；
+7 轮聚焦复测 hpc spread 1.05。M5 标量 2D A=3（K=1）不受影响——单次调用
 开销占主导，行拷贝不是瓶颈。
 
 ### 验证
@@ -690,7 +647,7 @@ T13 矩阵残余的三类退化：
 - **38t 边界**：2D A=16 K=1024（n*A=16384 恰好触发并行）38t 1.46x vs K=1023
   串行 2.49x——38 线程 fork-join 对 64KB 任务净亏 ~17µs。
 
-### 改动
+### 变更
 
 | 项 | 变更 | 代码 |
 |---|---|---|
@@ -705,7 +662,7 @@ T13 矩阵残余的三类退化：
 
 1. **大 K 下 raw 反而慢 12-32%**（A=64 E=1M i32 8t 7982→10378µs、rc A=16
    K=200k 1724→2286µs、M2 (20000,64) +12%）：raw 每行做内联检查/负归一/
-   `v*stride` 地址链，冷源（L3/DRAM）行拷贝下拖慢发射；linearize 的预校验
+   `v*stride` 地址链，冷源（超出 L2、走 DRAM）行拷贝下拖慢发射；linearize 的预校验
    偏移 + 无检查拷贝两遍反而快。小 K（B*K≤65536）省一遍 fork-join 收益更大，
    raw 赢——实测分界清晰，条件定为 `A<=64 && B*K<=65536`。
 2. **小源下 4B SVE gather 每元素成本高于标量**（实测每线程每元素：小源
@@ -713,7 +670,7 @@ T13 矩阵残余的三类退化：
    ~19 vs ~10ns，机理与推导见 degradation-analysis.md §5.9）：C 经
    linearize→`gather_index` 是 4 遍 fork-join（bucket 扫描 ×2 + linearize +
    SVE），K=65536 56→110µs；直连单遍内核也要 92-102µs。
-   分界是**源驻留级**而非 K：8MB 源（L3/DRAM）gather 的 8 路在飞负载把
+   分界是**源驻留级**而非 K：8MB 源（远超 768KB L2）gather 的 8 路在飞负载把
    延迟摊薄（K=10M 8t 1.32→1.93x），16KB 源（L1）标量的乱序重叠已把延迟
    藏住、指令更少——最终给内核加源>512KB（L2 实测 768KB，取其下保守界）
    门，小源保持标量。ACLE 无 32 位数据的 64 位下标 gather intrinsic，
@@ -726,9 +683,9 @@ T13 矩阵残余的三类退化：
 |---|---|---|
 | 2D A=16 K=8192（8-38t） | 1.28-1.66x | **2.12-2.49x** |
 | 2D A=16 K=65536（32-38t） | 1.53-1.59x | **2.49-2.82x** |
-| 2D A=16 K=1024（36/38t） | 1.86-1.98x（fork-join 净亏 10-17µs） | **2.83-4.57x**（本算子 17.1µs，与 K=1023 串行完全拉平） |
-| 1D f32 K=10M idx64（8-36t） | 1.23-1.32x | **1.44-2.22x**（本算子 -15~-40%） |
-| 1D f32 K=65536 小源（对照，回标量） | 1.26-1.33x | 0.98-1.25x（本算子 42-61µs，不劣于修复前） |
+| 2D A=16 K=1024（36/38t） | 1.86-1.98x（fork-join 净亏 10-17µs） | **2.83-4.57x**（hpc 17.1µs，与 K=1023 串行完全拉平） |
+| 1D f32 K=10M idx64（8-36t） | 1.23-1.32x | **1.44-2.22x**（hpc -15~-40%） |
+| 1D f32 K=65536 小源（对照，回标量） | 1.26-1.33x | 0.98-1.25x（hpc 42-61µs，不劣于修复前） |
 | A=64 E=1M / rc A=16 K=200k / M2（对照） | — | 与修复前差 **1-3%**（回归全修复） |
 
 smallk 官方复测见 RESULTS §2.3（T15 构建）。
@@ -738,17 +695,24 @@ smallk 官方复测见 RESULTS §2.3（T15 构建）。
 - `test_rowcopy_routes` **8/8**（新增 4 个路由测试：`medium_a_raw_route`、
   `medium_a_large_k_keeps_linearize`、`f32_i64_1d_route`、
   `small_single_thread_scaled_threshold`，全部走计数器断言）；13 个测试文件
-  **127/127**（T15 时点；补测 autograd 后全套件 14 文件 **143/143**）；
+  **127/127**（T15 时点；补测 autograd 后 14 文件 **143/143**，R10 起 15 套件
+  **174/174**，源大小门边界后 **175/175**）；
   两进程 true-aten 对拍 **44/44**。
 - realpath 全形态路由不变（A1 K=1、M1 A=1024/2048/4096、M2 B·K=10 万均不在
-  新路由范围），§2.5 T14 数据继续有效。
+  新路由范围）——该判断在 R10 轮仍成立，当前值见 RESULTS §2.9.4（§2.5 是
+  T14 的历史数字）。
 
 ## 20. 之后的轮次（不在本文范围）
 
-T15 之后还有两轮，本文未收录（各自有专项文档与 RESULTS 小节）：
+T15 之后还有数轮，本文未收录（各自有专项文档与 RESULTS 小节）：
 
 - **布局修复**（`5eaa3b1`）：输出内存布局与 aten 逐维一致，见
   `output-layout.md` §1-§7。
 - **R10 直写**（`330d268`）：cl/置换布局行块直写，见 `output-layout.md` §8 与
   RESULTS §2.9.2。
-- 两轮的当前性能结论：RESULTS §2.9，状态快照 `status.md` §5.1。
+- **桶化两刀 + 门**（`7ff1197`、`e361bf6c`，2026-11-03）：源 ≤2048 免值域扫描；
+  跨度 ≤64KB 连表都不建、直查源，`K/size ≤ 32` 门内留直查、门外回表（内核 A/B：
+  SGI **1.28-1.30x**、PPT **1.27-1.28x**、**Sonata 0.99-1.02x 门后回持平**——
+  特化吃掉乘法账的一半，余项靠门绕开），见 RESULTS §2.21.1/§2.21.3 与
+  headroom §6.5.7/§6.5.8。
+- 各轮的当前性能结论：RESULTS §2.9 与 §2.21 系列，状态快照 `status.md` §5.1。

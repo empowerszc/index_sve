@@ -4,6 +4,11 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import index_sve
 from index_sve import _hpc_index as C
 
+if not index_sve.OVERRIDE_ACTIVE:
+    raise SystemExit(
+        "test_rowcopy_routes 需要覆盖激活：cl4d 六项靠 x[...] 验证路由，覆盖关闭时 "
+        "6 项全挂（HPC_INDEX_NO_OVERRIDE=1？）")
+
 
 def test_small_row_raw_route():
     x = torch.randn(20000, 8)
@@ -46,8 +51,10 @@ def test_multi_index_raw_route():
             assert C.rowcopy_raw_count() == before + 1, f"multi-index A=64 t={t} did not skip linearize"
         torch.set_num_threads(8)
         before = C.rowcopy_raw_count()
+        before_d = C.dispatch_count()
         index_sve.index(x, [i, j])
         assert C.rowcopy_raw_count() == before, "multi-index t=8 should keep linearize"
+        assert C.dispatch_count() == before_d + 1, "kernel did not run"
     finally:
         torch.set_num_threads(old)
 
@@ -90,18 +97,20 @@ def test_medium_a_large_k_keeps_linearize():
     try:
         torch.set_num_threads(8)
         before = C.rowcopy_raw_count()
+        before_d = C.dispatch_count()
         y = index_sve.index(x, [idx])
         torch.testing.assert_close(y, ref)
         assert C.rowcopy_raw_count() == before, "A=64 K=200k should keep linearize"
+        assert C.dispatch_count() == before_d + 1, "kernel did not run"
     finally:
         torch.set_num_threads(old)
 
 
 def test_f32_i64_1d_route():
     # T15-C：f32 数据 + int64 下标的 1D 纯 gather。小源（≤512KB，L1/L2 常驻）标量
-    # 单遍更快——4B SVE gather 微码吞吐下限 ~1.2ns/元素，高于标量 L1 命中循环
-    # ~0.63ns/元素（实测 K=65536 源 16KB：SVE 75µs vs 标量 41µs）；大源（L3/DRAM）
-    # 走专用单遍 SVE 内核（gather MLP 吸收延迟，K=10M 源 8MB：8t 1.32→1.93x）。
+    # 单遍更快——每线程每元素 4B SVE gather ~18ns vs 标量 L1 命中 ~7.1ns（微码/
+    # 发射下限，双内核复现；大源反转 ~10 vs ~18.8ns，见 degradation §5.9.1）；
+    # 大源（L3/DRAM）走专用单遍 SVE 内核（gather MLP 吸收延迟，8t 1.32→1.93x）。
     # 不能经 linearize 落 gather_index——bucket 扫描+linearize+bucket 扫描+SVE
     # 共 4 遍 fork-join（实测 K=65536 56→110µs）。
     idx = torch.randint(0, 4096, (65536,), dtype=torch.int64)
@@ -128,6 +137,29 @@ def test_f32_i64_1d_route():
         cref = torch.index_select(cx, 0, idx)
         torch.testing.assert_close(index_sve.index(cx, [idx]), cref)
         assert C.single_1d_count() == before + 2, "complex64 control should stay scalar"
+    finally:
+        torch.set_num_threads(old)
+
+
+def test_single_1d_sve_source_boundary():
+    # 路由门 self.numel()*element_size > 512KB（op.cpp:142）：§5.9.1 的成本交叉点
+    # 在 L2（768KB）附近，门取 L2 之下的保守界。两侧各钉一点，防阈值漂移或
+    # 比较符翻转——那只会掉 2.5x 性能，功能测试全绿。
+    old = torch.get_num_threads()
+    try:
+        torch.set_num_threads(8)
+        for numel, want_sve in ((131072, False), (131073, True)):  # 512KB 整 / +4B
+            x = torch.randn(numel)
+            idx = torch.randint(0, numel, (65536,), dtype=torch.int64)
+            ref = torch.index_select(x, 0, idx)
+            b1 = C.single_1d_count()
+            bs = C.single_1d_sve_count()
+            y = index_sve.index(x, [idx])
+            torch.testing.assert_close(y, ref)
+            assert C.single_1d_sve_count() - bs == int(want_sve), \
+                f"numel={numel} ({numel * 4}B) want_sve={want_sve}"
+            assert C.single_1d_count() - b1 == int(not want_sve), \
+                f"numel={numel} ({numel * 4}B) scalar branch"
     finally:
         torch.set_num_threads(old)
 
@@ -200,9 +232,11 @@ def test_cl3d_perm_row_index_direct_values():
     old = torch.get_num_threads()
     try:
         torch.set_num_threads(8)
+        before_d = C.dispatch_count()
         y = x[rows]
         torch.testing.assert_close(y, ref)
         assert y.stride() == (3072, 1, 32), y.stride()
+        assert C.dispatch_count() == before_d + 1, "kernel did not run"
     finally:
         torch.set_num_threads(old)
 
@@ -218,9 +252,11 @@ def test_cl4d_sliced_tail_excluded():
     try:
         torch.set_num_threads(8)
         before = C.rowcopy_raw_count()
+        before_d = C.dispatch_count()
         y = x[t, 1:3]
         torch.testing.assert_close(y, ref)
         assert C.rowcopy_raw_count() == before, "sliced cl tail is not dense; must not block-copy direct"
+        assert C.dispatch_count() == before_d + 1, "kernel did not run"
     finally:
         torch.set_num_threads(old)
 
@@ -235,9 +271,11 @@ def test_cl4d_small_k_excluded():
     try:
         torch.set_num_threads(8)
         before = C.rowcopy_raw_count()
+        before_d = C.dispatch_count()
         y = x[rows]
         torch.testing.assert_close(y, ref)
         assert C.rowcopy_raw_count() == before, "K<1024 stays on small-tensor path"
+        assert C.dispatch_count() == before_d + 1, "kernel did not run"
     finally:
         torch.set_num_threads(old)
 
@@ -252,9 +290,67 @@ def test_cl4d_half_excluded():
     try:
         torch.set_num_threads(8)
         before = C.rowcopy_raw_count()
+        before_d = C.dispatch_count()
         y = x[rows]
         torch.testing.assert_close(y, ref)
         assert C.rowcopy_raw_count() == before, "f16 cl self must not use direct rowcopy"
+        assert C.dispatch_count() == before_d + 1, "kernel did not run"
+    finally:
+        torch.set_num_threads(old)
+
+
+def test_int32_data_raw_route():
+    # M1 raw 支的 dtype 白名单原为 f32/f64。int32 同形同 K 落 gather_fused：
+    # RESULTS §2.14 表 B，A=3 K=8192 8t，int32 0.57x vs f32 1.67x（2.9x），
+    # 而两侧 ATen 仅差 1µs —— 差距全在换路，不在数据搬运量。
+    # A=64 一并钉住：行宽 256B 走向量臂而非 <=64B 的 memcpy 臂。
+    old = torch.get_num_threads()
+    try:
+        torch.set_num_threads(8)
+        for A in (3, 64):
+            x = torch.randint(-10000, 10000, (20000, A), dtype=torch.int32)
+            idx = torch.randint(0, 20000, (8192,), dtype=torch.int64)
+            ref = torch.index_select(x, 0, idx)
+            before = C.rowcopy_raw_count()
+            y = index_sve.index(x, [idx])
+            torch.testing.assert_close(y, ref)
+            assert C.rowcopy_raw_count() == before + 1, \
+                f"int32 A={A} did not take raw rowcopy"
+    finally:
+        torch.set_num_threads(old)
+
+
+def test_int64_data_i32_index_raw_route():
+    # int64 数据（8B 向量臂）+ int32 下标（rowcopy_raw_single 的另一份实例化）。
+    # A=16 → 行宽 128B > 64B，覆盖向量臂；块拷贝若只认浮点会静默不拷。
+    old = torch.get_num_threads()
+    try:
+        torch.set_num_threads(8)
+        x = torch.randint(-10000, 10000, (20000, 16), dtype=torch.int64)
+        idx = torch.randint(0, 20000, (8192,), dtype=torch.int32)
+        ref = torch.index_select(x, 0, idx)
+        before = C.rowcopy_raw_count()
+        y = index_sve.index(x, [idx])
+        torch.testing.assert_close(y, ref)
+        assert C.rowcopy_raw_count() == before + 1, "int64 + i32 idx did not take raw rowcopy"
+    finally:
+        torch.set_num_threads(old)
+
+
+def test_half_data_excluded_from_raw_route():
+    # 白名单只放开 4B/8B 整数：2B element 没有向量块拷贝臂，留在 gather_fused。
+    x = torch.randn(20000, 3).half()
+    idx = torch.randint(0, 20000, (8192,), dtype=torch.int64)
+    ref = torch.index_select(x, 0, idx)
+    old = torch.get_num_threads()
+    try:
+        torch.set_num_threads(8)
+        before = C.rowcopy_raw_count()
+        before_d = C.dispatch_count()
+        y = index_sve.index(x, [idx])
+        torch.testing.assert_close(y, ref)
+        assert C.rowcopy_raw_count() == before, "f16 must stay off raw rowcopy"
+        assert C.dispatch_count() == before_d + 1, "kernel did not run"
     finally:
         torch.set_num_threads(old)
 

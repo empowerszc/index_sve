@@ -4,16 +4,7 @@
 `tests/`，不要把这里的脚本当功能测试用。`bench_regression.py` 也只标记
 **性能**回归（比值 <0.90），不验证结果正确性。
 
-> **这篇讲什么**：每个 benchmark 脚本测什么、该用哪个、环境变量怎么设、结果怎么
-> 和功能测试区分。
-> **读完你能回答**：验收该跑哪个脚本？小 K 为什么要两进程？`HPC_AFFINITY`
-> 怎么用？哪些脚本只作历史参考？
-> **本篇代号**：M1-M6/shortq/A1（真实负载）、S1/P1（基准场景）、R10（当前轮次）。
-> 术语见 [glossary.md](glossary.md)。
-
 ## 1. 一句话总览
-
-下表按“正式基准 / 组件脚本 / 历史参考”三类读；不确定时先用 `bench_threads.py`。
 
 | 文件 | 类型 | 作用 | 何时用 |
 |---|---|---|---|
@@ -25,6 +16,14 @@
 | `bench_smallk_driver.py` | **正式基准** | 交替启动 aten/hpc 两个子进程，汇总小 K 中位数，排除 pybind 包装噪声 | 小 K（K<=65536）真实路径验收 |
 | `bench_realpath.py` | 组件脚本 | 单进程真实 workload（M5/shortq/A1/M1/M2）`x[idx]` 计时，输出 JSON；由 driver 交替调用 | 不单独用，配合 `bench_realpath_driver.py` |
 | `bench_realpath_driver.py` | **正式基准** | 交替启动 aten/hpc 两个子进程，真实路径全 case 对拍（含短调用、高频单元素） | 短调用 / 真实 workload 收益结论的首选依据 |
+| `bench_production_shapes.py` | 组件脚本 | 生产形态库（K 512-55296、A=1/3/64、线程 1/6/12/19、`x[idx]` 走 dispatch）单进程计时，输出 JSON；含 `--emit-cases`/`--gen-cases`/`--per-model`/`--weighted`/`--detail`/`--md`/`--abr-map`/`--total`/`--cases` | 不单独用，配合 `bench_production_driver.py`；加权/覆盖率结论见 RESULTS §2.12 |
+| `trace_hotspots.example.csv` | 输入 fixture | **不是真实 trace**：按生产反馈 §11.2.5 的聚合热点表手工重建（model/path/K/A/dom/calls/threads），用来演示 `--gen-cases` 的输入格式 | 有真 trace 时换成真文件；格式说明见文件头注释 |
+| `bench_production_driver.py` | **正式基准** | 交替启动 aten/hpc 两进程，汇总生产形态矩阵；`--fit` 把"固定开销 / 每元素成本"分开 | **生产收益结论的唯一依据**，任何"单算子几倍"的结论都要附这一族（RESULTS §2.10） |
+| `bench_context_overhead.py` | 诊断 | 同一形态在 hot / 线程池冷（spaced）/ 源冷 / autograd 四种上下文下的单次耗时；另含固定链（K=1）、A 敏感性、K=2 小形态、mask 的 `nonzero` 与混合序列 | 回答"模型内每次调用比 bench 贵多少"，RESULTS §2.11 |
+| `bench_entry_overhead.py` | 诊断 | `x[idx]` 全链路拆解：dispatcher / `torch.ops` 查表 / Python 包装 / `torch.empty` / normalize 的各路下标表示（i32/stride2/2D/双索引） | 判断"某个基准脚本的入口口径差多少"，RESULTS §2.12.1 |
+| `bench_route_probe.py` | 诊断 | 路由成本分层探针四组：`chain` 短调用是否进链（路由由计数器读出）/ `gate` 值域门两侧同局部性 / `scan` 裸价 / `census` 语料路由分布；`--json` 出原始数据 | "路由条数是否抬高固定开销"，RESULTS §2.13 |
+| `bench_path_matrix.py` | **诊断（路径口径）** | 按**路由**组织的收益矩阵：35 个用例 × 1/8/16 线程，aten/hpc 两进程交替（`--ab`），每个用例写死期望路由并与计数器核对（不符打印 `EXPECT MISMATCH`）；`--routes` 只列期望路由，`--json` 出原始数据 | 判断"某条路值不值得保留/能不能合并"，RESULTS §2.14，裁决见 `path-matrix.md` |
+| `bench_roofline.py` | **诊断（roofline）** | 行宽扫描（A=1..256，固定有用 8MB）：`aten`/`hpc` 分进程交替，外加 `torch.index_select` 同库参考列；`--threads` 看行宽 × 线程，`--stream` 是 `x.clone()` 上限对照 | 回答"离硬件上限还有多远、缺在哪个环节"，RESULTS §2.16.5，推导见 `headroom.md` |
 | `bench_regression.py` | 回归扫描 | 多形态性能回归扫描，默认 1/8/32t，比值 <0.90 打 `REGRESS` | 改内核后快速看有没有明显性能回退 |
 | `bench_ai4s.py` | 专项基准 | AI4S workload 形态（M1-M6）线程扫描，不是功能测试 | 评估 AI4S 场景收益/回归 |
 | `bench_cl_family.py` | **专项基准** | cl/置换布局行索引族前后对照：`aten`/`hpc` 两进程交替（覆盖是进程级开关），cl4d 行/掩码、cl3d 置换、contig4d 箱态对照组 | R10 直写（output-layout.md §8）等布局相关优化的验收/复现（RESULTS §2.9.2） |
@@ -32,8 +31,12 @@
 | `bench_t1.py` | 优化轮专项 | M2 短行 A-sweep（A=2..64），看行宽对 rowcopy 的影响 | 调整 rowcopy 阈值/短行路径时用 |
 | `bench_t2.py` | 优化轮专项 | M1 权重块（A=1024/2048/4096/65536，含 ≤16KB/行真实尺寸）线程扫描 | 调整大块 rowcopy / raw 路径时用 |
 | `degrade_probe.py` | 诊断探针 | 绝对带宽、小工作量强扩展、mask 分解等退化定位数据 | 分析“为什么慢”、写 degradation-analysis 时用 |
-| `perf_one.py` | perf 驱动 | 单 case 循环执行，供 `perf stat/record` 采样 | 需要微架构计数（cache/TLB/指令数）时用 |
-| `memprobe.c` | 硬件探针 | 纯 C 的延迟/带宽/随机 gather 微基准，与 torch 无关 | 测内存系统上限、排除算子本身因素 |
+| `perf_one.py` | perf 驱动 | 单 case 循环执行，供 `perf stat/record` 采样；行拷贝形态 `r3`/`r16raw`/`r16`/`r64`/`r256` 覆盖 raw 与 linearize 两条落点 | 需要微架构计数（cache/TLB/指令数）时用 |
+| `perf_analyze.py` | perf 分析 | 调 `perf stat` 量每行周期/指令/IPC/L1-2-3 缺行数，反推"等效在飞条数"；**每格跑两段（3s+9s）相减**，否则 `import torch` 的 7.2s 启动会把周期放大 4 倍；`--record` 出热点符号 | 回答"某条实现到底几条 line 在飞、时间花在哪个循环"，RESULTS §2.19 |
+| `bench_pf_ab.py` | 预取 A/B | 只变 `HPC_PF_DIST`（运行时旋钮），同一进程扫完 D；aten 侧分进程。输出 ns/行、`vs D0`、`aten/hpc` | H1 验收与调参，RESULTS §2.18 |
+| `memprobe.c` | 硬件探针 | 纯 C 的微基准，与 torch 无关：`latency`（指针追逐）/`bandwidth`（带 `REPS`，单遍会把冷建队算进去）/`mlp`（S 条**独立依赖链**，精确设"在飞条数"）/`gathermt`/`idxgather`（下标从内存顺序读，看内核循环形态；源大小支持小数 MB，才能测 8KB 级的 L1 常驻形态）/`rowgather`（`plain`/`memcpy`/`pipe`/`pf8`/`pf16` 五写法，`NOHP=1` 关大页） | 测内存系统上限、排除算子本身因素；在飞条数曲线与行拷贝分解见 RESULTS §2.16，L1/L2 下界（0.66-0.71 vs 5.6-6.0 ns/元素）见 §2.20 |
+| `sveprobe.c` | 硬件探针（SVE） | 独立编译单元（`-march=armv8.2-a+sve2`，避免改掉 `memprobe` 的自动向量化）：`copyhot` L1 常驻源的 512-bit 拷贝指令下界、`copystream` 普通 vs 非临时 `stnt1d`、`gather` SVE gather vs 标量展开 | 回答"指令/发射是不是瓶颈"，RESULTS §2.17 |
+| `bench_hw_traffic.py` | 内核线流量 | 真实 `aten::index` 1D gather 的绝对带宽，换算成 64B 行流量，用来和 `memprobe` 的上限对照 | 判断"是否撞到带宽墙" |
 | `RESULTS.md` | 结果报告 | 正式性能结果与历史轮次数据，不是脚本 | 查数据、写结论、对齐口径 |
 
 ## 2. 该用哪个？
@@ -42,6 +45,7 @@
   - 大 K、多线程矩阵：`bench_threads.py`
   - 小 K 真实路径：`bench_smallk_driver.py`
   - 真实 workload / 短调用 / 高频单元素：`bench_realpath_driver.py`
+  - **生产形态（K 512-55296、4-19 线程）：`bench_production_driver.py`**
 - **改完内核后的快速回归**
   - `bench_regression.py`
   - 若涉及 AI4S 场景，再跑 `bench_ai4s.py`
@@ -51,18 +55,29 @@
 - **分析退化原因**
   - 先看 `RESULTS.md` 和 `docs/degradation-analysis.md`
   - 需要补充数据时用 `degrade_probe.py`
-  - 需要微架构计数时用 `perf_one.py` + `perf stat/record`
-  - 需要硬件上限时用 `memprobe.c`
+  - 需要微架构计数时用 `perf_one.py` + `perf stat/record`，成表用 `perf_analyze.py`
+  - 需要判定/调预取距离时用 `bench_pf_ab.py`（`HPC_PF_DIST` 是运行时旋钮）
+  - 需要硬件上限时用 `memprobe.c`（`mlp` 出在飞条数曲线、`rowgather` 做行拷贝/预取分解、`sveprobe.c` 出指令下界）
+  - 需要"离上限还有多远"的逐形态表时用 `bench_roofline.py`，推导见 `docs/headroom.md`
 - **只看历史数据**
   - `bench_index.py` / `bench_pinned.py` / `bench_gate.py`
   - 这些脚本的 2-36t 数据可能受旧的双 OpenMP ICV 问题影响，不要直接当当前结论
 
 ## 3. 真实 workload 覆盖与预测力
 
-**路径对称性问题**：除 `bench_smallk_real.py` / `bench_realpath.py` 外，其余脚本的
-本算子侧都是 `hpc_index()` pybind 直呼，绕过了 dispatcher。大 K 下固定开销占比
-可忽略，比值可信；**短调用（单次几微秒级）的比值会偏乐观**，必须以两进程
-真实 `x[idx]` 对拍（`bench_realpath_driver.py` / `bench_smallk_driver.py`）为准。
+**路径对称性问题**：除 `bench_smallk_real.py` / `bench_realpath.py` /
+`bench_production_shapes.py` / `bench_entry_overhead.py` 外，其余脚本的 hpc 侧都是
+`hpc_index()` 直呼，绕过了 dispatcher。实测这条路的偏置方向是**偏悲观**，不是
+偏乐观：Python 包装 + `torch.ops` 查表比 `x[idx]` **慢 10µs**（K=0/512/2048 都是，
+`torch.ops.aten.index` 一样慢，见 RESULTS §2.12.1）。大 K 下 10µs 可忽略，比值
+可信；**短调用（单次几微秒级）必须用两进程真实 `x[idx]` 对拍**
+（`bench_realpath_driver.py` / `bench_smallk_driver.py` /
+`bench_production_driver.py`），否则会把本算子算慢。
+
+**K / 线程量级同样会决定结论**：`bench_index.py` 的 K=2M/10M（工作集 8-80MB）
+把双方都推到行流量受限区，`bench_threads.py` 的 1/608t 是两个端点。生产的
+K 512-55296（工作集 8KB-4MB）+ 4-19t 落在"每元素成本 / 固定开销"主导区，
+1D A=1 在那里是 0.66-1.10x（RESULTS §2.10、degradation §6.5）。
 
 各基准对“单算子 case 优化 ⇒ 真实应用收益”的预测力：
 
@@ -89,19 +104,40 @@
 | `HPC_AFFINITY` | 绑定的 CPU 集合，建议固定到空载 NUMA 节点 | `190-227`（node 5） |
 | `HPC_THREADS` | 逗号分隔的线程数列表 | `1,2,4,8,16,32,36,38`（38 = 单 NUMA 节点实际核数） |
 | `HPC_ITERS` | 每个 case 的迭代次数 | `25` / `40` / `100` / `200` |
-| `HPC_REPS` | `bench_smallk_driver.py` / `bench_realpath_driver.py` 的重复轮数 | `3` |
+| `HPC_REPS` | `bench_smallk_driver.py` / `bench_realpath_driver.py` / `bench_production_driver.py` 的重复轮数 | `3` |
+| `HPC_DOM_SWEEP` | `bench_production_shapes.py` 诊断模式：固定该 K 只扫值域（桶化建表成本） | `8192` / 空 |
+| `HPC_CTX_KS` | `bench_context_overhead.py` 上下文组用的 K | `512,2048,8192` |
+| `HPC_ROUNDS` | `bench_route_probe.py` 的交替轮数（每轮各 dom 都测一遍）；`bench_path_matrix.py --ab` 的整轮重复次数（每轮重起 aten/hpc 两进程） | `5` / `3` |
+| `HPC_GATE_K` | `bench_route_probe.py` gate 组的 K | `65536` |
+| `HPC_GATE_DOMS` | gate 组的值域扫描点 | `512,2048,2049,4096` |
+| `HPC_THREADS`（路径矩阵） | `bench_path_matrix.py` 的线程轴；`--ab` 会把它传给两个子进程 | `1,8,16` |
+| `HPC_SPACED_S` | `bench_context_overhead.py` `spaced` 上下文的调用间隔（秒） | `0.0002` |
+| `HPC_SUBSET` | `bench_production_shapes.py` 只保留名字含任一子串的用例（逗号分隔） | 空（全量） |
+| `HPC_CASES` | 用 `--gen-cases` / `--emit-cases` 的 JSON 直接当用例库（等价于 `--cases`） | 空 |
 | `HPC_LOOP_ITERS` | `bench_realpath.py` 标量循环 case 的计时轮数（每轮内含 `HPC_CALLS` 次调用） | `5` |
 | `HPC_BIG_ITERS` | `bench_realpath.py` 大输出 case（M1/M2）的计时轮数 | `20` |
 | `HPC_CALLS` | `bench_realpath.py` 高频调用 case 的每轮调用次数 | `10000` |
 | `HPC_INDEX_NT` | 非临时存储（non-temporal）开关 | `0` / `1` |
+| `HPC_PF_DIST` | 行拷贝预取距离（H1）：`0` 关掉，其它值当 D 用；不设则按行字节自动选（≤64B→16、65-512B→8、>512B→关） | 整数，0-64 |
 | `MODE` | `perf_one.py` 使用 `hpc` 还是 `aten` | `hpc` / `aten` |
 
 注意：
 - `bench_threads.py` 已同时同步 `torch.set_num_threads` 和 libomp 的
   `omp_set_num_threads`，线程标签可信。
 - 旧脚本（`bench_index.py` 等）没有这层修正，2-36t 数据只能作历史参考。
-- `bench_smallk_driver.py` / `bench_realpath_driver.py` 会自己在子进程里设置
-  `HPC_INDEX_NO_OVERRIDE`，不需要手动设。
+- `bench_smallk_driver.py` / `bench_realpath_driver.py` / `bench_production_driver.py`
+  会自己在子进程里设置 `HPC_INDEX_NO_OVERRIDE`，不需要手动设。
+- `bench_context_overhead.py` 的 K=8192 档会受脚本内 768MB 源分配的堆扰动（aten
+  多线程热循环出现 550µs 级假峰，隔离复测 32µs）；看 K≤2048 的档，或先删 `cold`
+  组再跑。`forms` 组的 `nonzero` 19t 单格也可能被抖动污染，关键结论请隔离复测。
+- `--weighted` 同时打印两套口径，别读反：**`aten/hpc` >1 = 本算子更快**（本仓库
+  默认），**`index_sve/原生` <1 = 本算子更快**（生产反馈用的口径），互为倒数。
+- `--weighted` 默认是**窄版**（一个模型一块、宽度 ≤70 列，直接看终端）；要贴进
+  文档加 `--md`。`--detail` 给的排名按"调用次数 × 单次耗时"，不是按次数——
+  两者结论经常不同（RESULTS §2.12.2）。
+- `--gen-cases` 里的 `A` 是 **A-br 桶中值映射**，不是 trace 真值；只有 `3→64` 有
+  反馈锚定，其余是几何中点假设，用 `--abr-map '4=256'` 覆盖。A=3 与 A=64 的
+  单算子比值差 1.6 倍（RESULTS §2.12.4），所以这一项会影响加权结果。
 
 ## 5. 典型命令
 
@@ -116,44 +152,76 @@ HPC_AFFINITY=190-227 HPC_THREADS=1,2,4,8,16,32,36,38 \
   HPC_REPS=3 \
   python benchmarks/bench_smallk_driver.py
 
-# 3. 真实 workload 两进程对拍（M5/shortq/A1/M1/M2，含短调用与高频单元素）
+# 3. 生产形态（K 512-55296、A=1/3/64、线程 1/6/12/19、x[idx] 走 dispatch）
+HPC_AFFINITY=190-227 HPC_THREADS=1,6,12,19 HPC_REPS=3 \
+  python benchmarks/bench_production_driver.py --out prod_times.json --fit
+# 值域扫描：固定 K 看桶化建表的固定成本（dom>2048 回退单遍，两侧同一形态）
+HPC_AFFINITY=190-227 HPC_THREADS=1,19 HPC_REPS=3 HPC_DOM_SWEEP=8192 \
+  python benchmarks/bench_production_driver.py
+# 按 trace 调用次数加权（无 trace 时用示例权重，只演示算法）
+python benchmarks/bench_production_shapes.py --weighted \
+  benchmarks/prod_weights.example.json --times prod_times.json
+
+# 3b. 上下文开销：hot / 线程池冷 / 源冷 / autograd + 固定链 + 混合序列平均
+HPC_AFFINITY=190-227 HPC_THREADS=1,12,19 \
+  python benchmarks/bench_context_overhead.py --ab --json ctx.json
+
+# 3c. 入口口径拆解（x[idx] / torch.ops / Python 包装 / empty，K=0/512/2048）
+HPC_THREADS=1,12 HPC_KS=0,512,2048 \
+  python benchmarks/bench_entry_overhead.py --ab --json entry.json
+
+# 3d. trace 热点 → 用例 → 测量 → 加权的完整链路（CSV 是示例，不是真 trace）
+python benchmarks/bench_production_shapes.py --gen-cases \
+    benchmarks/trace_hotspots.example.csv > cases.json
+HPC_CASES=cases.json HPC_THREADS=6,12,19 HPC_REPS=3 \
+  python benchmarks/bench_production_driver.py --out times.json
+python benchmarks/bench_production_shapes.py --gen-cases \
+    benchmarks/trace_hotspots.example.csv --per-model \
+    --total 'SGI=20800,PPT=4896' > models.json
+# 窄版给终端看；--md 出文档表；--detail 加"按耗时"排名
+python benchmarks/bench_production_shapes.py --weighted models.json --times times.json --detail
+python benchmarks/bench_production_shapes.py --weighted models.json --times times.json --md \
+    > weighted.md
+
+# 4. 真实 workload 两进程对拍（M5/shortq/A1/M1/M2，含短调用与高频单元素）
 HPC_AFFINITY=190-227 HPC_THREADS=1,8,16,38 \
   HPC_REPS=3 \
   python benchmarks/bench_realpath_driver.py
 
-# 4. 性能回归扫描
+# 5. 性能回归扫描
 HPC_AFFINITY=190-227 HPC_THREADS=1,8,32 \
   python benchmarks/bench_regression.py
 
-# 5. AI4S workload 专项
+# 6. AI4S workload 专项
 HPC_INDEX_NO_OVERRIDE=1 HPC_AFFINITY=190-227 \
   HPC_THREADS=1,2,4,8,16,32,36 \
   python benchmarks/bench_ai4s.py
 
-# 6. 短行 A-sweep
+# 7. 短行 A-sweep
 HPC_INDEX_NO_OVERRIDE=1 HPC_AFFINITY=190-227 \
   HPC_THREADS=1,2,4,8,16,32,36 \
   python benchmarks/bench_t1.py
 
-# 7. 大块 rowcopy 专项
+# 8. 大块 rowcopy 专项
 HPC_INDEX_NO_OVERRIDE=1 HPC_AFFINITY=190-227 \
   HPC_THREADS=1,2,4,8,16,32,36,38 \
   python benchmarks/bench_t2.py
 
-# 8. 退化定位探针
+# 9. 退化定位探针
 HPC_AFFINITY=190-227 python benchmarks/degrade_probe.py
 
-# 9. 单 case perf 驱动
+# 10. 单 case perf 驱动
 MODE=hpc HPC_AFFINITY=190-227 \
   python benchmarks/perf_one.py s1 1 5
 
 MODE=aten HPC_INDEX_NO_OVERRIDE=1 HPC_AFFINITY=190-227 \
   python benchmarks/perf_one.py s1 1 5
 
-# 10. 内存系统探针
+# 11. 内存系统探针
 gcc -O3 -march=native -fopenmp benchmarks/memprobe.c -o /tmp/memprobe -lm
 numactl --membind=5 --physcpubind=190 /tmp/memprobe latency 8192 3000000
-numactl --membind=5 --physcpubind=190-227 /tmp/memprobe bandwidth 256 8 rd
+# REPS 必填：单遍计时包含冷 OpenMP 建队（8t ~1.8ms），会把带宽读数压掉 ~40%
+numactl --membind=5 --physcpubind=190-227 /tmp/memprobe bandwidth 2048 16 rd 3
 numactl --membind=5 --physcpubind=190-227 /tmp/memprobe gather 256 4000000 rand
 ```
 

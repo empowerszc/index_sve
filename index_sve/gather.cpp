@@ -4,7 +4,9 @@
 #include <algorithm>
 #include <arm_sve.h>
 #include <c10/util/irange.h>
+#include <cstdlib>
 #include <limits>
+#include <memory>
 #include <mutex>
 #include <cstring>
 #include <vector>
@@ -16,6 +18,32 @@ namespace {
 constexpr int64_t PREFETCH_DIST = 16;  // 微基准扫描 {0,16,32,64} 后定的默认
 std::atomic<uint64_t> g_strided_rows{0};
 std::atomic<uint64_t> g_rowcopy_raw{0};
+
+// ---- 行拷贝的软件预取（H1，RESULTS §2.18）---------------------------------
+// 行拷贝默认形态是「算第 i 行地址 → 取它的 line → 拷」串成一条依赖链，实测每核
+// 只有 ~1.7 条 line 在飞（docs/headroom.md §4）。提前 D 行把地址算出来发 prfm，
+// 就能把地址计算从取数链上摘下来：探针 A=16 52.6→11.4 ns/行、A=64 105.5→38.4。
+inline void prefetch_lines(const void* p, int64_t lines) {
+  const char* c = static_cast<const char*>(p);
+  for (int64_t i = 0; i < lines; ++i) {
+    asm volatile("prfm pldl1keep, [%0]" ::"r"(c + i * 64) : "memory");
+  }
+}
+
+// 预取距离与环境有关：窗口 D×行字节 太大时预取自己把 L1 挤掉（探针里 A=64 在
+// 8 线程下 D=16 反而退回 115 ns/行，D=8 是 54.8）。默认值取自 RESULTS §2.18.3
+// 的二维扫描；`HPC_PF_DIST=0` 关掉、其它值直接当 D 用（A/B 与回归测试靠它）。
+int64_t rowcopy_pf_dist(int64_t row_bytes) {
+  if (const char* e = getenv("HPC_PF_DIST")) return atoll(e);
+  // >512B/行（A>=256）：行内 16 条 line 自己就能把窗口填满，预取只占队位——
+  // 实测 A=256 的每一档 D 都比 D=0 慢（0.92-0.98x）。
+  if (row_bytes > 512) return 0;
+  // 128-512B/行（A=32..128）：D=16 在高线程会把 miss 队列挤爆（A=32 8t 1.21x vs
+  // D=8 的 1.52x），D=8 在 4 个线程档都 >=1.0x。
+  if (row_bytes > 64) return 8;
+  // <=64B/行（A<=16）：一行恰好一条 line，窗口越大越好，16 与 24/32 打平。
+  return 16;
+}
 
 bool sve_512_ok() {
   // 仅当运行时 VL 恰为 512-bit 才启用 SVE 路径（编译按 -msve-vector-bits=512）
@@ -245,8 +273,62 @@ void pure_gather_sve_flat(const IndexSpec& spec, const IdxT* idx, const T* src, 
   });
 }
 
-// 连续 A 元素块拷贝：8B svld1_f64/svst1_f64，4B svld1_f32/svst1_f32；4×VL 多寄存器
-// 展开保持内存级并行，余下 VL 步进 + whilelt 尾数；NT 时 store 换 svstnt1_*
+// 连续 A 元素块拷贝的向量主体：8B svld1_f64/svst1_f64，4B svld1_f32/svst1_f32；4×VL
+// 多寄存器展开保持内存级并行，余下 VL 步进 + whilelt 尾数；NT 时 store 换 svstnt1_*。
+// 只搬运位模式、不做算术（无 FP 运算），故同宽度的整数类型复用同一份主体：
+// 入口按宽度选臂，位保真等价于逐字节拷贝。
+template <bool NT>
+void copy_contig_8b_sve(const void* srcv, void* dstv, int64_t n) {
+  const double* src = static_cast<const double*>(srcv);
+  double* dst = static_cast<double*>(dstv);
+  const int64_t VL = svcntd();
+  int64_t i = 0;
+  for (; i + 4 * VL <= n; i += 4 * VL) {
+    svfloat64_t v0 = svld1_f64(svptrue_b64(), src + i);
+    svfloat64_t v1 = svld1_f64(svptrue_b64(), src + i + VL);
+    svfloat64_t v2 = svld1_f64(svptrue_b64(), src + i + 2 * VL);
+    svfloat64_t v3 = svld1_f64(svptrue_b64(), src + i + 3 * VL);
+    store8_f64<NT>(svptrue_b64(), dst + i, v0);
+    store8_f64<NT>(svptrue_b64(), dst + i + VL, v1);
+    store8_f64<NT>(svptrue_b64(), dst + i + 2 * VL, v2);
+    store8_f64<NT>(svptrue_b64(), dst + i + 3 * VL, v3);
+  }
+  for (; i + VL <= n; i += VL) {
+    svfloat64_t v = svld1_f64(svptrue_b64(), src + i);
+    store8_f64<NT>(svptrue_b64(), dst + i, v);
+  }
+  if (i < n) {
+    svbool_t pg = svwhilelt_b64(i, n);
+    store8_f64<NT>(pg, dst + i, svld1_f64(pg, src + i));
+  }
+}
+
+template <bool NT>
+void copy_contig_4b_sve(const void* srcv, void* dstv, int64_t n) {
+  const float* src = static_cast<const float*>(srcv);
+  float* dst = static_cast<float*>(dstv);
+  const int64_t VL = svcntw();
+  int64_t i = 0;
+  for (; i + 4 * VL <= n; i += 4 * VL) {
+    svfloat32_t v0 = svld1_f32(svptrue_b32(), src + i);
+    svfloat32_t v1 = svld1_f32(svptrue_b32(), src + i + VL);
+    svfloat32_t v2 = svld1_f32(svptrue_b32(), src + i + 2 * VL);
+    svfloat32_t v3 = svld1_f32(svptrue_b32(), src + i + 3 * VL);
+    store4_f32<NT>(svptrue_b32(), dst + i, v0);
+    store4_f32<NT>(svptrue_b32(), dst + i + VL, v1);
+    store4_f32<NT>(svptrue_b32(), dst + i + 2 * VL, v2);
+    store4_f32<NT>(svptrue_b32(), dst + i + 3 * VL, v3);
+  }
+  for (; i + VL <= n; i += VL) {
+    svfloat32_t v = svld1_f32(svptrue_b32(), src + i);
+    store4_f32<NT>(svptrue_b32(), dst + i, v);
+  }
+  if (i < n) {
+    svbool_t pg = svwhilelt_b32(i, n);
+    store4_f32<NT>(pg, dst + i, svld1_f32(pg, src + i));
+  }
+}
+
 template <typename T, bool NT>
 void copy_contig_sve(const T* src, T* dst, int64_t n) {
   if (n <= 0) return;
@@ -256,48 +338,13 @@ void copy_contig_sve(const T* src, T* dst, int64_t n) {
     std::memcpy(dst, src, n * sizeof(T));
     return;
   }
-  if constexpr (std::is_same_v<T, double>) {
-    const int64_t VL = svcntd();
-    int64_t i = 0;
-    for (; i + 4 * VL <= n; i += 4 * VL) {
-      svfloat64_t v0 = svld1_f64(svptrue_b64(), src + i);
-      svfloat64_t v1 = svld1_f64(svptrue_b64(), src + i + VL);
-      svfloat64_t v2 = svld1_f64(svptrue_b64(), src + i + 2 * VL);
-      svfloat64_t v3 = svld1_f64(svptrue_b64(), src + i + 3 * VL);
-      store8_f64<NT>(svptrue_b64(), dst + i, v0);
-      store8_f64<NT>(svptrue_b64(), dst + i + VL, v1);
-      store8_f64<NT>(svptrue_b64(), dst + i + 2 * VL, v2);
-      store8_f64<NT>(svptrue_b64(), dst + i + 3 * VL, v3);
-    }
-    for (; i + VL <= n; i += VL) {
-      svfloat64_t v = svld1_f64(svptrue_b64(), src + i);
-      store8_f64<NT>(svptrue_b64(), dst + i, v);
-    }
-    if (i < n) {
-      svbool_t pg = svwhilelt_b64(i, n);
-      store8_f64<NT>(pg, dst + i, svld1_f64(pg, src + i));
-    }
-  } else if constexpr (std::is_same_v<T, float>) {
-    const int64_t VL = svcntw();
-    int64_t i = 0;
-    for (; i + 4 * VL <= n; i += 4 * VL) {
-      svfloat32_t v0 = svld1_f32(svptrue_b32(), src + i);
-      svfloat32_t v1 = svld1_f32(svptrue_b32(), src + i + VL);
-      svfloat32_t v2 = svld1_f32(svptrue_b32(), src + i + 2 * VL);
-      svfloat32_t v3 = svld1_f32(svptrue_b32(), src + i + 3 * VL);
-      store4_f32<NT>(svptrue_b32(), dst + i, v0);
-      store4_f32<NT>(svptrue_b32(), dst + i + VL, v1);
-      store4_f32<NT>(svptrue_b32(), dst + i + 2 * VL, v2);
-      store4_f32<NT>(svptrue_b32(), dst + i + 3 * VL, v3);
-    }
-    for (; i + VL <= n; i += VL) {
-      svfloat32_t v = svld1_f32(svptrue_b32(), src + i);
-      store4_f32<NT>(svptrue_b32(), dst + i, v);
-    }
-    if (i < n) {
-      svbool_t pg = svwhilelt_b32(i, n);
-      store4_f32<NT>(pg, dst + i, svld1_f32(pg, src + i));
-    }
+  if constexpr (sizeof(T) == 8) {
+    copy_contig_8b_sve<NT>(src, dst, n);
+  } else if constexpr (sizeof(T) == 4) {
+    copy_contig_4b_sve<NT>(src, dst, n);
+  } else {
+    // 2B/1B 与 complex128：无向量臂，整块 memcpy 兜底（仍必须真的拷）。
+    std::memcpy(dst, src, n * sizeof(T));
   }
 }
 
@@ -350,9 +397,14 @@ void strided_rows_raw(const IndexSpec& spec, const IdxT* raw, T* dst, const T* s
 template <typename T, typename IdxT, bool NT>
 void rowcopy_sve(const T* src, const IdxT* idx, T* dst,
                  const int64_t* row_off, int64_t B, int64_t K, int64_t A) {
+  const int64_t D = rowcopy_pf_dist(A * static_cast<int64_t>(sizeof(T)));
   at::parallel_for(0, B * K, adaptive_grain(B * K), [&](int64_t lo, int64_t hi) {
     for (int64_t p = lo; p < hi; ++p) {
       const int64_t r = p / K, k = p % K;
+      // idx 已由 linearize 校验/归一过，这里只需把第 k+D 行的地址提前算出来
+      if (D > 0 && k + D < K) {
+        prefetch_lines(src + row_off[r] + idx[k + D], 1);
+      }
       const T* s = src + row_off[r] + idx[k];
       T* d = dst + p * A;
       copy_contig_sve<T, NT>(s, d, A);
@@ -430,7 +482,56 @@ template <typename T, typename IdxT>
 bool bucket_gather_pure_raw(const IndexSpec& spec, const IdxT* idx, T* dst, const T* src) {
   const int64_t n = spec.K;
   const int64_t stride0 = spec.indexed_strides[0];
+  const int64_t size = spec.indexed_sizes[0];
   constexpr int64_t MAX_DOMAIN = 2048;
+  // 源本身不超过表上限时，表可以直接按 [0, size) 建：整趟值域扫描（含它的 fork-join）
+  // 都不需要，越界检查与负索引归一折进查表循环（RESULTS §2.21）。源跨度还在
+  // L1/L2 里（≤64KB）时更进一步：表是串行建的（2048 次读+写，单线程），跨度
+  // 常驻时直接 dst[k]=src[v*stride0] 更快（RESULTS §2.21.3 的跨度扫描）；
+  // stride0==1 时连 v*stride0 也免——发射受限的长循环上这一个乘法是净伤
+  // （§2.21.3 内核 A/B：Sonata 回退根因）。但免乘后直查每元素仍比查表
+  // 多付一点，K/size 大（复用多、循环长）时被表反超（Sonata 125 实测；SGI
+  // 6.75 / PPT 27 直查仍赢），故直查门再加 K ≤ 32×size。
+  if (size <= MAX_DOMAIN) {
+    if (size * stride0 * static_cast<int64_t>(sizeof(T)) <= (64 << 10)
+        && n <= 32 * size) {
+      if (stride0 == 1) {
+        at::parallel_for(0, n, adaptive_grain(n), [&](int64_t lo, int64_t hi) {
+          for (int64_t k = lo; k < hi; ++k) {
+            int64_t v = static_cast<int64_t>(idx[k]);
+            TORCH_CHECK_INDEX(v >= -size && v < size,
+                "index ", v, " is out of bounds for dimension 0 with size ", size);
+            if (v < 0) v += size;
+            dst[k] = src[v];
+          }
+        });
+        return true;
+      }
+      at::parallel_for(0, n, adaptive_grain(n), [&](int64_t lo, int64_t hi) {
+        for (int64_t k = lo; k < hi; ++k) {
+          int64_t v = static_cast<int64_t>(idx[k]);
+          TORCH_CHECK_INDEX(v >= -size && v < size,
+              "index ", v, " is out of bounds for dimension 0 with size ", size);
+          if (v < 0) v += size;
+          dst[k] = src[v * stride0];
+        }
+      });
+      return true;
+    }
+    std::unique_ptr<T[]> table(new T[size]);
+    for (int64_t v = 0; v < size; ++v) table[v] = src[v * stride0];
+    const T* tab = table.get();
+    at::parallel_for(0, n, adaptive_grain(n), [&](int64_t lo, int64_t hi) {
+      for (int64_t k = lo; k < hi; ++k) {
+        int64_t v = static_cast<int64_t>(idx[k]);
+        TORCH_CHECK_INDEX(v >= -size && v < size,
+            "index ", v, " is out of bounds for dimension 0 with size ", size);
+        if (v < 0) v += size;
+        dst[k] = tab[v];
+      }
+    });
+    return true;
+  }
   const int64_t grain = adaptive_grain(n);
   const int64_t nchunk = (n + grain - 1) / grain;
   std::vector<int64_t> vmn(nchunk), vmx(nchunk);
@@ -845,6 +946,7 @@ void rowcopy_raw_single(const IndexSpec& spec, const IdxT* raw, T* dst, const T*
   const int64_t size = spec.indexed_sizes[0];
   const int64_t stride = spec.indexed_strides[0];
   const int64_t* row_off = spec.row_off.data();
+  const int64_t D = rowcopy_pf_dist(A * static_cast<int64_t>(sizeof(T)));
   auto row = [&](int64_t p, int64_t r, int64_t k) {
     int64_t v = static_cast<int64_t>(raw[k]);
     TORCH_CHECK_INDEX(v >= -size && v < size,
@@ -852,14 +954,30 @@ void rowcopy_raw_single(const IndexSpec& spec, const IdxT* raw, T* dst, const T*
     if (v < 0) v += size;
     copy_contig_sve<T, NT>(src + row_off[r] + v * stride, dst + p * A, A);
   };
+  // 预取第 k+D 行：只算地址、不做检查（越界就不预取），越界报错仍由 row() 按原
+  // 顺序负责，所以报的还是「第 1 个坏下标」。k+D 不跨行（同一个 k 维）。
+  auto pf = [&](int64_t r, int64_t k) {
+    if (D <= 0 || k + D >= K) return;
+    int64_t v = static_cast<int64_t>(raw[k + D]);
+    if (v < -size || v >= size) return;
+    if (v < 0) v += size;
+    prefetch_lines(src + row_off[r] + v * stride, 1);
+  };
   if (B == 1) {
     at::parallel_for(0, K, adaptive_grain(K), [&](int64_t lo, int64_t hi) {
-      for (int64_t k = lo; k < hi; ++k) row(k, 0, k);
+      for (int64_t k = lo; k < hi; ++k) {
+        pf(0, k);
+        row(k, 0, k);
+      }
     });
     return;
   }
   at::parallel_for(0, B * K, adaptive_grain(B * K), [&](int64_t lo, int64_t hi) {
-    for (int64_t p = lo; p < hi; ++p) row(p, p / K, p % K);
+    for (int64_t p = lo; p < hi; ++p) {
+      const int64_t r = p / K, k = p % K;
+      pf(r, k);
+      row(p, r, k);
+    }
   });
 }
 

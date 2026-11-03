@@ -1,0 +1,35 @@
+# 示例 trace 热点表 —— 不是真实 trace，是按生产反馈 §11.2.5 的聚合表手工重建的
+# （四个模型 × 各 path 的 top 形态 + 调用次数），只用来说明 --gen-cases 的输入格式。
+#
+# 列：model,path,K,A,dom,calls
+#   path  : path3 = A==1 的桶化/单遍（bucket）；path11 = small_single；path2 = 行拷贝
+#   A     : trace 里的分桶码 A-br，不是真实 A。path3 忽略它（恒为 1）；
+#           其余路径按 --abr-map（默认 1->1, 2->4, 3->64, 4->256, 5->2048）映射。
+#   dom   : 下标值域；空/0 时按 2048 处理（会走桶化）
+#   calls : 该形态在一个采样窗口内的调用次数，即 --weighted 的权重
+model,path,K,A,dom,calls,threads
+SGI_v1m1,path3,512,1,1024,2322,12
+SGI_v1m1,path3,13824,1,2048,1620,12
+SGI_v1m1,path3,528,1,1024,1064,12
+SGI_v1m1,path11,512,3,1024,1748,12
+SGI_v1m1,path11,528,4,1024,896,12
+SGI_v1m1,path11,2,4,1024,768,12
+PPT_v1m1,path3,2048,1,2048,412,19
+PPT_v1m1,path3,55296,1,2048,264,19
+PPT_v1m1,path3,2112,1,2048,256,19
+PPT_v1m1,path11,2112,4,2048,224,19
+PPT_v1m1,path11,2048,3,2048,222,19
+PPT_v1m1,path11,2,4,2048,192,19
+PPT_v1m2,path3,2048,1,2048,412,19
+PPT_v1m2,path3,55296,1,2048,264,19
+PPT_v1m2,path3,2112,1,2048,256,19
+PPT_v1m2,path11,2112,4,2048,224,19
+PPT_v1m2,path11,2048,3,2048,222,19
+PPT_v1m2,path11,2,4,2048,192,19
+Sonata_v1m3,path3,2048,1,2048,384,6
+Sonata_v1m3,path3,55296,1,2048,192,6
+Sonata_v1m3,path3,1024,1,1024,176,6
+Sonata_v1m3,path11,2,4,1024,288,6
+Sonata_v1m3,path11,2048,3,2048,160,6
+Sonata_v1m3,path2,256000,1,2048,96,6
+Sonata_v1m3,path2,27648,1,2048,96,6

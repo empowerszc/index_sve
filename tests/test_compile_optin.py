@@ -12,6 +12,12 @@ def _run(script, env_extra, timeout=900):
     env.pop("HPC_INDEX_NO_OVERRIDE", None)
     env.update(env_extra)
     env["PYTHONPATH"] = REPO
+    # 子进程可能不先 import torch（本文件有裸 import index_sve 的用例）：
+    # _hpc_index.so 没有 torch/lib 的 rpath，libc10.so 只能靠 loader 路径解析。
+    # 只补 torch/lib 这一半；libomp 仍依赖调用方环境路径（父进程 import 同样如此）。
+    torch_lib = os.path.join(os.path.dirname(torch.__file__), "lib")
+    env["LD_LIBRARY_PATH"] = os.pathsep.join(
+        p for p in (torch_lib, env.get("LD_LIBRARY_PATH")) if p)
     return subprocess.run(
         [sys.executable, "-c", textwrap.dedent(script)],
         capture_output=True, text=True, env=env, timeout=timeout)

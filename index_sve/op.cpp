@@ -44,6 +44,9 @@ void sync_omp_threads() {
 
 std::atomic<uint64_t> g_single_1d{0};
 std::atomic<uint64_t> g_single_1d_sve{0};
+// 每次进入受控入口 +1：测试用它确认「内核确实被调到了」，与"某条子路由没被选"
+// 的负向断言配对，否则覆盖静默失效时负向断言会假通过。
+std::atomic<uint64_t> g_dispatch{0};
 
 // 核心路由：out 已由调用方确定为正确 shape/dtype/device（functional 分配或 out 变体校验）。
 void index_into(const at::Tensor& self, const IndexSpec& spec, at::Tensor& out) {
@@ -78,12 +81,16 @@ void index_into(const at::Tensor& self, const IndexSpec& spec, at::Tensor& out) 
   // 两遍，32/36t 0.73/0.76x）。大 K 不放行：linearize 的预校验偏移+无检查拷贝更快
   // （A/B 实测 raw 慢 12-32%：A=64 E=1M 8t +30%、A=16 K=200k 8t +32%、M2 (20000,64)
   // 8t +12%）——raw 逐行检查/负归一/v*stride 链在冷源（L3/DRAM）行拷贝下拖慢发射。
+  // dtype 白名单比下方 strided-rows / 多索引两处宽：raw 行拷贝只做连续块整行搬运
+  // （块拷贝按 4B/8B 宽度选向量臂，位保真），不依赖索引值域；值域探测删掉后省一遍
+  // 数据扫描，而其它两处仍要在 raw 下解码 col_off / 多下标，故仍限 f32/f64。
   if (spec.indices.size() == 1 && spec.after_contiguous &&
       spec.indices[0].is_contiguous() &&
       (spec.A >= 4096 || spec.A < 16 ||
        (spec.A <= 64 && spec.B * spec.K <= 65536)) &&
       spec.A > 1 &&
-      (out.scalar_type() == at::kFloat || out.scalar_type() == at::kDouble)) {
+      (out.scalar_type() == at::kFloat || out.scalar_type() == at::kDouble ||
+       out.scalar_type() == at::kInt || out.scalar_type() == at::kLong)) {
     gather_rowcopy_raw(spec, out, g_nt);
     return;
   }
@@ -546,6 +553,7 @@ at::Tensor index_impl(const at::Tensor& self,
   TORCH_CHECK_INDEX(!vec.empty(), "at least one index must be provided");
   TORCH_CHECK_INDEX(vec.size() <= (size_t)self.dim(),
       "too many indices for tensor of dimension ", self.dim(), " (got ", vec.size(), ")");
+  g_dispatch.fetch_add(1, std::memory_order_relaxed);
   sync_omp_threads();
   at::Tensor out;
   if (mask_fast_path(self, vec, out)) return out;
@@ -589,6 +597,7 @@ at::Tensor index_out_impl(const at::Tensor& self,
   at::assert_no_internal_overlap(out);
   at::assert_no_overlap(out, self);
   for (const auto& idx : spec.indices) at::assert_no_overlap(out, idx);
+  g_dispatch.fetch_add(1, std::memory_order_relaxed);
   sync_omp_threads();
   if (out.is_contiguous()) {
     index_into(self, spec, out);
@@ -651,6 +660,9 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     return std::make_tuple(spec.transposed_self, spec.indexed_dims, spec.indexed_sizes,
                            spec.indexed_strides, spec.B, spec.K, spec.A, spec.out_shape,
                            spec.row_off, spec.col_off, spec.after_contiguous, spec.indices);
+  });
+  m.def("dispatch_count", []() {
+    return g_dispatch.load(std::memory_order_relaxed);
   });
   m.def("mask_fused_count", []() {
     return g_mask_fused.load(std::memory_order_relaxed);

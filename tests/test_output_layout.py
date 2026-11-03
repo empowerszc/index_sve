@@ -16,6 +16,11 @@ import os, sys, torch
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import index_sve  # noqa: F401  激活 aten::index.Tensor 覆盖（被测对象）
 
+if not index_sve.OVERRIDE_ACTIVE:
+    raise SystemExit(
+        "test_output_layout 需要覆盖激活：25 项全走 x[...]，覆盖关闭时仍全绿但"
+        "不验证任何东西（HPC_INDEX_NO_OVERRIDE=1？）")
+
 
 def _cl4d():
     return torch.randn(4, 32, 14, 14).to(memory_format=torch.channels_last)

@@ -1,15 +1,5 @@
 # 输出内存布局：与 aten 逐维一致（2026-10-29 E2E 正确性修复）
 
-> **这篇讲什么**：channels_last/置换 self 上 `x[idx]` 的输出布局为什么曾与 aten
-> 不一致、怎么修、怎么移植，以及 R10 如何消除修复带来的 tmp+copy_ 开销。
-> **读完你能回答**：现象是什么？根因在 TensorIterator 的哪一步？怎么一分钟自检？
-> 旧版本怎么移植？R10 直写的资格条件是什么？
-> **本篇代号**：R10（2026-10-29 布局直写轮）、cl4d/cl3d（channels_last 形态）、
-> T0-T15（优化轮）。术语见 [glossary.md](glossary.md)。
->
-> **阅读顺序**：§1 现象 → §2 根因 → §3 aten 机制 → §4 一分钟自检 → §5 修复/移植
-> → §6 验证 → §7-§8 性能（R10 直写在 §8）。
-
 > **读者**：持有 index_sve 早期版本、需要排查/修复同一 bug 的 agent 或人。
 > **一句话**：非连续/置换布局（channels_last 等）self 上的 `x[idx]`，值全对，
 > 但输出被恒分配为 NCHW 连续；aten 的输出由 TensorIterator **置换恢复**分配，
@@ -71,12 +61,12 @@ restrided self, 各 index]）→ `TensorIterator::build`：
 1. **compute_strides**（TensorIterator.cpp:1277）：每个 operand 逐维取
    `stride × element_size`（字节）；operand 该维尺寸 1 而 out 该维 >1 视作
    广播 → 0；维数不足时前补 0。
-2. **reorder_dimensions**（:232，NOTE [Computing output strides]）：对维做
+2. **reorder_dimensions**（TensorIterator.cpp:232，NOTE [Computing output strides]）：对维做
    `should_swap` 插入排序（perm 内维在前，初始为逆序恒等）：
    - 某一 operand 上两维 stride 任一为 0 → 跳到下一 operand 再比；
    - 严格小于/大于 → 定序；相等 → 平局按 out 该维 shape，大者靠外，仍平则
      跳下一 operand；全部无定论 → 保持。
-3. **allocate_or_resize_outputs**（:574）：perm 恰为逆序恒等 → 连续快路径；
+3. **allocate_or_resize_outputs**（TensorIterator.cpp:574）：perm 恰为逆序恒等 → 连续快路径；
    否则 `compatible_stride` 按 perm 序做 dense 分配，`invert_perm` 映回原维
    序，`set_output_raw_strided` → `empty_strided`。
 
@@ -120,7 +110,7 @@ torch + 包 import）与 `tests/verify_e2e.py`（两进程差分，值+shape+str
 
 守卫自查：若你的版本 `small_single_index`/`small_multi_index`/
 `mask_fast_path` 没有 `self.is_contiguous()`（或等价）守卫，它们也接非连续
-self，需要同样处理；本仓库三者均有守卫（op.cpp :208/:326/:178），且连续
+self，需要同样处理；本仓库三者均有守卫（op.cpp:200 / op.cpp:230 / op.cpp:348），且连续
 self 时 aten 恒连续输出，无需改动。
 
 `index.Tensor_out`（`out=` 变体）不需要改：aten 写调用方提供的 out（不重
@@ -192,7 +182,7 @@ SVE512 + self 尾块 strides 全正且构成 dense 置换（sorted==前缀积链
   比值 0.30-0.42x → **1.45-2.54x**（家族含 cl3d 置换 1.35-2.63x）。
 - cl 行索引与连续行索引基本拉平（1.30 vs 1.21ms、1.98 vs 1.84ms，
   差 ~5-8%）——"dense 置换行块 memcpy 与连续行等价"得到实证。
-- 第 2 轮交替曾见本算子侧整体劣化 3 倍：**未经 R10 改动的 contig4d 对照组
+- 第 2 轮交替曾见 hpc 侧整体劣化 3 倍：**未经 R10 改动的 contig4d 对照组
   同倍劣化**（1.21→4.45ms），判共享箱噪声，非代码问题；跨轮只比形态。
 
 **验证**：6 个新路由用例（tests/test_rowcopy_routes.py：直写 2 例——cl4d 行索引
