@@ -1,19 +1,37 @@
 # index_sve 源码走读
 
-> **这份文档回答"代码在哪里、按什么顺序读、每段在干什么"。** 拿着源码对照读，
-> 一个下午可以读完核心 ~2000 行 C++。设计的"为什么"看
-> [architecture.md](architecture.md)，每个内核为什么快/慢看 [kernels.md](kernels.md)，
-> 遇到名词/代号查 [glossary.md](glossary.md)。
+> **这篇讲什么**：代码在哪里、按什么顺序读、每段在干什么。拿着源码对照读，
+> 一个下午可以读完核心 ~2000 行 C++。
+> **读完你能回答**：一次 `x[idx]` 在 C++ 里经过哪些函数？`IndexSpec` 每个字段
+> 从哪来？`index_into` 的路由按什么顺序试探？改代码时必须守住哪十个不变量？
+> **怎么读**：第一次读按 §1 的顺序走；之后当字典用——§4.2 路由表、附录 A 行号
+> 速查、附录 B 调试出口。
+> **本篇代号**：B/K/A、T0-T15、R10、M1/M3、A7。完整表见
+> [`glossary.md`](glossary.md)。
+
+> **配套文档**：设计的"为什么"看 [architecture.md](architecture.md)，每个内核为什么
+> 快/慢看 [kernels.md](kernels.md)，名词/代号查 [glossary.md](glossary.md)。
 >
-> **行号与源码版本**：以下行号对应 `index_sve/index_sve/` 的当前提交
-> （op.cpp 689 行、gather.cpp 1095 行、normalize.cpp 211 行、linearize.cpp
-> 162 行）。源码改动后跑 `python tools/check_doc_anchors.py`——它逐条校验
-> `file:NNN` 引用是否仍指向含同名符号的行，漂移即报错。
-> 代码注释里大量出现任务/场景代号（T2 = 优化轮次、M1 = 场景形态、A7 = 手段编号、
-> S1 = 负载场景），不必逐一记住——glossary.md 有全表。
->
-> 用法：第一次读按 §1 的顺序走；之后当字典用——§4.2 路由表、附录 A 行号速查、
-> 附录 B 调试出口。
+> **行号与源码版本**：以下行号对应 `index_sve/index_sve/` 的当前提交（op.cpp 689
+> 行、gather.cpp 1095 行、normalize.cpp 211 行、linearize.cpp 162 行）。源码改动
+> 后跑 `python tools/check_doc_anchors.py`——它逐条校验 `file:NNN` 引用是否仍指向
+> 含同名符号的行，漂移即报错。
+
+## 目录
+
+- [0. 30 秒全局地图](#0-30-秒全局地图)
+- [1. 文件清单与推荐阅读顺序](#1-文件清单与推荐阅读顺序)
+- [2. 一次 x[idx] 的完整旅程](#2-一次-xidx-的完整旅程)
+- [3. 核心数据结构：IndexSpec 逐字段（normalize.h:5）](#3-核心数据结构indexspec-逐字段normalizeh5)
+- [4. op.cpp 逐段精读](#4-opcpp-逐段精读)
+- [5. normalize.cpp 逐段精读——aten 语义对齐](#5-normalizecpp-逐段精读aten-语义对齐)
+- [6. linearize.cpp 逐段精读——两遍模型的第一遍](#6-linearizecpp-逐段精读两遍模型的第一遍)
+- [7. gather.cpp 逐段精读——内核族谱（三层）](#7-gathercpp-逐段精读内核族谱三层)
+- [8. grain.h 与并行约定](#8-grainh-与并行约定)
+- [9. Python 胶水层](#9-python-胶水层)
+- [10. 读代码时反复对照的十个不变量](#10-读代码时反复对照的十个不变量)
+- [附录 A：函数 → 行号速查表](#附录-a函数--行号速查表)
+- [附录 B：pybind 调试出口（`index_sve._hpc_index.*`，op.cpp:642-693）](#附录-bpybind-调试出口index_sve_hpc_indexopcpp642-693)
 
 ## 0. 30 秒全局地图
 
@@ -61,7 +79,7 @@ x[idx] ─► dispatcher（aten::index.Tensor 的 CPU 键已被 op.cpp:630 覆�
 |---|---|---|---|
 | index_sve/normalize.h | 24 | **IndexSpec 定义**（核心数据结构）+ normalize_index 声明 | ★★★ 第一个读 |
 | index_sve/op.cpp | 689 | 入口校验、两级路由、免 normalize 快路径、注册三件套、调试出口 | ★★★ |
-| index_sve/normalize.cpp | 211 | ATen 语义归一：mask→nonzero、广播、转置、decode_offsets → IndexSpec | ★★★ |
+| index_sve/normalize.cpp | 211 | aten 语义归一：mask→nonzero、广播、转置、decode_offsets → IndexSpec | ★★★ |
 | index_sve/linearize.cpp | 162 | 两遍模型第一遍：把广播下标物化成扁平元素偏移（可 int32 直写） | ★★ |
 | index_sve/gather.cpp | 1095 | 全部计算内核：SVE 原语 → 中层 → 顶层入口（§7 族谱） | ★★★ 主战场 |
 | index_sve/gather.h / linearize.h | 16/4 | 内核与 linearize 的声明 | ★ |
@@ -163,7 +181,7 @@ Python __getitem__
 
 - `to_vec`(:21)：`c10::List` → `std::vector`，后续按下标访问。
 - `non_temporal_enabled`(:29)：读 `HPC_INDEX_NT` 环境变量，`static` 只读一次。
-- `sync_omp_threads`(:37)：**T11 的关键修复**。扩展链 BiSheng libomp、ATen 链
+- `sync_omp_threads`(:37)：**T11 的关键修复**。扩展链 BiSheng libomp、aten 链
   libgomp，`torch.set_num_threads` 只改 libgomp 的线程数 ICV；不同步的话本算子
   永远用 libomp 默认线程数，torch 的线程设置形同虚设。ICV 按调用线程生效，所以
   每次入口调一次（:553/:597）而不是只调一次。
@@ -276,7 +294,7 @@ TORCH_LIBRARY_IMPL(aten, CPU, m)    :630  把 aten::index.Tensor / index.Tensor_
 调试路由第一步）、`linearize_spec`（看物化出的偏移数组）、各路由命中计数器。
 计数器是 relaxed atomic：只做诊断，不参与控制流。
 
-## 5. normalize.cpp 逐段精读——ATen 语义对齐
+## 5. normalize.cpp 逐段精读——aten 语义对齐
 
 职责：把 Python 层剩下的任意索引形态**无损地**折叠成 IndexSpec。对齐目标是
 aten `TensorIndexing` 的 `make_info`（逐条对拍见 semantics.md）。
@@ -465,10 +483,10 @@ at::parallel_for(0, B * K, adaptive_grain(B * K), [&](int64_t lo, int64_t hi) {
 
 ### 8.3 双 OpenMP runtime（T11 的背景）
 
-本扩展用 BiSheng 工具链编译 → libomp；ATen 自身 → libgomp。两个 runtime 各有
+本扩展用 BiSheng 工具链编译 → libomp；aten 自身 → libgomp。两个 runtime 各有
 一份线程数 ICV，`torch.set_num_threads` 只改 libgomp。因此：
 
-- **所有并行走 `at::parallel_for`**（ATen 头在本 TU 按 `-fopenmp` 编译 → libomp）；
+- **所有并行走 `at::parallel_for`**（aten 头在本 TU 按 `-fopenmp` 编译 → libomp）；
 - **入口必须 `sync_omp_threads()`**（op.cpp:37，调用点 :553/:597）把 torch 的
   线程数灌进 libomp，否则 torch.set_num_threads 对本算子无效——历史上 2-36t
   旧数据全因此作废（degradation-analysis.md §3.1）。
