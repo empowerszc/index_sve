@@ -6,6 +6,7 @@
 #include <c10/util/irange.h>
 #include <cstdlib>
 #include <limits>
+#include <memory>
 #include <mutex>
 #include <cstring>
 #include <vector>
@@ -481,7 +482,25 @@ template <typename T, typename IdxT>
 bool bucket_gather_pure_raw(const IndexSpec& spec, const IdxT* idx, T* dst, const T* src) {
   const int64_t n = spec.K;
   const int64_t stride0 = spec.indexed_strides[0];
+  const int64_t size = spec.indexed_sizes[0];
   constexpr int64_t MAX_DOMAIN = 2048;
+  // 源本身不超过表上限时，表可以直接按 [0, size) 建：整趟值域扫描（含它的 fork-join）
+  // 都不需要，越界检查与负索引归一折进查表循环（RESULTS §2.21）。
+  if (size <= MAX_DOMAIN) {
+    std::unique_ptr<T[]> table(new T[size]);
+    for (int64_t v = 0; v < size; ++v) table[v] = src[v * stride0];
+    const T* tab = table.get();
+    at::parallel_for(0, n, adaptive_grain(n), [&](int64_t lo, int64_t hi) {
+      for (int64_t k = lo; k < hi; ++k) {
+        int64_t v = static_cast<int64_t>(idx[k]);
+        TORCH_CHECK_INDEX(v >= -size && v < size,
+            "index ", v, " is out of bounds for dimension 0 with size ", size);
+        if (v < 0) v += size;
+        dst[k] = tab[v];
+      }
+    });
+    return true;
+  }
   const int64_t grain = adaptive_grain(n);
   const int64_t nchunk = (n + grain - 1) / grain;
   std::vector<int64_t> vmn(nchunk), vmx(nchunk);
