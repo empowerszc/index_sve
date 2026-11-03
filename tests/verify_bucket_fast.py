@@ -1,7 +1,9 @@
 """两进程对拍：专门覆盖桶化"源 ≤2048 免 pass 1"与"跨度 ≤64KB 直查源"两条快路径
-（K>4096 才走得到）。
+（K>4096 才走得到）。gen 不 import 本包，参考恒为原生 aten；check 必须显式
+import 激活覆盖——否则 x[i] 仍走原生 aten，对拍空转（e361bf6c 引入的缺陷，
+2026-11-03 修复）。
 
-  HPC_INDEX_NO_OVERRIDE=1 python tests/verify_bucket_fast.py gen
+  python tests/verify_bucket_fast.py gen
   python tests/verify_bucket_fast.py check
 """
 import os
@@ -43,6 +45,17 @@ def cases():
     i[0] = -2048
     i[1] = 2047
     yield "sliced_s64_n20000", x, i
+    # 跨度 ≤64KB 且 stride0>1：直查快路径的乘法分支（stride0==1 特化拆出的另一侧）
+    x = torch.randn(2048 * 4, generator=g)[::4]
+    i = torch.randint(-2048, 2048, (20000,), generator=g)
+    i[0] = -2048
+    i[1] = 2047
+    yield "sliced_s4_n20000", x, i
+    x = torch.randn(1000 * 3, generator=g)[::3]
+    i = torch.randint(-1000, 1000, (20000,), generator=g)
+    i[0] = -1000
+    i[1] = 999
+    yield "sliced_s3_size1000_n20000", x, i
     # size > 2048：回退"扫值域定界"。注意值域必须收在 2048 宽的窗口内，否则桶化
     # 落选、走到 SVE/单遍，就测不到这条路了。正窗与负窗各一例（负窗的 mn=2048）。
     x = torch.randn(4096, generator=g)

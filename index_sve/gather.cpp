@@ -487,9 +487,26 @@ bool bucket_gather_pure_raw(const IndexSpec& spec, const IdxT* idx, T* dst, cons
   // 源本身不超过表上限时，表可以直接按 [0, size) 建：整趟值域扫描（含它的 fork-join）
   // 都不需要，越界检查与负索引归一折进查表循环（RESULTS §2.21）。源跨度还在
   // L1/L2 里（≤64KB）时更进一步：表是串行建的（2048 次读+写，单线程），跨度
-  // 常驻时直接 dst[k]=src[v*stride0] 更快（RESULTS §2.21.3 的跨度扫描）。
+  // 常驻时直接 dst[k]=src[v*stride0] 更快（RESULTS §2.21.3 的跨度扫描）；
+  // stride0==1 时连 v*stride0 也免——发射受限的长循环上这一个乘法是净伤
+  // （§2.21.3 内核 A/B：Sonata 回退根因）。但免乘后直查每元素仍比查表
+  // 多付一点，K/size 大（复用多、循环长）时被表反超（Sonata 125 实测；SGI
+  // 6.75 / PPT 27 直查仍赢），故直查门再加 K ≤ 32×size。
   if (size <= MAX_DOMAIN) {
-    if (size * stride0 * static_cast<int64_t>(sizeof(T)) <= (64 << 10)) {
+    if (size * stride0 * static_cast<int64_t>(sizeof(T)) <= (64 << 10)
+        && n <= 32 * size) {
+      if (stride0 == 1) {
+        at::parallel_for(0, n, adaptive_grain(n), [&](int64_t lo, int64_t hi) {
+          for (int64_t k = lo; k < hi; ++k) {
+            int64_t v = static_cast<int64_t>(idx[k]);
+            TORCH_CHECK_INDEX(v >= -size && v < size,
+                "index ", v, " is out of bounds for dimension 0 with size ", size);
+            if (v < 0) v += size;
+            dst[k] = src[v];
+          }
+        });
+        return true;
+      }
       at::parallel_for(0, n, adaptive_grain(n), [&](int64_t lo, int64_t hi) {
         for (int64_t k = lo; k < hi; ++k) {
           int64_t v = static_cast<int64_t>(idx[k]);

@@ -40,19 +40,19 @@
 ```
 x[idx] ─► dispatcher（aten::index.Tensor 的 CPU 键已被 op.cpp:630 覆盖）
   └► index_impl                     op.cpp:550    入口校验 + sync_omp_threads
-     ├► mask_fast_path              op.cpp:194   ─► gather_mask          gather.cpp:1042
+     ├► mask_fast_path              op.cpp:194   ─► gather_mask          gather.cpp:1141
      ├► small_single_index          op.cpp:342    免 normalize
      ├► small_multi_index           op.cpp:229    免 normalize
      ├► normalize_index             normalize.cpp:126 ─► IndexSpec
      └► index_into                  op.cpp:52     大路由（§4.2 十一条路由）
-        ├► gather_direct                          gather.cpp:750
-        ├► gather_rowcopy_raw                     gather.cpp:953
-        ├► gather_strided_rows_raw                gather.cpp:981
-        ├► gather_rowcopy_fused                   gather.cpp:979
-        ├► gather_bucket_pure_raw                 gather.cpp:851
-        ├► gather_single_1d_sve / single_1d       gather.cpp:891 / 799
+        ├► gather_direct                          gather.cpp:851
+        ├► gather_rowcopy_raw                     gather.cpp:984
+        ├► gather_strided_rows_raw                gather.cpp:1099
+        ├► gather_rowcopy_fused                   gather.cpp:1083
+        ├► gather_bucket_pure_raw                 gather.cpp:882
+        ├► gather_single_1d_sve / single_1d       gather.cpp:927 / 900
         ├► linearize                linearize.cpp:85（两遍模型第一遍）
-        └► gather_index                          gather.cpp:657（第二遍 + 分发树）
+        └► gather_index                          gather.cpp:758（第二遍 + 分发树）
 ```
 
 ## 1. 文件清单与推荐阅读顺序
@@ -82,7 +82,7 @@ x[idx] ─► dispatcher（aten::index.Tensor 的 CPU 键已被 op.cpp:630 覆�
    36 线程，走哪条路？（答案见 §2）*
 4. `normalize.cpp` 全文 → *mask 什么时候变成 nonzero？什么时候 permute？*
 5. `linearize.cpp` 全文 → *bfactor 混合进制是什么？什么时候能 int32 直写？*
-6. `gather.cpp` 按 §7 三层读：先 gather_index 分发树(:657)，再跳到感兴趣的内核
+6. `gather.cpp` 按 §7 三层读：先 gather_index 分发树(:758)，再跳到感兴趣的内核
    → *为什么 raw 路径必须内联检查？*
 
 ## 2. 一次 x[idx] 的完整旅程
@@ -120,7 +120,7 @@ Python __getitem__
              → linearize(spec, idx)     linearize.cpp:85
                  use_i32（op.cpp:160）：numel=3.2M < 2^31 且 f32 → 物化成 int32 偏移
                  all_full_contig → 直读 idx[k]，内联检查+负归一，一遍写完
-             → gather_index(spec, idx, y)  gather.cpp:657
+             → gather_index(spec, idx, y)  gather.cpp:758
                  A>1 ∧ after_contiguous ∧ SVE512 ∧ A≥4 ∧ f32
                  → rowcopy_sve<float,int32_t,false>（gather.cpp:351）
                      [0, B*K) 并行，p=r*K+k，整行 copy_contig_sve（gather.cpp:306）
@@ -154,7 +154,7 @@ Python __getitem__
 | `x[i, j]`，i(3,1)、j(1,4) | 1 | 12 | 7 | (3,4,7) | 广播成 (3,4)；索引 numel≠K，linearize 走 bfactor 解码分支 |
 
 最后是全库坐标约定：**p = r*K + k**——输出扁平编号 p，恢复 `r = p/K`、`k = p%K`
-（或增量维护，见 gather_direct:610），源行首 =
+（或增量维护，见 gather_direct:624），源行首 =
 `transposed_self + row_off[r] + Σ v_j·indexed_strides[j]`，行内第 c 列 = `col_off[c]`。
 
 ## 4. op.cpp 逐段精读
@@ -178,16 +178,16 @@ Python __getitem__
 | # | 行号 | 准入条件（全部同时成立） | 去向 | 一句话动机 |
 |---|---|---|---|---|
 | 0 | op.cpp:59 | `spec.rowcopy_direct`（仅由 `index_impl` 的 `rowcopy_direct_ok` 置位：源/出尾块同 dense 置换 ∧ out 前导块行主序） | 块拷贝臂：`gather_rowcopy_raw`，否则 linearize + `gather_index` | R10：cl/置换 out 直接整块写，省掉 tmp+copy_ 一趟输出带宽；**此臂绝不可落 col_off 类路径**（对置换 out 是错位写） |
-| 1 | op.cpp:73 | `K < 1024` | gather_direct（gather.cpp:750） | 小 K 时物化一遍偏移纯属固定开销 |
-| 2 | op.cpp:87 | 单索引 ∧ after_contiguous ∧ 下标连续 ∧ A>1 ∧ (A≥4096 ∨ A<16 ∨ (A≤64 ∧ B·K≤65536)) ∧ f32/f64/i32/i64（T16：只搬整行故可放宽，下面 #3/#4 仍限浮点） | gather_rowcopy_raw（gather.cpp:953） | M1 大块跳过 linearize，边查边整行拷 |
-| 3 | op.cpp:100 | 单索引 ∧ **非**after_contiguous ∧ A>1 ∧ 下标连续 ∧ f32/f64（入口内再判 max_run≥4） | gather_strided_rows_raw（gather.cpp:981） | 尾维有 ≥4 连续 run 时按 run 块拷 |
-| 4 | op.cpp:103 | 多索引 ∧ after_contiguous ∧ A≥4 ∧ **线程≥16** ∧ f32/f64 | gather_rowcopy_fused（gather.cpp:979） | 多索引大并行下跳过两遍模型 |
-| 5 | op.cpp:122 | 单索引 ∧ B==1 ∧ A==1 ∧ 下标连续，且值域≤2048（内核内判） | gather_bucket_pure_raw（gather.cpp:851） | 1D 小值域建查找表（M3 keys[order]、M4 形态） |
-| 6 | op.cpp:143 | #5 未中 ∧ i64 下标 ∧ SVE512 ∧ 线程>1 ∧ f32/i32 ∧ stride₀==1 ∧ size<2³² ∧ 源>512KB | gather_single_1d_sve（gather.cpp:891） | T15-C：大源 4B 单遍 SVE（uzp1 收窄 i64 下标） |
-| 7 | op.cpp:147 | 下标连续 ∧ (无 SVE 内核的 dtype 组合 ∨ 单线程) | gather_single_1d（gather.cpp:837） | 单遍标量——这种组合下两遍模型纯亏 |
+| 1 | op.cpp:73 | `K < 1024` | gather_direct（gather.cpp:851） | 小 K 时物化一遍偏移纯属固定开销 |
+| 2 | op.cpp:87 | 单索引 ∧ after_contiguous ∧ 下标连续 ∧ A>1 ∧ (A≥4096 ∨ A<16 ∨ (A≤64 ∧ B·K≤65536)) ∧ f32/f64/i32/i64（T16：只搬整行故可放宽，下面 #3/#4 仍限浮点） | gather_rowcopy_raw（gather.cpp:984） | M1 大块跳过 linearize，边查边整行拷 |
+| 3 | op.cpp:100 | 单索引 ∧ **非**after_contiguous ∧ A>1 ∧ 下标连续 ∧ f32/f64（入口内再判 max_run≥4） | gather_strided_rows_raw（gather.cpp:1099） | 尾维有 ≥4 连续 run 时按 run 块拷 |
+| 4 | op.cpp:103 | 多索引 ∧ after_contiguous ∧ A≥4 ∧ **线程≥16** ∧ f32/f64 | gather_rowcopy_fused（gather.cpp:1083） | 多索引大并行下跳过两遍模型 |
+| 5 | op.cpp:122 | 单索引 ∧ B==1 ∧ A==1 ∧ 下标连续，且值域≤2048（内核内判） | gather_bucket_pure_raw（gather.cpp:882） | 1D 小值域建查找表（M3 keys[order]、M4 形态） |
+| 6 | op.cpp:143 | #5 未中 ∧ i64 下标 ∧ SVE512 ∧ 线程>1 ∧ f32/i32 ∧ stride₀==1 ∧ size<2³² ∧ 源>512KB | gather_single_1d_sve（gather.cpp:927） | T15-C：大源 4B 单遍 SVE（uzp1 收窄 i64 下标） |
+| 7 | op.cpp:147 | 下标连续 ∧ (无 SVE 内核的 dtype 组合 ∨ 单线程) | gather_single_1d（gather.cpp:900） | 单遍标量——这种组合下两遍模型纯亏 |
 | 8 | op.cpp:171 | 单线程 ∧ 单索引 ∧ A>1：A≥4 连续 f32/f64 → raw；否则 fused | raw / gather_fused | 1 线程放宽 #2 的规模门槛（T15） |
 | 9 | op.cpp:176 | A==1 ∨ (after_contiguous ∧ A≥4 ∧ f32/f64) | linearize + gather_index | **两遍模型**：物化偏移 → SVE 族 |
-| 10 | op.cpp:182 | 其余（A∈[2,4)、非连续等） | gather_fused（gather.cpp:1030） | 兜底单遍融合，不物化 idx |
+| 10 | op.cpp:182 | 其余（A∈[2,4)、非连续等） | gather_fused（gather.cpp:1134） | 兜底单遍融合，不物化 idx |
 
 这 11 条的**合并候选与代价分析**（哪些合并能省掉一遍扫描、哪些只是省代码）见
 [route-merge-analysis.md](route-merge-analysis.md) §4；要新增或合并一条路由前，
@@ -214,7 +214,7 @@ Python __getitem__
 准入：恰好一个索引、是 bool/byte mask、两者同 CPU、mask 维数在 1..self.dim()、
 两者都连续、逐维 shape 相等（不等按 aten 文案报错 :203-208）。uint8 顺带发
 deprecation 警告（:210-213，与 normalize.cpp:50-53 文案一致）。命中 →
-`gather_mask`（gather.cpp:1124）。
+`gather_mask`（gather.cpp:1141）。
 
 **为什么在 normalize 之前**：aten 的 mask 语义要先把 mask 转 nonzero 下标再
 gather；本路径一遍扫描直接写出结果，normalize 的 expand/permute/vector 分配全
@@ -338,7 +338,7 @@ row_off（B 个）与 col_off（A 个）都由它生成。O(num·dims)，B/A 通
 
 - `bfactor`(linearize.cpp:14-17)：broadcast_shape 的行优先混合进制因子——`c_d = (k/bfactor[d]) % bshape[d]`
   把 k 拆成各维坐标。这就是"广播下标 → 每维各自取元素"的解码器；gather_direct
-  (:571-575)、gather_fused(:656-658)、rowcopy_fused_sve(:952-954) 里的同款是同一
+  (:580-583)、gather_fused(:675-678)、rowcopy_fused_sve(:1018-1019) 里的同款是同一
   逻辑（A7 手段）。
 - 预提取（linearize.cpp:20-31）：指针/stride/esize/is_long 提到循环外——注释 linearize.cpp:18-19 点明
   at::Tensor 方法的引用计数+虚调用是单线程开销根因。
@@ -356,8 +356,8 @@ row_off（B 个）与 col_off（A 个）都由它生成。O(num·dims)，B/A 通
 
 ## 7. gather.cpp 逐段精读——内核族谱（三层）
 
-1163 行按"原语 → 中层 → 顶层入口"三层组织。自上而下读会迷路，建议先读
-gather_index 分发树（:708），再按需跳转。
+1213 行按"原语 → 中层 → 顶层入口"三层组织。自上而下读会迷路，建议先读
+gather_index 分发树（:758），再按需跳转。
 
 ### 7.1 第 0 层：SVE 原语（:18-247，4b_i64idx 到 :246）
 
@@ -388,41 +388,41 @@ gather_index 分发树（:708），再按需跳转。
 | `bucket_gather_pure` | :440 | 两遍模型后的小值域查表：分块求 min/max → 值域≤2048 建 L1 常驻表 | gather_index |
 | `bucket_gather_pure_raw` | :482 | T4 raw 版：免 linearize；`size ≤ 2048` 免值域扫描，其中跨度 ≤64KB 连表都不建、直接 `dst[k]=src[v*stride0]`（RESULTS §2.21.1/§2.21.3）；`size > 2048` 才扫值域+建表 | index_into #5 |
 
-### 7.3 第 2 层：顶层入口（:708-1163）
+### 7.3 第 2 层：顶层入口（:758-1210）
 
 | 入口 | 行号 | 路由来源 | 内部结构 |
 |---|---|---|---|
-| `gather_direct` | :834 | #1（K<1024） | 预提取 + **A==1 单索引全长连续的预校验无检查紧凑循环**（:536-578，vbuf 先把 K 个下标查/归一一遍）+ 通用逐元素循环（:579-612，bfactor 解码 + 内联检查） |
-| `gather_fused` | :1117 | #8 否则 / #10 | 与 direct 同源但**不物化 idx**；面向 A<4 或非连续小块（T3） |
-| `gather_index` | :741 | #9 | **分发树**（下表） |
-| `gather_single_1d` | :883 | #7 | 1 线程/无 SVE 组合的 1D 单遍标量（内联检查 :855-857） |
-| `gather_single_1d_sve` | :910 | #6 | T15-C：parallel_for 直接分段调 pure_gather_sve_4b_i64idx（:905-907） |
-| `gather_bucket_pure_raw` | :865 | #5 | AT_DISPATCH 后按 idx32/i64 调 bucket raw；`size ≤ 2048` 免 pass 1（跨度 ≤64KB 免表，§2.21.3），否则扫值域定界；返回是否命中 |
-| `gather_rowcopy_raw` | :967 | #2、#8 | AT_DISPATCH + NT×idx32 四实例 → `rowcopy_raw_single`(:913)：B==1 或通用 B·K 并行，**内联检查**（:901-904），逐行 copy_contig + H1 预取（越界下标不预取，报错仍落第 1 个坏下标） |
-| `gather_rowcopy_fused` | :1066 | #4 | f32/f64 × NT → `rowcopy_fused_sve`(:977)：多索引逐行解码 + 内联检查 + copy_contig；all_full_contig 直读快路径（:984-1003） |
-| `gather_strided_rows_raw` | :1082 | #3 | 先 make_col_runs；**max_run<4 不接管**（:1087，返回 false 落回后续路由）；dtype 门 f32/f64（:1089） |
-| `gather_mask` | :1124 | mask_fast_path | 两遍：分块计数（**n<1MB 串行** :1124——小掩码并行实测慢 ~2x）→ offsets 前缀和（:1135-1139）→ 压实拷贝（A≥4 且 f32/f64 用 copy_contig :1155-1165，否则逐元素 :1167） |
+| `gather_direct` | :851 | #1（K<1024） | 预提取 + **A==1 单索引全长连续的预校验无检查紧凑循环**（:603-628，vbuf 先把 K 个下标查/归一一遍）+ 通用逐元素循环（:629-662，bfactor 解码 + 内联检查） |
+| `gather_fused` | :1134 | #8 否则 / #10 | 与 direct 同源但**不物化 idx**；面向 A<4 或非连续小块（T3） |
+| `gather_index` | :758 | #9 | **分发树**（下表） |
+| `gather_single_1d` | :900 | #7 | 1 线程/无 SVE 组合的 1D 单遍标量（内联检查 :872-874） |
+| `gather_single_1d_sve` | :927 | #6 | T15-C：parallel_for 直接分段调 pure_gather_sve_4b_i64idx（:922-924） |
+| `gather_bucket_pure_raw` | :882 | #5 | AT_DISPATCH 后按 idx32/i64 调 bucket raw；`size ≤ 2048` 免 pass 1（跨度 ≤64KB 免表，§2.21.3），否则扫值域定界；返回是否命中 |
+| `gather_rowcopy_raw` | :984 | #2、#8 | AT_DISPATCH + NT×idx32 四实例 → `rowcopy_raw_single`(:944)：B==1 或通用 B·K 并行，**内联检查**（:952-954），逐行 copy_contig + H1 预取（越界下标不预取，报错仍落第 1 个坏下标） |
+| `gather_rowcopy_fused` | :1083 | #4 | f32/f64 × NT → `rowcopy_fused_sve`(:1013)：多索引逐行解码 + 内联检查 + copy_contig；all_full_contig 直读快路径（:1034-1054） |
+| `gather_strided_rows_raw` | :1099 | #3 | 先 make_col_runs；**max_run<4 不接管**（:1104，返回 false 落回后续路由）；dtype 门 f32/f64（:1106） |
+| `gather_mask` | :1141 | mask_fast_path | 两遍：分块计数（**n<1MB 串行** :1160——小掩码并行实测慢 ~2x）→ offsets 前缀和（:1165-1170）→ 压实拷贝（A≥4 且 f32/f64 用 copy_contig :1191-1202，否则逐元素 :1203） |
 
-`gather_index`(:708-799) 分发树（两遍模型的第二遍）：
+`gather_index`(:758-849) 分发树（两遍模型的第二遍）：
 
 | 顺序 | 条件 | 内核 |
 |---|---|---|
-| 1 | A==1（pure）且值域≤2048 | bucket_gather_pure（:752-756，idx32/i64 两实例） |
-| 2 | pure ∧ i64 偏移 ∧ SVE512 ∧ f64/i64 | pure_gather_sve_flat 8B（:743-764） |
-| 3 | pure ∧ i32 偏移 ∧ SVE512 ∧ f32/i32 | pure_gather_sve_flat 4B（:746-767） |
-| 4 | A>1 ∧ (after_contiguous ∨ rowcopy_direct) ∧ SVE512 ∧ A≥4 ∧ f32/f64 | rowcopy_sve（:784-805） |
-| 5 | 其余 | dispatch_scalar（:826-830）——**全部 dtype 的最终兜底** |
+| 1 | A==1（pure）且值域≤2048 | bucket_gather_pure（:769-773，idx32/i64 两实例） |
+| 2 | pure ∧ i64 偏移 ∧ SVE512 ∧ f64/i64 | pure_gather_sve_flat 8B（:774-795） |
+| 3 | pure ∧ i32 偏移 ∧ SVE512 ∧ f32/i32 | pure_gather_sve_flat 4B（:796-817） |
+| 4 | A>1 ∧ (after_contiguous ∨ rowcopy_direct) ∧ SVE512 ∧ A≥4 ∧ f32/f64 | rowcopy_sve（:818-841） |
+| 5 | 其余 | dispatch_scalar（:843-847）——**全部 dtype 的最终兜底** |
 
 ### 7.4 AT_DISPATCH 白名单 = dtype 支持面的唯一真相
 
 9 处 `AT_DISPATCH_ALL_TYPES_AND_COMPLEX_AND3(kHalf, kBFloat16, kBool, ...)`：
-op.cpp:300（small_multi）、op.cpp:367（small_single）、gather.cpp:748（gather_index）、
-gather.cpp:853（direct）、gather.cpp:836（bucket raw）、gather.cpp:816（single_1d）、
-gather.cpp:938（rowcopy_raw）、gather.cpp:1084（fused）、gather.cpp:1129（mask）。白名单之外的 dtype 在这里抛
+op.cpp:300（small_multi）、op.cpp:367（small_single）、gather.cpp:765（gather_index）、
+gather.cpp:852（direct）、gather.cpp:886（bucket raw）、gather.cpp:903（single_1d）、
+gather.cpp:988（rowcopy_raw）、gather.cpp:1134（fused）、gather.cpp:1179（mask）。白名单之外的 dtype 在这里抛
 NotImplementedError——要扩 dtype 先查这 9 处（支持矩阵见 kernels.md §1）。
 
-另有 3 个入口**没有** AT_DISPATCH：gather_rowcopy_fused(:1066)、
-gather_strided_rows_raw(:1049)、gather_single_1d_sve(:891)——它们只收 f32/f64
+另有 3 个入口**没有** AT_DISPATCH：gather_rowcopy_fused(:1083)、
+gather_strided_rows_raw(:1099)、gather_single_1d_sve(:927)——它们只收 f32/f64
 （或 f32/i32），dtype 由路由条件在 index_into 里先行把关，入口内直接 cast。
 
 ## 8. grain.h 与并行约定
@@ -534,9 +534,9 @@ integration.md §3。
 2. **raw 路径必须内联边界检查 + 负归一**：凡跳过 linearize 的内核
    （direct / rowcopy_raw / strided_raw / rowcopy_fused / single_1d 族 /
    bucket_raw），循环内必须自己 `TORCH_CHECK_INDEX(v >= -size && v < size)` 并
-   `if (v < 0) v += size;`——样板见 gather.cpp:850-851。漏写 = 越界读（段错误）
+   `if (v < 0) v += size;`——样板见 gather.cpp:872-874。漏写 = 越界读（段错误）
    或负索引静默错数据。
-3. **p = r*K + k** 是全库统一坐标（§8.2）；增量维护版本见 gather_direct:610。
+3. **p = r*K + k** 是全库统一坐标（§8.2）；增量维护版本见 gather_direct:624。
 4. **after_contiguous ⇔ col_off[c]==c**（normalize.cpp:203-208）：决定"整行块拷贝"
    还是"逐列取数"，是路由 #2/#9 与 #3 的分水岭。
 5. **dtype 支持面 = 9 处 AT_DISPATCH 白名单**（§7.4）。barebones dtype 抛
@@ -553,7 +553,7 @@ integration.md §3。
    断言（:593-595）。别在 out 变体上为性能抄近路。
 10. **并行阈值是标定出来的**：small_multi 的 n·A≥2048（op.cpp:318）、
     small_single 的 max(16384, 512·nt)（:334-338）、mask 计数的 1MB
-    （gather.cpp:1042）。改任何一个都要带多线程实测，否则历史重演
+    （gather.cpp:1160）。改任何一个都要带多线程实测，否则历史重演
     （:346-348 注释里 0.55x 的教训）。
 
 ## 附录 A：函数 → 行号速查表
@@ -577,12 +577,12 @@ pure_gather_sve_8b_f64 :87 · _8b_s64 :112 · _4b_f32 :139 ·
 _4b_s32 :165 · pure_gather_sve_4b_i64idx :196 · pure_gather_sve_flat :254 ·
 copy_contig_sve :333 · ColRun :351 · make_col_runs :359 · strided_rows_raw :374 ·
 rowcopy_sve :398 · scalar_gather :416 · dispatch_scalar :432 · bucket_gather_pure :441 ·
-bucket_gather_pure_raw :482 · gather_direct 模板 :525 / 包装 :801 ·
-gather_fused 模板 :620 / 包装 :1084 · gather_index :741 ·
-gather_single_1d 模板 :815 / 包装 :869 · gather_bucket_pure_raw 包装 :851 ·
-gather_single_1d_sve_impl :902 / 包装 :891 · rowcopy_raw_single :927 ·
-gather_rowcopy_raw :967 · rowcopy_fused_sve :996 · gather_rowcopy_fused :1066 ·
-gather_strided_rows_raw :1082 · gather_mask :1124 · 计数函数 :1162-1163
+bucket_gather_pure_raw :482 · gather_direct 模板 :575 / 包装 :851 ·
+gather_fused 模板 :670 / 包装 :1134 · gather_index :758 ·
+gather_single_1d 模板 :865 / 包装 :900 · gather_bucket_pure_raw 包装 :882 ·
+gather_single_1d_sve_impl :919 / 包装 :927 · rowcopy_raw_single :944 ·
+gather_rowcopy_raw :984 · rowcopy_fused_sve :1013 · gather_rowcopy_fused :1083 ·
+gather_strided_rows_raw :1099 · gather_mask :1141 · 计数函数 :1212-1213
 
 **grain.h**：adaptive_grain :9
 
