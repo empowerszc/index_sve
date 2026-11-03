@@ -3,6 +3,12 @@
 本算子面向鲲鹏 920F（Kunpeng 920F, aarch64, SVE2, VL=512-bit）编写。本文档列出移植到
 其他平台/配置时的检查点。
 
+> **这篇讲什么**：换平台、换 VL、换 torch 版本时要改什么、测什么、别踩什么。
+> **读完你能回答**：VL 不是 512 怎么办？目标机没有 SVE 怎么办？移植后要跑哪些
+> 测试？还有哪些已知可优化项？
+> **怎么读**：先按目标平台挑 §1/§2；移植完照 §5 清单跑；优化项在 §6。
+> **本篇代号**：SVE/VL/gather/RowCopy。术语见 [`glossary.md`](glossary.md)。
+
 > **先理解的四个词**：**SVE** 是 ARM 的可伸缩向量扩展；**VL** 是向量长度
 > （512-bit = 16×f32）；**gather** 是按地址向量取元素；**RowCopy** 是一次搬
 > 一段连续元素。移植的核心就是确认目标机“有 SVE、VL 多大、随机 gather 快不快”。
@@ -83,7 +89,7 @@
   可试预取加深/软件流水，或按 cache line 分桶排序（kernels.md §2）。
   T15 后 i64 下标且源>512KB 已走直连 SVE（8t 2.22x）；i32 下标仍受此限。
 - **dtype 白名单 gap**：barebones `uint16/uint32/uint64`、float8 系列、complex32
-  目前抛 `NotImplementedError`（ATen 支持）；需要扩展 dispatch 宏并补回归，
+  目前抛 `NotImplementedError`（aten 支持）；需要扩展 dispatch 宏并补回归，
   见 semantics.md §4。
 - ~~**小规模并行阈值**~~：T15【历史·已修】——并行阈值按线程数缩放
   `max(16384, 512×nt)`（K=1024 高线程 1.84→2.83-4.57x）。使用侧建议

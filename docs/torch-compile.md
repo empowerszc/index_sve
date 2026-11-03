@@ -1,5 +1,13 @@
 # torch.compile 与本算子的关系（能力与 opt-in 落地）
 
+> **这篇讲什么**：`torch.compile` 为什么默认绕过本算子、怎么 opt-in 让它重新
+> 生效、落地要处理哪些坑。
+> **读完你能回答**：默认 compile 下为什么慢？fallback 是怎么做的？cache key 为
+> 什么必须一起改？怎么复现？
+> **怎么读**：结论看文首；原理看 §2；落地看 §3 与 §6；坑在 §4；复现见 §7。
+> **本篇代号**：Dynamo/Inductor/FakeTensor、T7/T10、`HPC_INDEX_COMPILE`。术语见
+> [`glossary.md`](glossary.md)。
+
 > **一句话结论**：`torch.compile` 默认会把 `aten::index` **内联成 Inductor 自己生成的
 > kernel**，根本不在运行时调用任何 index 内核，所以本算子的 CPU 覆盖**不生效**
 > （实测慢 2.6x）。把该 op "钉"回成运行时调用（Inductor fallback）后，覆盖重新
@@ -19,7 +27,7 @@
 
 | 执行方式 | 实际执行索引的代码 | 2M 元素 f32 |
 |---|---|---|
-| eager，未 import `index_sve` | ATen 原生 CPU 内核（`index_stub` / TensorIterator） | ≈8.9 ms* |
+| eager，未 import `index_sve` | aten 原生 CPU 内核（`index_stub` / TensorIterator） | ≈8.9 ms* |
 | eager，import `index_sve` | **本算子 SVE 内核**（dispatcher CPU 覆盖） | **2.01 ms** |
 | `torch.compile`（默认） | **Inductor 生成的 C++ kernel**（`cpp_fused_index_0`） | 5.30 ms |
 | `torch.compile` + 强制 fallback | 运行时回到 dispatcher → **本算子 SVE 内核** | **2.57-2.67 ms** |

@@ -4,6 +4,14 @@
 `tests/`，不要把这里的脚本当功能测试用。`bench_regression.py` 也只标记
 **性能**回归（比值 <0.90），不验证结果正确性。
 
+> **这篇讲什么**：`benchmarks/` 下每个脚本是干什么的、哪个能当验收依据、怎么
+> 跑、结果怎么读。
+> **读完你能回答**：验收该跑哪个脚本？诊断该跑哪个？环境变量怎么设？`aten/hpc`
+> 两进程口径怎么读？
+> **怎么读**：先用 §2「该用哪个」选脚本，再看 §5 的命令；环境变量在 §4。
+> **本篇代号**：M1-M6/A1/shortq、`aten/hpc`（两进程交替）。术语见
+> [`glossary.md`](glossary.md)。
+
 ## 1. 一句话总览
 
 | 文件 | 类型 | 作用 | 何时用 |
@@ -66,7 +74,7 @@
 ## 3. 真实 workload 覆盖与预测力
 
 **路径对称性问题**：除 `bench_smallk_real.py` / `bench_realpath.py` /
-`bench_production_shapes.py` / `bench_entry_overhead.py` 外，其余脚本的 hpc 侧都是
+`bench_production_shapes.py` / `bench_entry_overhead.py` 外，其余脚本的本算子侧都是
 `hpc_index()` 直呼，绕过了 dispatcher。实测这条路的偏置方向是**偏悲观**，不是
 偏乐观：Python 包装 + `torch.ops` 查表比 `x[idx]` **慢 10µs**（K=0/512/2048 都是，
 `torch.ops.aten.index` 一样慢，见 RESULTS §2.12.1）。大 K 下 10µs 可忽略，比值

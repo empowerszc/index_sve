@@ -3,6 +3,14 @@
 本文档说明本算子如何接入 torch 运行时、环境要求，以及集成时要注意的全局
 副作用。
 
+> **这篇讲什么**：接入 torch 运行时的契约——默认接管什么、有哪些开关、带来
+> 哪些全局副作用、生产怎么部署。
+> **读完你能回答**：`import` 之后发生了什么？怎么关掉覆盖？`torch.compile` 怎么
+> 办？什么调用形态会超订？慢场景要不要 fallback？
+> **怎么读**：先看 §0 的 30 秒清单；开关在 §2，副作用在 §5，部署建议在 §6，
+> fallback 结论在 §7。
+> **本篇代号**：A6、T11、ICV、`HPC_INDEX_*`。术语见 [`glossary.md`](glossary.md)。
+
 > **TL;DR**：`import index_sve` 即默认接管所有 CPU `aten::index.Tensor`；
 > 不想被接管就设 `HPC_INDEX_NO_OVERRIDE=1`（必须在 import 前）。`torch.compile`
 > 默认绕过所有运行时内核，要 opt-in 设 `HPC_INDEX_COMPILE=1`。两个变量互斥。
@@ -133,7 +141,7 @@ Warning: Overriding a previously registered kernel for the same operator and the
 |---|---|
 | 多进程（DataLoader / torchrun / 服务多 worker） | 无共享状态，仅硬件竞争；守则：进程数 × 每进程线程数 ≤ 核数 |
 | 进程内 k 线程并发调 `x[idx]` | 有超订代价（下表）；把真实预算告诉 torch——`set_num_threads(≈ 核数/k)`，扩展会跟随 |
-| **宿主 C++ OpenMP region 内调 torch** | **唯一应避免的形态**：ATen 的嵌套守卫按 runtime 生效——宿主 region 在 libgomp、本算子在 libomp，嵌套关系跨 runtime 不可见 → 静默超订（宿主线程数 × nt）；同 runtime 则被守卫强制串行。必须在 region 内调用时先 `set_num_threads(1)` |
+| **宿主 C++ OpenMP region 内调 torch** | **唯一应避免的形态**：aten 的嵌套守卫按 runtime 生效——宿主 region 在 libgomp、本算子在 libomp，嵌套关系跨 runtime 不可见 → 静默超订（宿主线程数 × nt）；同 runtime 则被守卫强制串行。必须在 region 内调用时先 `set_num_threads(1)` |
 | fork 的 DataLoader worker | 继承注册；OpenMP pool 经 atfork 处理，常规用法安全（spawn 需 worker 侧 import，summary.md §4.6） |
 
 实测（`x[idx]` 200k 行 × C=64 f32，共 24 次调用，`bench_embed_threads.py`）：
@@ -156,7 +164,7 @@ Warning: Overriding a previously registered kernel for the same operator and the
 针对"本算子性能差于 aten::index 时回退到原生 aten::index"的诉求，做了一轮完整
 调查，结论是**不实现 fallback**。记录理由供日后复读：
 
-- **慢场景（当前）**：只有六个家族 <1x——空 mask 4-38t 0.42-0.66x（aten 并行
+- **慢场景（当前）**：只有五个可复现家族 + 噪声级单格（另计）仍 <1x——空 mask 4-38t 0.42-0.66x（aten 并行
   早退，绝对差 1.5-2ms）、1B 0.91-0.99x、complex 0.92-0.95x、非连续 mask
   0.79-0.98x、S4 0.77-0.92x、噪声单格；逐格清单见 RESULTS §2.9.1。31 场景 ×
   8 档共 248 格，其余 217 格 ≥1.00x。4B 大 K 随机 gather 的绝对带宽仍受 64B 行放大 +
