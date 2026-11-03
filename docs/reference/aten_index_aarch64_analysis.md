@@ -105,7 +105,7 @@ y = x[i_idx, j_idx]                          # 期望 y = [x[2,3], x[0,1]] = [11
 
 此时 `size = [3, 4]`（两维的长度），`stride = [16, 4]`（字节）。逐元素推演：
 
-```
+```text
 输出元素 i = 0（要用 i_idx[0]=2、j_idx[0]=3 去 x 里取数）：
   j=0: v = i_idx[0] = 2 → 检查 -3 ≤ 2 < 3 通过 → offset += 2 × 16 = 32
   j=1: v = j_idx[0] = 3 → 检查 -4 ≤ 3 < 4 通过 → offset += 3 × 4  = 12
@@ -165,7 +165,7 @@ y = x[i_idx, j_idx]                          # 期望 y = [x[2,3], x[0,1]] = [11
 **gather（按索引收集）**：给定一张"清单"（下标 tensor），按清单顺序从源数组取数。
 与之相对的是 **scatter（按索引分发）**（`index_put`：把值按清单写到目标位置）。
 
-```
+```text
 self（仓库）:      [ A, B, C, D, E ]        下标（清单）: [3, 0, 3, 1]
                       ↓  ↓  ↓  ↓
 result（传送带）:  [ D, A, D, B ]           ← 按清单顺序取货、顺序放货
@@ -271,7 +271,7 @@ idx = torch.tensor([1, 3, 0])  # 下标
 `y = x[idx]` 从 Python 到内存搬运，要过五站。**前三站全是"准备工作"（零拷贝），
 真正的数据搬运只发生在第四站**：
 
-```
+```text
 ┌─────────────────────────────────────────────────────────────────────┐
 │ ① Python 入口          y = x[idx]                                    │
 │    torch/csrc/autograd/python_variable_indexing.cpp: THPVariable_getitem │
@@ -389,7 +389,7 @@ inline AdvancedIndex make_info(Tensor self, IOptTensorListRef orig) {
 
 **解法**：把 self "改造"成一个形状与输出完全一致、但被索引维 **stride 置 0** 的视图：
 
-```
+```text
 例：x = randn(4,5)，y = x[:, [1,2]]
 
 改造前 self:   shape [4,5], strides [5,1]        （float，元素 4 字节）
@@ -533,7 +533,7 @@ CUDA/XPU 才有的"按索引排序"路径（`index_put_with_sort_stub`）CPU 不
 
 `iter.for_each(loop, 3000)` 一路向下（`TensorIterator.cpp:763`）：
 
-```
+```text
 TensorIteratorBase::for_each(loop, grain=3000)
   ├─ numel < 3000 或单线程 → 串行执行
   └─ 否则 at::parallel_for(0, numel, 3000, ...)        Parallel-inl.h:10
@@ -611,7 +611,7 @@ TensorIteratorBase::for_each(loop, grain=3000)
 把 §4.7 的内层循环逐条标价。对照 §1 的数值推演来读：j=0 时"读下标值"就是读出 2、
 "偏移乘加"就是 `2×16=32`——下面每一行都是**真实执行的指令**，不是抽象描述：
 
-```
+```text
 每个输出元素 = Σ(每个被索引维 j) [
     读下标值       8B 内存读（依赖链的起点，可能非连续）
     边界检查       2 次比较 + 分支（恒定开销，Release 也关不掉）
@@ -1002,7 +1002,7 @@ SME 的 ZA 是 VL×VL 字节矩阵寄存器（512-bit 时 64×64B=4KB），以"�
 
 ### 8.2 优先级总表（含 SVE512/SME）
 
-```
+```text
 P0（先做、收益大、风险低）：
   A. 下标线性化 + 边界/负归一外提（无分支主循环）
   C. 软件预取（在 A 之上顺带实现）
@@ -1261,7 +1261,7 @@ gather→GEMM 融合（§9 L3 同款）。
 
 ### 10.4 横向决策轴：payload 大小
 
-```
+```text
 每条边的 payload（字节）
  ├─ 小档 ≤16B（pos 12B、边长 4B）
  │    瓶颈：管理开销（下标读 8B + 检查 + 偏移计算 ≈ payload 本身）

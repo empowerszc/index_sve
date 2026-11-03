@@ -278,7 +278,7 @@ for t in tests/test_smoke.py tests/test_normalize.py tests/test_correctness.py \
   keys[order] 等值域小可再桶化。`gather_rowcopy_raw` 已留好接入入口。
 - ~~**P3 mask 多线程**~~：T8 已用单遍 compaction 修复（见 §12），不再列入。
 - **4B 大 K 随机 gather**：64B 行放大 + DRAM 延迟（SVE 4B 与标量持平，RESULTS
-  §8.4）；可试软件预取 / 按 cache line 分桶排序。
+  §3.7）；可试软件预取 / 按 cache line 分桶排序。
 
 ## 9. T5：1 线程回归修复（线性化两遍模型 vs aten 单遍）
 

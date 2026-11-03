@@ -47,12 +47,12 @@ backward 不受影响。
 |---|---|---|
 | 系统了解 / 讲给同事 | [`docs/summary.md`](docs/summary.md)：10-15 分钟通读全貌 | — |
 | 只想用起来 | 本节 → [快速开始](#快速开始) | [已知限制](#已知限制--注意事项) |
-| 看性能 | `benchmarks/RESULTS.md` §2.9（当前矩阵） | `performance.md` §4.3（为什么快）、`degradation-analysis.md` §5.9（为什么慢） |
-| 读代码 | [`docs/code-walkthrough.md`](docs/code-walkthrough.md)：按文件与行号走读全部核心源码 | `architecture.md`、`kernels.md` |
-| 改内核 | `kernels.md` → `architecture.md` | `optimizations.md`、`archive/index_sve_vs_fastindex_gap_20261023.md` |
-| 判断还剩多少空间 | [`docs/headroom.md`](docs/headroom.md)：硬件背景 + 成本模型 + 逐族下界 | `status.md` §7 |
-| 接续开发 | `status.md` §7（R1-R9 + H1-H8） | `headroom.md`、`degradation-analysis.md` |
-| 集成 / 排障 | `integration.md` → `override-mechanism.md` | `status.md`、`debugging-playbook.md` |
+| 看性能 | [`benchmarks/RESULTS.md`](benchmarks/RESULTS.md) §2.9（当前矩阵） | [`docs/performance.md`](docs/performance.md) §4.3（为什么快）、[`docs/degradation-analysis.md`](docs/degradation-analysis.md) §5.9（为什么慢） |
+| 读代码 | [`docs/code-walkthrough.md`](docs/code-walkthrough.md)：按文件与行号走读全部核心源码 | [`docs/architecture.md`](docs/architecture.md)、[`docs/kernels.md`](docs/kernels.md) |
+| 改内核 | [`docs/kernels.md`](docs/kernels.md) → [`docs/architecture.md`](docs/architecture.md) | [`docs/optimizations.md`](docs/optimizations.md)、[`docs/archive/index_sve_vs_fastindex_gap_20261023.md`](docs/archive/index_sve_vs_fastindex_gap_20261023.md) |
+| 判断还剩多少空间 | [`docs/headroom.md`](docs/headroom.md)：硬件背景 + 成本模型 + 逐族下界 | [`docs/status.md`](docs/status.md) §7 |
+| 接续开发 | [`docs/status.md`](docs/status.md) §7（R1-R9 + H1-H8） | [`docs/headroom.md`](docs/headroom.md)、[`docs/degradation-analysis.md`](docs/degradation-analysis.md) |
+| 集成 / 排障 | [`docs/integration.md`](docs/integration.md) → [`docs/override-mechanism.md`](docs/override-mechanism.md) | [`docs/status.md`](docs/status.md)、[`docs/debugging-playbook.md`](docs/debugging-playbook.md) |
 
 ## 设计要点
 
@@ -245,7 +245,7 @@ test_autograd 16、test_output_layout 25）。
 （`index_sve.OVERRIDE_ACTIVE`）：`HPC_INDEX_NO_OVERRIDE=1` 下直接报错退出。两个
 套件都靠 `x[...]` 走覆盖后的内核，覆盖一旦静默失效，`test_output_layout` 的 25 项
 会全绿却什么都没验证。`test_rowcopy_routes` 里"某条路由不该被选"的负向断言另外
-配了 `dispatch_count()` 正向控制（`op.cpp:660`），所以覆盖真没生效时那 6 项会直接
+配了 `dispatch_count()` 正向控制（`op.cpp:664`），所以覆盖真没生效时那 6 项会直接
 挂，不会假通过。其余套件走 `index_sve.index()` 包装，不受影响。
 
 ```bash
