@@ -558,3 +558,57 @@ git commit -m "docs: final readability pass and verification"
 
 向用户报告：改了哪些文件、每批 commit、验收结果（含 `N`、抽查的 10 个数、台账例外）；
 由用户决定合并方式（当前分支 `docs/readability-20261029`）。
+
+---
+
+# Refresh after main merge（2026-11-03）
+
+**背景**：`main` 在分支创建后前进 33 个 commit，新增 `headroom.md`、
+`debugging-playbook.md`、`path-matrix.md`、`route-merge-analysis.md`，并重写了多数
+既有文档。合并时以 main 的技术内容为准（`b0a011e`），本组任务在 main 内容上重新
+落地可读性规范，不改数字、结论、代码行为。
+
+**继承约束**：2026-10-29 设计文档的全部写作规范；术语（本算子 / aten）、数字出处
+（RESULTS §2.9 及各自 owner 小节）、`R10` 与 `R1-R9` 区分、标识符不改名。
+
+**本组验收命令**：
+- `python3 tools/check_doc_links.py` → 0 broken
+- `python3 tools/check_doc_anchors.py` → 全部通过
+- 每篇有「这篇讲什么」；>300 行有「## 目录」
+- `grep -rn "六个家族\|§2.4 T13" README.md docs/*.md` → 无输出
+
+### Task 10: 入口与总览（README / index / glossary / summary / status）
+
+- [ ] **Step 1**：五篇加统一导读块；>300 行的 summary/status 加目录。
+- [ ] **Step 2**：每篇开头用 1-2 段回答「这是什么、为什么读、先读哪节」；拆开首屏长句。
+- [ ] **Step 3**：README/index 的文档地图按「入门 → 性能 → 架构 → 专题 → 编年史 → 参考」重排说明；只改散文，不改链接目标。
+- [ ] **Step 4**：验证并提交 `docs: refresh entry and overview readability`。
+
+### Task 11: 新增专题（headroom / debugging-playbook / path-matrix / route-merge-analysis）
+
+- [ ] **Step 1**：四篇加导读块；>300 行的加目录（全部四篇中除 path-matrix 外均 >300）。
+- [ ] **Step 2**：headroom：在现有「阅读指南」之上加标准导读；给 §0 前的长段加一句路标；目录覆盖 §0-§9。
+- [ ] **Step 3**：debugging-playbook：开头补「这篇讲什么」；§1 前加一句“先看结论”；长案例段落拆句，保留命令与断言。
+- [ ] **Step 4**：path-matrix / route-merge-analysis：每节首句点题；表格前补“怎么读”；不合并小节。
+- [ ] **Step 5**：验证并提交 `docs: polish new analysis guides`。
+
+### Task 12: 性能与内核（performance / degradation / fallback / kernels / architecture / code-walkthrough）
+
+- [ ] **Step 1**：六篇加导读；>300 行的 degradation/code-walkthrough/kernels 加目录。
+- [ ] **Step 2**：performance/degradation/fallback 保持「当前结论在前、历史矩阵在附录」；正文数字只留代表值 + RESULTS 指针。
+- [ ] **Step 3**：architecture/code-walkthrough/kernels 首屏给一个数字例子或选择表；长句拆开，术语首现给白话。
+- [ ] **Step 4**：验证并提交 `docs: refresh performance and kernel readability`。
+
+### Task 13: 专题与编年史（semantics / output-layout / integration / torch-compile / override-mechanism / porting / benchmarks / optimizations）
+
+- [ ] **Step 1**：八篇加导读；>300 行的 optimizations 加目录。
+- [ ] **Step 2**：每篇开头补「读完你能回答」；长段落拆句；表格前补“怎么读”。
+- [ ] **Step 3**：optimizations 每轮保持「问题 / 改动 / 实测 / 验证」四段式；数字标轮次。
+- [ ] **Step 4**：验证并提交 `docs: refresh topic and chronicle readability`。
+
+### Task 14: reference + 全量验收
+
+- [ ] **Step 1**：reference 两篇校正目录与标题一致、补代码块语言；不加导读块。
+- [ ] **Step 2**：全量检查：链接、锚点、导读/目录覆盖、数字重复台账、§ 引用。
+- [ ] **Step 3**：独立 review；修复 blocker/major；minor 记账。
+- [ ] **Step 4**：提交 `docs: final readability refresh and verification`，推送远程。

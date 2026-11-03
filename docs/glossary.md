@@ -3,6 +3,13 @@
 全项目唯一的名词查询入口：读任何文档遇到不懂的术语或代号（S1、P1、M1、
 shortq、A/B/K…），先查这里；各文档不再各自维护术语表。
 
+> **这篇讲什么**：全项目术语与代号的白话解释，按“内存与缓存 / CPU 内部 /
+> 多核与 OpenMP / 本算子形态 / 场景负载”分组。
+> **读完你能回答**：cache line、行放大、MLP/MSHR 是什么？S1/P1/M1 指哪个场景？
+> `R10` 和路线图 `R1-R9` 是什么关系？
+> **怎么用**：按分组查；完全不懂硬件就先读 `headroom.md` §1.0 的延迟阶梯，
+> 再回来查本表。
+
 > 简写约定：**degradation / performance / RESULTS** 分别指
 > `docs/degradation-analysis.md`、`docs/performance.md`、`benchmarks/RESULTS.md`。
 

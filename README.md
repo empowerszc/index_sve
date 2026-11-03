@@ -3,8 +3,16 @@
 为鲲鹏 920F（Kunpeng 920F, aarch64, SVE2 VL=512-bit）实现的 `aten::index.Tensor`
 语义替代算子。**`import index_sve` 后，进程中所有 CPU 张量的高级索引调用
 （`x[idx]`、`x[:, i]`、`x[i, j]`、bool mask、N-D 整数下标等）自动改走本算子**，
-无需修改任何调用点。语义与 torch 2.10 的 ATen 参考实现逐字节对齐，autograd
+无需修改任何调用点。语义与 torch 2.10 的 aten 参考实现逐字节对齐，autograd
 backward 不受影响。
+
+> **这篇讲什么**：`index_sve` 是什么、为什么快、怎么用、当前性能边界在哪。
+> **读完你能回答**：它替掉了什么？`import` 之后发生了什么？主要收益来自哪类
+> 索引？哪些形态仍不如 aten？怎么构建、测试、在需要时关掉覆盖？
+> **怎么读**：只想用 → 快速开始；看性能 → 基准结论 + RESULTS §2.9；读代码 →
+> `docs/code-walkthrough.md`；判断还剩多少空间 → `docs/headroom.md`。
+> **本篇代号**：S1/P1/P2/P3/S4（基准场景）、M1/M2/M5/A1/shortq（真实负载）、
+> A/B/K（索引几何）、R10（当前轮次）。完整表见 [`docs/glossary.md`](docs/glossary.md)。
 
 ## 先读：术语与结果口径（30 秒）
 
@@ -20,7 +28,7 @@ backward 不受影响。
 | **桶化（bucket）** | 下标值域很小（≤2048）时先把源收进一张 L1 常驻小表再查表；跨度 ≤64KB 时连表都不建、直接查源 |
 | **NT（非临时写）** | 绕过缓存直接写内存的指令（适合只写一次的大输出）；本机实测收益 0 |
 | **ICV** | OpenMP 的“线程数”配置；libomp 和 libgomp 各有一份，互不相通 |
-| **ratio（加速比）** | 本文统一用 `aten 时间 / 本算子时间`；**>1 表示比 torch 快** |
+| **加速比** | 本文统一用 `aten 时间 / 本算子时间`；**>1 表示比 torch 快** |
 
 **结果怎么读**：`1.26x` = 快 26%，`0.87x` = 慢 13%。高线程（32/36t）的比值有时
 很高，一部分原因是 aten 在带宽饱和后自己变慢，所以文档同时给出绝对 GB/s；
@@ -33,36 +41,29 @@ backward 不受影响。
 先读 [`docs/headroom.md`](docs/headroom.md) §1.0「从零开始：一次访存到底发生了
 什么」——一张延迟阶梯表（L1 2.0ns / L2 8.6ns / 内存 137ns）讲完全部背景。
 
-**建议阅读路线**：
-- 想系统了解（或讲给同事）：[`docs/summary.md`](docs/summary.md)——10-15 分钟
-  读完全貌（背景/机制/使用/性能结果/劣化根因/为何不回退/边界/训练适用性/FAQ）。
-- 只想用：本节 → [快速开始](#快速开始) → [已知限制](#已知限制--注意事项)。
-- 想看性能：`benchmarks/RESULTS.md` §2 → `docs/degradation-analysis.md`
-  （劣化硬件根因 §5.9；胜出根因 `docs/performance.md` §4.3）。
-- 想读代码：[`docs/code-walkthrough.md`](docs/code-walkthrough.md)——按真实文件与
-  行号走读全部核心源码（入口/路由/归一化/内核族谱/并行约定），配
-  `debug_spec` 等调试出口，一个下午可读完。
-- 想改内核：`docs/kernels.md` → `docs/architecture.md` → `docs/optimizations.md`
-  → `docs/archive/index_sve_vs_fastindex_gap_20261023.md`（fastindex 差异与待补项）。
-- 想知道“还剩多少空间”：[`docs/headroom.md`](docs/headroom.md)——硬件背景
-  （cache line/MSHR/RFO）、单位换算与常见误解、成本 = 延迟 ÷
-  在飞条数（本机 137ns、每核 16-20 条）、**两种下界**（DRAM 5.6-6.0 vs L1 0.66-0.71
-  ns/元素）、aten 的瓶颈清单、逐族“现状/下界/剩余/已兑现”（H1 预取已实做，
-  行拷贝 2.3-2.9x）与欠账 H1-H8。
-- 想接续开发：`docs/status.md` §7（演进方向优先级表 R1-R9 + H1-H8：R1 小源扫描
-  合并、R2 mask stride、R3 端到端验证，含预期收益与根因交叉引用）。
-- 想集成/排障：`docs/integration.md` → `docs/override-mechanism.md` → `docs/status.md`。
+**建议阅读路线**（按目标挑一行）：
+
+| 你的目标 | 先读 | 再读 |
+|---|---|---|
+| 系统了解 / 讲给同事 | [`docs/summary.md`](docs/summary.md)：10-15 分钟通读全貌 | — |
+| 只想用起来 | 本节 → [快速开始](#快速开始) | [已知限制](#已知限制--注意事项) |
+| 看性能 | `benchmarks/RESULTS.md` §2.9（当前矩阵） | `performance.md` §4.3（为什么快）、`degradation-analysis.md` §5.9（为什么慢） |
+| 读代码 | [`docs/code-walkthrough.md`](docs/code-walkthrough.md)：按文件与行号走读全部核心源码 | `architecture.md`、`kernels.md` |
+| 改内核 | `kernels.md` → `architecture.md` | `optimizations.md`、`archive/index_sve_vs_fastindex_gap_20261023.md` |
+| 判断还剩多少空间 | [`docs/headroom.md`](docs/headroom.md)：硬件背景 + 成本模型 + 逐族下界 | `status.md` §7 |
+| 接续开发 | `status.md` §7（R1-R9 + H1-H8） | `headroom.md`、`degradation-analysis.md` |
+| 集成 / 排障 | `integration.md` → `override-mechanism.md` | `status.md`、`debugging-playbook.md` |
 
 ## 设计要点
 
-- 三段流水线：**归一化 normalize**（对齐 ATen `make_info`，保留 int32 下标）→
+- 三段流水线：**归一化 normalize**（对齐 aten `make_info`，保留 int32 下标）→
   **线性化 linearize**（一次遍历完成越界检查 + 负数归一 + 元素偏移）→
   **gather**（SVE512 向量 gather / 行拷贝 / 标量回退）。
 - SVE512 路径：8B 元素（f64/i64）`svld1_gather_u64index_*`，4B 元素（f32/i32）
   `svld1_gather_u32index_*`，连续 A 元素块 `svld1/st1` 行拷贝，均带 `pf+16`
   预取（`svprfd/svprfw_gather_u32index`）。
 - `K<1024` 快速路径 `gather_direct`：跳过线性化，直接读原始下标 + 内联检查
-  （等价 ATen `Indexer`），支持 N-D 整数下标（broadcast_shape 混合进制解码）。
+  （等价 aten `Indexer`），支持 N-D 整数下标（broadcast_shape 混合进制解码）。
 - **优化轮（T0-T15）**：自适应并行粒度 `grain.h`；M1 单索引大块
   `gather_rowcopy_raw` skip-linearize；T4 小值域桶化（值域 ≤2048 查表）；
   T3 `gather_fused` 融合单遍；int32 linearize 直接写 int32；T5 1 线程单遍；
@@ -75,7 +76,7 @@ backward 不受影响。
   raw 放行（`A<=64 && B*K<=65536`）+ f32/i32+i64 下标大源（>512KB）直连
   单遍 SVE（uzp1 收窄复用 u32index）+ `small_single` 并行阈值线程缩放。
 - 并行：`at::parallel_for`（`adaptive_grain`）。**必须 `-fopenmp` 编译**。
-  扩展链接 BiSheng libomp、ATen 链接 libgomp；T11 起入口
+  扩展链接 BiSheng libomp、aten 链接 libgomp；T11 起入口
   `sync_omp_threads()` 使 `torch.set_num_threads(t)` 对扩展生效（此前只改
   libgomp，扩展实际用 libomp 默认 team，这也是旧线程数据失真的原因）。
 - 条件回退标量 `dispatch_scalar`：2B/1B 元素（half/bf16/i16/i8/uint8/bool）、
@@ -91,7 +92,7 @@ index_sve/
 │   ├── __init__.py       # import 时安装 aten::index.Tensor / .Tensor_out CPU 覆盖（HPC_INDEX_NO_OVERRIDE=1 可跳过）
 │   ├── register_aten.py  # 兼容层；实际覆盖由 op.cpp 的 TORCH_LIBRARY_IMPL(aten,CPU) 完成
 │   ├── op.cpp            # index_impl 入口 + pybind（debug_spec/linearize_spec/idx_dtype_choice）
-│   ├── normalize.{h,cpp} # normalize_index：mask/broadcast/transpose_to_front，对齐 ATen make_info
+│   ├── normalize.{h,cpp} # normalize_index：mask/broadcast/transpose_to_front，对齐 aten make_info
 │   ├── linearize.{h,cpp} # 线性化 + 越界检查，int32 保持（直接写 int32）
 │   ├── grain.h           # 自适应并行粒度（T0）
 │   ├── gather.{h,cpp}    # SVE gather/rowcopy/scalar + gather_direct + M1 raw / T3 fused / T4 桶化
@@ -186,7 +187,7 @@ realpath + cl 家族专项）；AI4S 全档表格见 `docs/summary.md` §6.2；�
   M1 权重块（≤16KB/行）1t **12.7-13.6x**、8t 5.0-5.9x、38t 1.22-1.47x；M5 标量
   循环 / A1 单元素高频 2.41-3.42x（µs 级随箱态）；shortq **2.46-4.21x**（剔
   K=1023×A≥3 高线程 aten 病理格）；M2 全形态 ≥1.06x（38t 带宽饱和）。
-- **仍 <1x 的六个家族**（RESULTS §2.9.1，逐格可复算）：空 mask 4-38t
+- **仍 <1x：五个可复现家族 + 噪声级单格（另计）**（RESULTS §2.9.1，逐格可复算）：空 mask 4-38t
   0.42-0.66x（aten 并行早退，**绝对差 1.5-2ms**，观察项）、非连续 1D mask
   0.79-0.98x（T8 只支持连续 mask）、int8/uint8 4-16t 0.91-0.99x（64B 行只用
   1B，aten 同为标量）、complex 1-16t 0.92-0.95x（无 SVE 内核）、S4 f64

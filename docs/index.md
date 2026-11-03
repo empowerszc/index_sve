@@ -2,30 +2,58 @@
 
 本目录是 `index_sve` 算子的详细技术文档，面向要理解、扩展或移植该算子的开发者。
 
+> **这篇讲什么**：文档地图——按目标找该读哪篇。
+> **读完你能回答**：第一次接触从哪开始？做性能、改内核、移植、排障分别看哪几篇？
+> 数字以谁为准？
+> **怎么读**：先看下面的「推荐阅读路径」；表里每篇都有“内容 + 读者”，按目标挑。
+> **本篇代号**：见 [`glossary.md`](glossary.md)。
+
 ## 文档索引
+
+### 入门与总览
 
 | 文档 | 内容 | 读者 |
 |---|---|---|
 | [summary.md](summary.md) | **项目汇总（给同事的系统介绍）**：背景（AI4S 热点 27270ms）、aten::index 机制与慢因、六类改进手段、使用方法（含 torch.compile 重载）、基准方法与正确性、性能测试结果（通用 + AI4S 专项）、劣化根因、为何不做性能级回退、绕过/边界清单、训练适用性、FAQ | 第一次接触项目、要与他人系统讨论的读者 |
 | [glossary.md](glossary.md) | **术语与代号速查（唯一名词入口）**：技术术语表、场景/负载代号（S1/P1/M1-M6/A1/shortq…）、形状记号、代号冲突警示 | 读任何文档遇到看不懂的名词/代号时查 |
+| [status.md](status.md) | **当前进展快照**：完成的工作、路由现状、性能结论、已知限制、**演进方向（§7 优先级表，接续开发从这看）** | 新读者/agent 快速上手 |
+
+### 性能、空间与路由
+
+| 文档 | 内容 | 读者 |
+|---|---|---|
+| [performance.md](performance.md) | 基准方法论、**当前轮（R10）模型场景结果表**、**胜出场景的硬件根因（§4.3：rowcopy/gather MLP/遍数消除/固定开销/桶化/串行边界）**、已知硬件限制、如何复测 | 性能评估、验收、想知道"为什么快"的读者 |
+| [degradation-analysis.md](degradation-analysis.md) | **性能退化与线程扩展分析**（矩阵为 T15 时点历史；当前值见该文文首 R10 表）：1/2/4/8/16/32/36 线程矩阵、逐 case 微架构定位（x[:,i]、2B/1B、非连续 mask、小规模并行）、perf 方法、**§5.9 残余劣化的硬件根因**、**§6.5 生产形态（小 K + 6-19t）的劣化家族**（含 §6.5.7 对"固定开销占 93-95%"的逐项裁决、§6.5.8 benchmarks 口径审计）、优化优先级 | 想知道"哪个线程数慢、为什么慢"的读者 |
+| [fallback-analysis.md](fallback-analysis.md) | **慢场景/回退路径深度分析**（文首有当前 <1x 速查；已修项标【历史·已修】）：为什么某些形态慢（4B 随机 gather 的 64B 行放大 + DRAM 延迟、两遍模型、串行阶段、无内核 dtype）、受限于什么、为何不做 fallback、判定速查表 | 想搞清"为什么慢、能不能修"的读者 |
+| [headroom.md](headroom.md) | **理论空间 vs 已实现空间（roofline）**：含**从零讲的硬件入门**（组相联/组与路、MSHR、RFO、DRAM bank/row、TLB 与 NUMA、乱序窗口与 IPC，外加 21 词速查表）、单位换算小抄与常见误解，以及**方法论专章**（探针的三种形状、一次从怀疑到定案的完整测量、十一个坑、复核清单）；成本 = 延迟 ÷ 在飞条数（137ns ÷ 16-20 条 → 8.6ns 下界），并说明**为什么不用 GFLOPS**（算术强度 = 0，§2.6）；还有"还有多大空间"的三把尺子（裸下界 6.5x / 实测地板 1.8x / 端到端 +0.23x，§6.5）；**两种下界**——DRAM 5.6-6.0 vs L1 0.66-0.71 ns/元素（RESULTS §2.20），套错会差 8-9 倍；aten 的瓶颈清单 B1-B8 与**实测** 0.85-1.05 条在飞（§2.19）；逐族"现状/在飞/下界/剩余/已兑现"（行拷贝 1.15-2.1x、1D 大值域 3.9x、桶化三格 4-5x/3-4x/4-5x）；差距逐 ns 分解（含高线程的**指令墙**）、端到端上限推算、欠账 H1-H8、负结果 | 要判断"还剩多少空间、下一步该动哪"的开发者 |
+| [benchmarks.md](benchmarks.md) | **benchmarks/ 目录指南**：逐脚本用途、公共环境变量、典型命令、真实 workload 覆盖与预测力矩阵、与功能测试的区别 | 想知道"该跑哪个基准、结果能不能外推"的读者 |
+| [path-matrix.md](path-matrix.md) | **路径收益矩阵（按路由组织，不是按场景）**：路径清单与谓词（改代码按谓词找 case）、两条镜头（vs aten / vs 兄弟路径）、五档裁决（强/中/弱兜底/会变负/结论不稳）、会翻转结论的变量（线程数、规模、A、源大小）、与 M1/M2 及 R1 的关系、已知局限（无 kill switch、4 条路无计数器） | 要判断"某条路值不值得保留/该不该合并"、准备新增路由的开发者 |
+| [route-merge-analysis.md](route-merge-analysis.md) | **路由合并与探测成本分析（方法优先、跨版本可迁移）**：三层成本模型、把"路径条数"和"开销"拆开的四个实验（先确认走了哪条路 / 门边界挪一格 / 单遍扫描裸价 / 语料普查）、本仓实测结论（短调用根本不进链；同局部性下门两侧是 2 倍台阶，数据见 RESULTS §2.13）、可合并清单 M1-M6（哪些能省一遍扫描、哪些只省代码）、不该合并的两类、新增路由的五条检查表、按符号名跨版本定位 | 要判断"该不该合并路由"、要新增一条路由、接手同类实现的 agent |
+
+### 架构、内核与布局
+
+| 文档 | 内容 | 读者 |
+|---|---|---|
 | [architecture.md](architecture.md) | 三段流水线整体架构、控制流、dispatch 树、数据布局 | 架构理解、代码走读 |
 | [code-walkthrough.md](code-walkthrough.md) | **源码走读（拿着代码读）**：文件清单与阅读顺序、一次 `x[idx]` 的完整旅程（真实函数名+行号）、IndexSpec 逐字段与 B-K-A 算例、op/normalize/linearize/gather 逐段精读、index_into 路由表、并行约定、十个不变量、函数→行号速查、pybind 调试出口 | 要读懂/修改源码的读者 |
-| [semantics.md](semantics.md) | 与 ATen `aten::index.Tensor` 的语义对齐点与**有意差异**、错误信息、dtype 覆盖 | 正确性审查、回归测试 |
-| [output-layout.md](output-layout.md) | **输出内存布局修复 + R10 直写（2026-10-29）**：channels_last/置换 self 上输出布局背离 aten 的 E2E bug——现象实测表、TensorIterator 置换恢复机制（源码行号）、一分钟自检探针、其他版本移植指南（§5）；R10 行块直写（§8：dense 置换等价性、资格判定、0.30-0.42x→1.45-2.54x 实测） | 排查同类 bug、持有旧版本要修复的 agent、做布局相关优化 |
 | [kernels.md](kernels.md) | SVE512 各内核（8B/4B gather、rowcopy、scalar）实现细节 + 优化轮新路径（M1 raw rowcopy、T3 fused、T4 桶化、T12 strided/multi raw、T13 small_multi、T15-C 大源 4B 直连 SVE）、预取、NT 开关 | 性能优化、内核修改 |
-| [performance.md](performance.md) | 基准方法论、**当前轮（R10）模型场景结果表**、**胜出场景的硬件根因（§4.3：rowcopy/gather MLP/遍数消除/固定开销/桶化/串行边界）**、已知硬件限制、如何复测 | 性能评估、验收、想知道"为什么快"的读者 |
-| [benchmarks.md](benchmarks.md) | **benchmarks/ 目录指南**：逐脚本用途、公共环境变量、典型命令、真实 workload 覆盖与预测力矩阵、与功能测试的区别 | 想知道"该跑哪个基准、结果能不能外推"的读者 |
-| [degradation-analysis.md](degradation-analysis.md) | **性能退化与线程扩展分析**（矩阵为 T15 时点历史；当前值见该文文首 R10 表）：1/2/4/8/16/32/36 线程矩阵、逐 case 微架构定位（x[:,i]、2B/1B、非连续 mask、小规模并行）、perf 方法、**§5.9 残余劣化的硬件根因**、**§6.5 生产形态（小 K + 6-19t）的劣化家族**（含 §6.5.7 对"固定开销占 93-95%"的逐项裁决、§6.5.8 benchmarks 口径审计）、优化优先级 | 想知道"哪个线程数慢、为什么慢"的读者 |
-| [route-merge-analysis.md](route-merge-analysis.md) | **路由合并与探测成本分析（方法优先、跨版本可迁移）**：三层成本模型、把"路径条数"和"开销"拆开的四个实验（先确认走了哪条路 / 门边界挪一格 / 单遍扫描裸价 / 语料普查）、本仓实测结论（短调用根本不进链；同局部性下门两侧是 2 倍台阶，数据见 RESULTS §2.13）、可合并清单 M1-M6（哪些能省一遍扫描、哪些只省代码）、不该合并的两类、新增路由的五条检查表、按符号名跨版本定位 | 要判断"该不该合并路由"、要新增一条路由、接手同类实现的 agent |
-| [path-matrix.md](path-matrix.md) | **路径收益矩阵（按路由组织，不是按场景）**：路径清单与谓词（改代码按谓词找 case）、两条镜头（vs ATen / vs 兄弟路径）、五档裁决（强/中/弱兜底/会变负/结论不稳）、会翻转结论的变量（线程数、规模、A、源大小）、与 M1/M2 及 R1 的关系、已知局限（无 kill switch、4 条路无计数器） | 要判断"某条路值不值得保留/该不该合并"、准备新增路由的开发者 |
-| [headroom.md](headroom.md) | **理论空间 vs 已实现空间（roofline）**：含**从零讲的硬件入门**（组相联/组与路、MSHR、RFO、DRAM bank/row、TLB 与 NUMA、乱序窗口与 IPC，外加 21 词速查表）、单位换算小抄与常见误解，以及**方法论专章**（探针的三种形状、一次从怀疑到定案的完整测量、十一个坑、复核清单）；成本 = 延迟 ÷ 在飞条数（137ns ÷ 16-20 条 → 8.6ns 下界），并说明**为什么不用 GFLOPS**（算术强度 = 0，§2.6）；还有"还有多大空间"的三把尺子（裸下界 6.5x / 实测地板 1.8x / 端到端 +0.23x，§6.5）；**两种下界**——DRAM 5.6-6.0 vs L1 0.66-0.71 ns/元素（RESULTS §2.20），套错会差 8-9 倍；aten 的瓶颈清单 B1-B8 与**实测** 0.85-1.05 条在飞（§2.19）；逐族"现状/在飞/下界/剩余/已兑现"（行拷贝 1.15-2.1x、1D 大值域 3.9x、桶化三格 4-5x/3-4x/4-5x）；差距逐 ns 分解（含高线程的**指令墙**）、端到端上限推算、欠账 H1-H8、负结果 | 要判断"还剩多少空间、下一步该动哪"的开发者 |
+| [output-layout.md](output-layout.md) | **输出内存布局修复 + R10 直写（2026-10-29）**：channels_last/置换 self 上输出布局背离 aten 的 E2E bug——现象实测表、TensorIterator 置换恢复机制（源码行号）、一分钟自检探针、其他版本移植指南（§5）；R10 行块直写（§8：dense 置换等价性、资格判定、0.30-0.42x→1.45-2.54x 实测） | 排查同类 bug、持有旧版本要修复的 agent、做布局相关优化 |
 | [optimizations.md](optimizations.md) | **T0-T15 优化/修复轮记录（编年史，非状态文档）**：自适应粒度、rowcopy A>=4、M1 skip-linearize、融合单遍、小值域桶化、1 线程单遍、跨设备校验、mask 单遍压实、小 K 精简路径、compile opt-in、T12-T15（strided run 块/multi raw/raw 放宽/4B 直连 SVE）；变更、路由、实测数据、复测 | 想了解"做了哪些优化"的读者 |
-| [fallback-analysis.md](fallback-analysis.md) | **慢场景/回退路径深度分析**（文首有当前 <1x 速查；已修项标【历史·已修】）：为什么某些形态慢（4B 随机 gather 的 64B 行放大 + DRAM 延迟、两遍模型、串行阶段、无内核 dtype）、受限于什么、为何不做 fallback、判定速查表 | 想搞清"为什么慢、能不能修"的读者 |
+
+### 语义、集成与移植
+
+| 文档 | 内容 | 读者 |
+|---|---|---|
+| [semantics.md](semantics.md) | 与 aten `aten::index.Tensor` 的语义对齐点与**有意差异**、错误信息、dtype 覆盖 | 正确性审查、回归测试 |
 | [integration.md](integration.md) | 默认覆盖 `aten::index.Tensor` 机制、运行时环境契约、逃逸开关、慢场景 fallback 决策（不改） | 集成部署、排障 |
 | [torch-compile.md](torch-compile.md) | **与 `torch.compile` 的关系**：Inductor 内联导致覆盖失效、三份实现对比、强制 fallback 让 compile 用回本算子（实测 2.6x→1.07-1.3x）、缓存/私有 API/FakeTensor 坑、`HPC_INDEX_COMPILE=1` opt-in 落地 | 需要在 compile/export 场景部署的读者 |
 | [override-mechanism.md](override-mechanism.md) | **Dispatcher 劫持机制详解**：如何覆盖 aten::index、autograd 为何不受影响、递归/唯一性边界、验证方法 | 想搞清"怎么做到的"的读者 |
 | [porting.md](porting.md) | 移植到其他 aarch64/SVE 变体、非 512-bit VL、其他 torch 版本 | 移植维护 |
-| [status.md](status.md) | **当前进展快照**：完成的工作、路由现状、性能结论、已知限制、**演进方向（§7 优先级表，接续开发从这看）** | 新读者/agent 快速上手 |
+
+### 排障与调试
+
+| 文档 | 内容 | 读者 |
+|---|---|---|
 | [debugging-playbook.md](debugging-playbook.md) | **排查手记与套路**：断言四型分类法（正向计数/负向计数/值级/元数据）、能让行为不同的变量清单、**负向对照**实验、假通过比 fail 更危险的实例；两个完整案例（`test_rowcopy_routes` 覆盖关闭时 12/14 而其中 4 项是假通过、`test_output_layout` 关覆盖仍 25/25）、两层修复（入口守卫 + `dispatch_count` 正向控制）与验证、改高频引用源文件后的锚点维护（含一次"校验器一直在检查错的文件"的复盘，§5.6）、走过的弯路；§7 是可直接照做的 14 步检查表 | 想学排查方法、接手"有测试过不了"报告的 agent |
 
 ### 归档（archive/）
@@ -91,7 +119,7 @@ aten::index.Tensor ──► index_impl(self, indices)
         │                 ├─ 单 mask && 覆盖前 m 维 && 连续 ? gather_mask()  (T8 单遍压实)
         │                 ├─ 单整数下标 && K<=4096 && 连续 ? small_single_index()  (T9)
         │                 ├─ 多索引同 shape/连续 && n<=65536 ? small_multi_index()  (T13)
-        │                 ├─ normalize_index()     对齐 ATen make_info
+        │                 ├─ normalize_index()     对齐 aten make_info
         │                 ├─ rowcopy_direct ? raw 块拷贝 / linearize+gather_index  (R10：cl/置换 out 直写，禁止 col_off 路径)
         │                 ├─ K < 1024 ? gather_direct()      (快速路径，无线性化；A==1 预校验紧凑循环)
         │                 ├─ M1 ? gather_rowcopy_raw()       (单索引 A>1 && (≥4096||<16||(≤64&&B·K≤65536)))
