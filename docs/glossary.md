@@ -35,7 +35,12 @@ shortq、A/B/K…），先查这里；各文档不再各自维护术语表。
 | **TLB / page walk / dTLB miss** | 程序用虚拟地址、内存用物理地址，翻译靠查页表；TLB 就是页表的缓存。TLB 缺失要沿多级页表走一遍（page walk），最坏 4 次内存访问 | 大范围随机访问会打爆 TLB；但本机实测 page walk 与数据 miss 并行、藏在 137ns 后面（开/关大页无差） |
 | **大页（THP）** | 默认页 4KB；大页 2MB，一个 TLB 项覆盖 512 倍范围 | 听着该有用；本机实测收益 0（被上面的并行掩盖）——负结果也记录在案 |
 | **NUMA** | 内存分节点，每个节点有自己的内存条；访问别的节点要过片内/片间互联，越远越贵 | 全部基准固定 `--physcpubind=190-227 --membind=5`（线程和内存都在 node 5）；不绑延迟差 1.4-2.7 倍（130→181→255→354ns），带宽最狠只剩 1/8 |
-| **封装内内存（on-package）** | 焊在 CPU 封装里、不在主板内存槽上的内存；本机每颗 CPU 32GB（共 64GB），被固件切成 16 个 4GB 的 NUMA node（node16-31），没有 CPU | 配对窗口（node i ↔ 16+i）141ns / 355-411 GB/s，跨 SCCL 是 ~173 GB/s 的链路硬墙、跨 socket 只有 ~19 GB/s；十四个窗口合计 5.2 TB/s——不是"共享一条 80 GB/s"，也不经过主板 DDR5 通道 |
+| **SCCL** | super CPU cluster：CPU 内部的"簇"，**每 socket 2 个、每个管 4 个 NUMA node + 4 条内存通道**。不是教科书词，是这台机器的固件/内核叫法（PMU 名 `hisi_sccl8_ddrc0_0` 里的 `sccl` 就是它）。**跨 SCCL = 跨簇**，走片内互联 | node 5 属 SCCL1（node4-7）；node5 → node12 是同 socket 的另一个 SCCL，延迟 ×1.97、带宽 ×0.38；往封装内内存跨 SCCL 是 ~173 GB/s 的链路硬墙 |
+| **封装内内存（on-package）** | 焊在 CPU 封装里、不在主板内存槽上的内存；本机每颗 CPU 32GB（共 64GB），被固件切成 16 个 4GB 的 NUMA node（node16-31），没有 CPU。下文把这样一个 4GB node 叫**封装内窗口**（别与"在飞窗口"混） | 配对窗口（node i ↔ 16+i）141ns / 355-411 GB/s，跨 SCCL 是 ~173 GB/s 的链路硬墙、跨 socket 只有 ~19 GB/s；十四个窗口合计 5.2 TB/s——不是"共享一条 80 GB/s"，也不经过主板 DDR5 通道 |
+| **DDRC（DDR 控制器）** | 内存控制器，一条 DDR 通道一个；PMU 里叫 `hisi_scclN_ddrcM_K`，事件 `flux_rd` 数读写事务 | 每 SCCL 4 个（每 socket 8 个、全机 16 个）；每个在 PMU 里再拆成 `_0`/`_1` 两个设备，所以能数出 **32 个计数器 = 32 个 32 位子通道**。用 `flux_rd` 折算能反推本地 DRAM 带宽 164.5 GB/s、并证明封装内内存**不走** DDR5 |
+| **UC（unified cache）** | 封装内内存那一层的控制器单元，固件这么叫（不是 CPU 里的 cache）；**一个 4GB 封装内 node 对应一个 UC** | 每 SCCL 4 个 / 每 socket 8 个 / 全机 16 个，与 16 个内存 node 严格 1:1（本机 4 个 SCCL，编号 0/1/8/9）；压 node30 时只有 `hisi_sccl9_uc2` 计数；`cring_txdat_cnt` 是它的字节计数器，**1 计数 = 256 B** |
+| **SRAT / SLIT / HMAT** | ACPI 里描述内存拓扑的三张表：SRAT 说"哪个核离哪段内存近"（带 PXM 距离），SLIT 说"两个 node 之间多远"（0-255 的等级），HMAT 说"各级内存多快多慢" | SLIT 的 61/71/81/91 正好就是封装内内存的四档（配对 / 同 SCCL / 跨 SCCL / 跨 socket）；HMAT 的**倍数**（10x）碰巧接近实测 7.7x，但绝对值（25.6 GB/s）与实测差一个量级，只能当等级看 |
+| **PXM（Proximity Domain）** | SRAT 给每个 NUMA node 编的邻近域号，与本机 node id 一一对应 | 解析 `SRAT` 时用 PXM 把"CPU 亲和"和"内存范围"两段记录对起来 |
 | **first-touch（首次触碰）** | 新分配的页在第一次被写时才真正拿到物理页，谁第一次写谁付缺页钱 | 8MB 输出 = 2048 次缺页，是"固定账"的主要来源之一 |
 
 ### 1.2 CPU 内部：一秒能做多少事

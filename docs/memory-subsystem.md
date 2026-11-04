@@ -40,6 +40,27 @@
 > **同 socket 的另一个 SCCL**；真正的跨 socket 是 node 8-15（距离 40），上午没测，
 > 下午补了（§5.4）。结论差别很大：跨 SCCL 掉到 0.38x，跨 socket 只有 **0.13x**。
 
+> **先说五个名词**，后面表格里反复出现，不解释会读不顺（完整的在
+> `memory-hardware-primer.md` §0/§1，这里只给一句话）：
+>
+> - **SCCL**（super CPU cluster）＝这颗 CPU 内部的"簇"，**每 socket 2 个、每个管
+>   4 个 NUMA node + 4 条内存通道**；PMU 名 `hisi_sccl8_ddrc0_0` 里的 `sccl` 就是它。
+>   **跨 SCCL = 跨簇**，走片内互联。
+> - **SRAT / SLIT / HMAT**＝ACPI 里描述"内存长什么样"的三张表：SRAT 说哪个核离哪段
+>   内存近（PXM 距离），SLIT 说两个 node 之间多远（0-255 的等级），HMAT 说各级内存
+>   多快多慢。本机三张都解了，SLIT 的 61/71/81/91 正好对应封装内内存的四档。
+> - **DDRC**＝DDR 内存控制器，一条通道一个。PMU 名 `hisi_scclN_ddrcM_K`，用事件
+>   `flux_rd` 数读写事务。
+> - **UC**（unified cache）＝封装内内存那一层的控制器单元，**一个 4GB 封装内 node
+>   对应一个 UC**（每 socket 8 个、全机 16 个）。事件 `cring_txdat_cnt` 是它的
+>   字节计数器。
+> - **PXM**＝Proximity Domain，SRAT 给每个 NUMA node 编的号，和 node id 一一对应。
+>
+> **还有"窗口"这个词，本套文档里有三种意思**，看上下文分：**封装内窗口**＝封装内
+> 那 4GB 的一个 node（§5.5 全在说它）；**在飞窗口**＝一颗核能同时挂几条访存（§3）；
+> **时间窗口**＝"同一段时间里一起跑"的测量手法（§5.5 的聚合数就是这么量的，
+> 探针与原理见 `memory-hardware-primer.md` 附录 A）。
+
 ## 1. 机器拓扑（先弄清"内存"指哪一段）
 
 | 项 | 实测 | 怎么查的 |
@@ -49,7 +70,7 @@
 | L2 | 768KB，**12 路 × 1024 组 × 64B**，每核私有 | 同上 |
 | **L3** | **无** | `lscpu -C` 只列到 index2；`/sys/.../cache/index3` 不存在 |
 | 内存条 | **16 × 64GB DDR5-5600**，2 rank、Hynix、**80 位（64 数据 + 16 校验，ECC）**；`SOCKET 0/1 CHANNEL 0-7 DIMM 0`，16 槽全满 | `dmidecode -t 16/17`（root） |
-| 内存通道 | **16 条**：每 socket 8 条、**每 SCCL 4 条**。DDR5 每条再分 2 个 32 位子通道，所以 `hisi_sccl*_ddrc*` 有 32 个 | `dmidecode` + `/sys/bus/event_source/devices/` |
+| 内存通道 | **16 条**：每 socket 8 条、**每 SCCL 4 条**。DDR5 每条再分 2 个 32 位子通道，所以 `hisi_sccl*_ddrc*` 有 **32 个设备实例**（16 个控制器 × 2） | `dmidecode` + `/sys/bus/event_source/devices/` |
 | 每通道带宽 | 理论 **44.8 GB/s**（8B × 5600 MT/s），实测约 42 | PMU 计数 + `memprobe bandwidth` |
 | NUMA | **32 个 node**：0-15 带 CPU（各 38 核，共 608），16-31 无 CPU、各 4GB | `numactl -H` |
 | 每 node 内存 | node 0-15 约 63GiB（`numactl` 报 64506MB） | `numactl -H`、`/sys/.../node*/meminfo` |
@@ -255,7 +276,7 @@ socket0 七个 **2719**、socket1 七个 **2614**、十四个 **5238 GB/s**。
 2. **"每个窗口一条 80 GB/s"也不成立**：单窗口 355-411，是 DRAM node 的 2.3 倍。
    上一版"单窗口 129-364、差 2.8 倍"是把窗口交给**不同 SCCL 的核**压出来的伪影，
    旧表自己的距离一栏就能对上（364 的配的是 61，192 的配的是 81）。
-3. **DDRC 计数器证实这些字节不走 DDR5**：压 node30（389 GB/s）时，32 个 DDRC 的
+3. **DDRC 计数器证实这些字节不走 DDR5**：压 node30（389 GB/s）时，32 个 DDRC 计数器的
    `flux_rd` 合计按 32 字节/事务只折出 0.59 GB/s。封装内内存有自己的接口。
 
 多路能不能叠加，四条路径两种脾气（每路 32 核、1GB）：
@@ -271,8 +292,9 @@ socket0 七个 **2719**、socket1 七个 **2614**、十四个 **5238 GB/s**。
 跑合计 250（近似全双工）。所以"跨 SCCL 慢"不是窗口端口不够，是那条链路就这么宽。
 
 **一个窗口 = 一个 UC**：压 node30 时只有 `hisi_sccl9_uc2`（node14 的 UC）大幅计数，
-其余 15 个只有背景。每 SCCL 4 个、每 socket 16 个、全机 32 个，与 16 个内存 node
-1:1。`cring_txdat_cnt` 是这层的字节计数器（1 计数 = 256 B）；`ucN_0..3` 四个子设备
+其余 15 个只有背景。每 SCCL 4 个、每 socket 8 个、全机 16 个，与 16 个内存 node
+1:1（本机只有 4 个 SCCL，编号 0/1/8/9）。`cring_txdat_cnt` 是这层的字节计数器
+（1 计数 = 256 B）；`ucN_0..3` 四个子设备
 读数完全相同，是同一单元的多路读口，不是四条通道——**通道数从软件侧读不出来**。
 
 关于线程：16 → 235、24 → 285、**32 → 423**、38 → 394；48/76 线程压在 34-38 条核上

@@ -410,8 +410,8 @@ node4  → node17-19   （SCCL1→SCCL0）单路 137.4、三路 172.9
 - 压 node30（node14 的配对窗口）时，**只有 `hisi_sccl9_uc2` 大幅计数**：另一个 SCCL
   （sccl8）的四个、同 SCCL 的另外三个都只有背景。`uc2` 正好是 node14 在 SCCL9 里的
   序号（node12-15 → uc0-uc3）。
-- 于是：**一个 4GB 窗口 = 一个 UC**。每 SCCL 4 个、每 socket 16 个、全机 32 个，
-  与"每 socket 16 个内存 node"严格 1:1。
+- 于是：**一个 4GB 窗口 = 一个 UC**。本机 4 个 SCCL（编号 0/1/8/9），每 SCCL 4 个、
+  每 socket 8 个、全机 16 个，与那 16 个内存 node 严格 1:1。
 - `cring_txdat_cnt` 是字节计数器，**单位 256 B**：409.6 GB/s × 2 s / 3.2e9 = 256；
   8 线程那组 140.1 GB/s 也对得上。以后不跑探针也能量这层带宽。
 - `ucN_0..3` 四个子设备的 `cpu_rd` 与 `cring_txdat_cnt` 读数**完全相同**（多次、不同
