@@ -10,3 +10,8 @@ ref_aten_index.pt
 
 # scratch space
 agent_space/
+
+# 本机硬件采集的原始产物：含 DIMM 序列号 / 且 ACPI 表为 root 400，
+# 脱敏后的版本已放在 docs/hw-report-20261104-144311.txt
+/hw-report-*.txt
+/hw-raw-*/

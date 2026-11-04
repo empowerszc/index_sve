@@ -49,9 +49,6 @@ backward 不受影响。
   在飞条数（本机 137ns、每核 16-20 条）、**两种下界**（DRAM 5.6-6.0 vs L1 0.66-0.71
   ns/元素）、aten 的瓶颈清单、逐族“现状/下界/剩余/已兑现”（H1 预取已实做，
   行拷贝 2.3-2.9x）与欠账 H1-H8（H6 已试并证伪，A=16 剩余空间暂无下手处）。
-- 想引用或复测硬件数字：[`docs/memory-subsystem.md`](docs/memory-subsystem.md)——
-  本机内存子系统**实测台账**（延迟阶梯、在飞窗口 15.5 条、单核 2.9x 顺序/随机差、
-  NUMA 本地/跨 socket、L2 有效容量、探针清单与“慢态下哪些数仍可用”）。
 - 想接续开发：`docs/status.md` §7（演进方向优先级表 R1-R9 + H1-H8：R1 小源扫描
   合并、R2 mask stride、R3 端到端验证，含预期收益与根因交叉引用）。
 - 想集成/排障：`docs/integration.md` → `docs/override-mechanism.md` → `docs/status.md`。

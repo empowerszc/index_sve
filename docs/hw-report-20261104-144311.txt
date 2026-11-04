@@ -1,0 +1,2277 @@
+硬件信息采集报告
+生成时间: 2026-11-04 14:43:11 +0800
+主机名  : n20
+输出文件: /home/z00889957/100Work/1012_index_op_opt_920F/pytorch-v2.12.1/pytorch-v2.12.1/index_sve/hw-report-20261104-144311.txt
+原始表  : /home/z00889957/100Work/1012_index_op_opt_920F/pytorch-v2.12.1/pytorch-v2.12.1/index_sve/hw-raw-20261104-144311/
+
+
+========== 0. 系统与内核 ==========
+
+----- 内核 -----
+$ uname -a
+Linux n20 5.10.0-216.0.0.115.oe2203sp4.aarch64 #1 SMP Thu Jun 27 15:22:10 CST 2024 aarch64 aarch64 aarch64 GNU/Linux
+
+----- 发行版 -----
+$ cat /etc/os-release 2>/dev/null | head -8
+NAME="openEuler"
+VERSION="22.03 (LTS-SP4)"
+ID="openEuler"
+VERSION_ID="22.03"
+PRETTY_NAME="openEuler 22.03 (LTS-SP4)"
+ANSI_COLOR="0;31"
+
+
+----- 启动参数 -----
+$ cat /proc/cmdline
+BOOT_IMAGE=/vmlinuz-5.10.0-216.0.0.115.oe2203sp4.aarch64 root=/dev/mapper/openeuler-root ro rd.lvm.lv=openeuler/root rd.lvm.lv=openeuler/swap video=VGA-1:640x480-32@60me cgroup_disable=files apparmor=0 crashkernel=1024M,high smmu.bypassdev=0x1000:0x17 smmu.bypassdev=0x1000:0x15 arm64.nopauth console=tty0
+
+----- 页大小 -----
+$ getconf PAGE_SIZE
+4096
+
+----- 小页/大页 -----
+$ grep -E 'HugePages_Total|Hugepagesize|AnonHugePages|MemTotal|MemFree|MemAvailable|SwapTotal' /proc/meminfo
+MemTotal:       1121975468 kB
+MemFree:        965492192 kB
+MemAvailable:   1066059696 kB
+SwapTotal:       4194300 kB
+AnonHugePages:  10014720 kB
+HugePages_Total:    4084
+Hugepagesize:       2048 kB
+
+----- THP 策略 -----
+$ cat /sys/kernel/mm/transparent_hugepage/enabled 2>/dev/null
+[always] madvise never
+
+
+========== 1. CPU ==========
+
+----- lscpu -----
+$ lscpu
+Architecture:                       aarch64
+CPU op-mode(s):                     64-bit
+Byte Order:                         Little Endian
+CPU(s):                             608
+On-line CPU(s) list:                0-607
+Vendor ID:                          HiSilicon
+BIOS Vendor ID:                     HiSilicon
+BIOS Model name:                    Kunpeng 920 72F8
+Model:                              0
+Thread(s) per core:                 1
+Core(s) per socket:                 304
+Socket(s):                          2
+Stepping:                           0x0
+Frequency boost:                    disabled
+CPU max MHz:                        2000.0000
+CPU min MHz:                        1200.0000
+BogoMIPS:                           200.00
+Flags:                              fp asimd evtstrm aes pmull sha1 sha2 crc32 atomics fphp asimdhp cpuid asimdrdm jscvt fcma lrcpc dcpop sha3 sm3 sm4 asimddp sha512 sve asimdfhm dit uscat ilrcpc flagm ssbs sb dcpodp sve2 sveaes svepmull svebitperm svesha3 svesm4 flagm2 frint svei8mm svebf16 i8mm bf16 dgh ecv afp rpres sme smef64f64 smei8i32 smef16f32 smeb16f32 smef32f32 smefa64 wfxt
+L1d cache:                          19 MiB (608 instances)
+L1i cache:                          19 MiB (608 instances)
+L2 cache:                           456 MiB (608 instances)
+NUMA node(s):                       32
+NUMA node0 CPU(s):                  0-37
+NUMA node1 CPU(s):                  38-75
+NUMA node2 CPU(s):                  76-113
+NUMA node3 CPU(s):                  114-151
+NUMA node4 CPU(s):                  152-189
+NUMA node5 CPU(s):                  190-227
+NUMA node6 CPU(s):                  228-265
+NUMA node7 CPU(s):                  266-303
+NUMA node8 CPU(s):                  304-341
+NUMA node9 CPU(s):                  342-379
+NUMA node10 CPU(s):                 380-417
+NUMA node11 CPU(s):                 418-455
+NUMA node12 CPU(s):                 456-493
+NUMA node13 CPU(s):                 494-531
+NUMA node14 CPU(s):                 532-569
+NUMA node15 CPU(s):                 570-607
+NUMA node16 CPU(s):                 
+NUMA node17 CPU(s):                 
+NUMA node18 CPU(s):                 
+NUMA node19 CPU(s):                 
+NUMA node20 CPU(s):                 
+NUMA node21 CPU(s):                 
+NUMA node22 CPU(s):                 
+NUMA node23 CPU(s):                 
+NUMA node24 CPU(s):                 
+NUMA node25 CPU(s):                 
+NUMA node26 CPU(s):                 
+NUMA node27 CPU(s):                 
+NUMA node28 CPU(s):                 
+NUMA node29 CPU(s):                 
+NUMA node30 CPU(s):                 
+NUMA node31 CPU(s):                 
+Vulnerability Gather data sampling: Not affected
+Vulnerability Itlb multihit:        Not affected
+Vulnerability L1tf:                 Not affected
+Vulnerability Mds:                  Not affected
+Vulnerability Meltdown:             Not affected
+Vulnerability Mmio stale data:      Not affected
+Vulnerability Retbleed:             Not affected
+Vulnerability Spec rstack overflow: Not affected
+Vulnerability Spec store bypass:    Mitigation; Speculative Store Bypass disabled via prctl
+Vulnerability Spectre v1:           Mitigation; __user pointer sanitization
+Vulnerability Spectre v2:           Vulnerable: Unprivileged eBPF enabled
+Vulnerability Srbds:                Not affected
+Vulnerability Tsx async abort:      Not affected
+
+----- 缓存（lscpu -C） -----
+$ lscpu -C
+NAME ONE-SIZE ALL-SIZE WAYS TYPE        LEVEL SETS PHY-LINE COHERENCY-SIZE
+L1d       32K      19M    8 Data            1   64                      64
+L1i       32K      19M    4 Instruction     1  128                      64
+L2       768K     456M   12 Unified         2 1024                      64
+
+----- 每核 topology（前 40 行） -----
+$ lscpu -e | head -40
+CPU NODE SOCKET CORE L1d:L1i:L2  ONLINE    MAXMHZ    MINMHZ MHZ
+  0    0      0    0 0:0:0          yes 2000.0000 1200.0000   -
+  1    0      0    1 1:1:1          yes 2000.0000 1200.0000   -
+  2    0      0    2 2:2:2          yes 2000.0000 1200.0000   -
+  3    0      0    3 3:3:3          yes 2000.0000 1200.0000   -
+  4    0      0    4 4:4:4          yes 2000.0000 1200.0000   -
+  5    0      0    5 5:5:5          yes 2000.0000 1200.0000   -
+  6    0      0    6 6:6:6          yes 2000.0000 1200.0000   -
+  7    0      0    7 7:7:7          yes 2000.0000 1200.0000   -
+  8    0      0    8 8:8:8          yes 2000.0000 1200.0000   -
+  9    0      0    9 9:9:9          yes 2000.0000 1200.0000   -
+ 10    0      0   10 10:10:10       yes 2000.0000 1200.0000   -
+ 11    0      0   11 11:11:11       yes 2000.0000 1200.0000   -
+ 12    0      0   12 12:12:12       yes 2000.0000 1200.0000   -
+ 13    0      0   13 13:13:13       yes 2000.0000 1200.0000   -
+ 14    0      0   14 14:14:14       yes 2000.0000 1200.0000   -
+ 15    0      0   15 15:15:15       yes 2000.0000 1200.0000   -
+ 16    0      0   16 16:16:16       yes 2000.0000 1200.0000   -
+ 17    0      0   17 17:17:17       yes 2000.0000 1200.0000   -
+ 18    0      0   18 18:18:18       yes 2000.0000 1200.0000   -
+ 19    0      0   19 19:19:19       yes 2000.0000 1200.0000   -
+ 20    0      0   20 20:20:20       yes 2000.0000 1200.0000   -
+ 21    0      0   21 21:21:21       yes 2000.0000 1200.0000   -
+ 22    0      0   22 22:22:22       yes 2000.0000 1200.0000   -
+ 23    0      0   23 23:23:23       yes 2000.0000 1200.0000   -
+ 24    0      0   24 24:24:24       yes 2000.0000 1200.0000   -
+ 25    0      0   25 25:25:25       yes 2000.0000 1200.0000   -
+ 26    0      0   26 26:26:26       yes 2000.0000 1200.0000   -
+ 27    0      0   27 27:27:27       yes 2000.0000 1200.0000   -
+ 28    0      0   28 28:28:28       yes 2000.0000 1200.0000   -
+ 29    0      0   29 29:29:29       yes 2000.0000 1200.0000   -
+ 30    0      0   30 30:30:30       yes 2000.0000 1200.0000   -
+ 31    0      0   31 31:31:31       yes 2000.0000 1200.0000   -
+ 32    0      0   32 32:32:32       yes 2000.0000 1200.0000   -
+ 33    0      0   33 33:33:33       yes 2000.0000 1200.0000   -
+ 34    0      0   34 34:34:34       yes 2000.0000 1200.0000   -
+ 35    0      0   35 35:35:35       yes 2000.0000 1200.0000   -
+ 36    0      0   36 36:36:36       yes 2000.0000 1200.0000   -
+ 37    0      0   37 37:37:37       yes 2000.0000 1200.0000   -
+ 38    1      0   38 38:38:38       yes 2000.0000 1200.0000   -
+
+----- cpu0 的缓存 sysfs -----
+$ for i in /sys/devices/system/cpu/cpu0/cache/index*; do echo "[$i]"; for f in level type size ways_of_associativity coherency_line_size shared_cpu_list; do echo -n "  $f="; cat $i/$f 2>/dev/null; done; done
+[/sys/devices/system/cpu/cpu0/cache/index0]
+  level=1
+  type=Data
+  size=32K
+  ways_of_associativity=8
+  coherency_line_size=64
+  shared_cpu_list=0
+[/sys/devices/system/cpu/cpu0/cache/index1]
+  level=1
+  type=Instruction
+  size=32K
+  ways_of_associativity=4
+  coherency_line_size=64
+  shared_cpu_list=0
+[/sys/devices/system/cpu/cpu0/cache/index2]
+  level=2
+  type=Unified
+  size=768K
+  ways_of_associativity=12
+  coherency_line_size=64
+  shared_cpu_list=0
+
+----- CPU part / 型号 -----
+$ grep -m1 -E 'CPU implementer|CPU part|CPU architecture' /proc/cpuinfo; echo; grep -m1 'Features' /proc/cpuinfo
+CPU implementer	: 0x48
+
+Features	: fp asimd evtstrm aes pmull sha1 sha2 crc32 atomics fphp asimdhp cpuid asimdrdm jscvt fcma lrcpc dcpop sha3 sm3 sm4 asimddp sha512 sve asimdfhm dit uscat ilrcpc flagm ssbs sb dcpodp sve2 sveaes svepmull svebitperm svesha3 svesm4 flagm2 frint svei8mm svebf16 i8mm bf16 dgh ecv afp rpres sme smef64f64 smei8i32 smef16f32 smeb16f32 smef32f32 smefa64 wfxt
+
+
+========== 2. NUMA 拓扑 ==========
+
+----- numactl -H（概览） -----
+$ numactl -H | head -40
+available: 32 nodes (0-31)
+node 0 cpus: 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37
+node 0 size: 63629 MB
+node 0 free: 42570 MB
+node 1 cpus: 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58 59 60 61 62 63 64 65 66 67 68 69 70 71 72 73 74 75
+node 1 size: 64506 MB
+node 1 free: 53231 MB
+node 2 cpus: 76 77 78 79 80 81 82 83 84 85 86 87 88 89 90 91 92 93 94 95 96 97 98 99 100 101 102 103 104 105 106 107 108 109 110 111 112 113
+node 2 size: 64466 MB
+node 2 free: 58034 MB
+node 3 cpus: 114 115 116 117 118 119 120 121 122 123 124 125 126 127 128 129 130 131 132 133 134 135 136 137 138 139 140 141 142 143 144 145 146 147 148 149 150 151
+node 3 size: 64506 MB
+node 3 free: 50259 MB
+node 4 cpus: 152 153 154 155 156 157 158 159 160 161 162 163 164 165 166 167 168 169 170 171 172 173 174 175 176 177 178 179 180 181 182 183 184 185 186 187 188 189
+node 4 size: 64506 MB
+node 4 free: 55539 MB
+node 5 cpus: 190 191 192 193 194 195 196 197 198 199 200 201 202 203 204 205 206 207 208 209 210 211 212 213 214 215 216 217 218 219 220 221 222 223 224 225 226 227
+node 5 size: 64506 MB
+node 5 free: 61447 MB
+node 6 cpus: 228 229 230 231 232 233 234 235 236 237 238 239 240 241 242 243 244 245 246 247 248 249 250 251 252 253 254 255 256 257 258 259 260 261 262 263 264 265
+node 6 size: 64506 MB
+node 6 free: 61408 MB
+node 7 cpus: 266 267 268 269 270 271 272 273 274 275 276 277 278 279 280 281 282 283 284 285 286 287 288 289 290 291 292 293 294 295 296 297 298 299 300 301 302 303
+node 7 size: 64506 MB
+node 7 free: 59411 MB
+node 8 cpus: 304 305 306 307 308 309 310 311 312 313 314 315 316 317 318 319 320 321 322 323 324 325 326 327 328 329 330 331 332 333 334 335 336 337 338 339 340 341
+node 8 size: 64506 MB
+node 8 free: 53419 MB
+node 9 cpus: 342 343 344 345 346 347 348 349 350 351 352 353 354 355 356 357 358 359 360 361 362 363 364 365 366 367 368 369 370 371 372 373 374 375 376 377 378 379
+node 9 size: 64506 MB
+node 9 free: 60106 MB
+node 10 cpus: 380 381 382 383 384 385 386 387 388 389 390 391 392 393 394 395 396 397 398 399 400 401 402 403 404 405 406 407 408 409 410 411 412 413 414 415 416 417
+node 10 size: 64506 MB
+node 10 free: 60127 MB
+node 11 cpus: 418 419 420 421 422 423 424 425 426 427 428 429 430 431 432 433 434 435 436 437 438 439 440 441 442 443 444 445 446 447 448 449 450 451 452 453 454 455
+node 11 size: 64506 MB
+node 11 free: 49735 MB
+node 12 cpus: 456 457 458 459 460 461 462 463 464 465 466 467 468 469 470 471 472 473 474 475 476 477 478 479 480 481 482 483 484 485 486 487 488 489 490 491 492 493
+node 12 size: 64506 MB
+node 12 free: 57779 MB
+
+----- 每个 node 的 CPU 列表 -----
+$ for n in /sys/devices/system/node/node*; do echo -n "$(basename $n): "; cat $n/cpulist 2>/dev/null; echo; done
+node0: 0-37
+
+node1: 38-75
+
+node10: 380-417
+
+node11: 418-455
+
+node12: 456-493
+
+node13: 494-531
+
+node14: 532-569
+
+node15: 570-607
+
+node16: 
+
+node17: 
+
+node18: 
+
+node19: 
+
+node2: 76-113
+
+node20: 
+
+node21: 
+
+node22: 
+
+node23: 
+
+node24: 
+
+node25: 
+
+node26: 
+
+node27: 
+
+node28: 
+
+node29: 
+
+node3: 114-151
+
+node30: 
+
+node31: 
+
+node4: 152-189
+
+node5: 190-227
+
+node6: 228-265
+
+node7: 266-303
+
+node8: 304-341
+
+node9: 342-379
+
+
+----- 每个 node 的内存总量 -----
+$ for n in /sys/devices/system/node/node*; do echo -n "$(basename $n): "; grep MemTotal $n/meminfo 2>/dev/null; done
+node0: Node 0 MemTotal:       65156160 kB
+node1: Node 1 MemTotal:       66054764 kB
+node10: Node 10 MemTotal:       66054764 kB
+node11: Node 11 MemTotal:       66054764 kB
+node12: Node 12 MemTotal:       66054760 kB
+node13: Node 13 MemTotal:       66054764 kB
+node14: Node 14 MemTotal:       66054764 kB
+node15: Node 15 MemTotal:       64984832 kB
+node16: Node 16 MemTotal:        4194304 kB
+node17: Node 17 MemTotal:        4194304 kB
+node18: Node 18 MemTotal:        4194304 kB
+node19: Node 19 MemTotal:        4194304 kB
+node2: Node 2 MemTotal:       66013696 kB
+node20: Node 20 MemTotal:        4194304 kB
+node21: Node 21 MemTotal:        4194304 kB
+node22: Node 22 MemTotal:        4194304 kB
+node23: Node 23 MemTotal:        4194304 kB
+node24: Node 24 MemTotal:        4194304 kB
+node25: Node 25 MemTotal:        4194304 kB
+node26: Node 26 MemTotal:        4194304 kB
+node27: Node 27 MemTotal:        4194304 kB
+node28: Node 28 MemTotal:        4194304 kB
+node29: Node 29 MemTotal:        4194304 kB
+node3: Node 3 MemTotal:       66054764 kB
+node30: Node 30 MemTotal:        4194304 kB
+node31: Node 31 MemTotal:        4194304 kB
+node4: Node 4 MemTotal:       66054760 kB
+node5: Node 5 MemTotal:       66054764 kB
+node6: Node 6 MemTotal:       66054764 kB
+node7: Node 7 MemTotal:       66054764 kB
+node8: Node 8 MemTotal:       66054756 kB
+node9: Node 9 MemTotal:       66054764 kB
+
+----- node5 的距离表（前 32 项） -----
+$ cat /sys/devices/system/node/node5/distance 2>/dev/null
+30 30 30 30 20 10 20 20 40 40 40 40 40 40 40 40 81 81 81 81 71 61 71 71 91 91 91 91 91 91 91 91
+
+----- node16 的距离表（前 32 项） -----
+$ cat /sys/devices/system/node/node16/distance 2>/dev/null
+61 71 71 71 81 81 81 81 91 91 91 91 91 91 91 91 10 255 255 255 255 255 255 255 255 255 255 255 255 255 255 255
+
+----- lstopo 结构（前 80 行） -----
+$ lstopo-no-graphics --of console 2>/dev/null | head -80
+Machine (1070GB total)
+  Package L#0
+    Group0 L#0
+      Group1(Cluster) L#0
+        MemCache L#0 (0KB)
+          NUMANode L#0 (P#0 62GB)
+        NUMANode L#1 (P#16 4096MB)
+        L2 L#0 (768KB) + L1d L#0 (32KB) + L1i L#0 (32KB) + Core L#0 + PU L#0 (P#0)
+        L2 L#1 (768KB) + L1d L#1 (32KB) + L1i L#1 (32KB) + Core L#1 + PU L#1 (P#1)
+        L2 L#2 (768KB) + L1d L#2 (32KB) + L1i L#2 (32KB) + Core L#2 + PU L#2 (P#2)
+        L2 L#3 (768KB) + L1d L#3 (32KB) + L1i L#3 (32KB) + Core L#3 + PU L#3 (P#3)
+        L2 L#4 (768KB) + L1d L#4 (32KB) + L1i L#4 (32KB) + Core L#4 + PU L#4 (P#4)
+        L2 L#5 (768KB) + L1d L#5 (32KB) + L1i L#5 (32KB) + Core L#5 + PU L#5 (P#5)
+        L2 L#6 (768KB) + L1d L#6 (32KB) + L1i L#6 (32KB) + Core L#6 + PU L#6 (P#6)
+        L2 L#7 (768KB) + L1d L#7 (32KB) + L1i L#7 (32KB) + Core L#7 + PU L#7 (P#7)
+        L2 L#8 (768KB) + L1d L#8 (32KB) + L1i L#8 (32KB) + Core L#8 + PU L#8 (P#8)
+        L2 L#9 (768KB) + L1d L#9 (32KB) + L1i L#9 (32KB) + Core L#9 + PU L#9 (P#9)
+        L2 L#10 (768KB) + L1d L#10 (32KB) + L1i L#10 (32KB) + Core L#10 + PU L#10 (P#10)
+        L2 L#11 (768KB) + L1d L#11 (32KB) + L1i L#11 (32KB) + Core L#11 + PU L#11 (P#11)
+        L2 L#12 (768KB) + L1d L#12 (32KB) + L1i L#12 (32KB) + Core L#12 + PU L#12 (P#12)
+        L2 L#13 (768KB) + L1d L#13 (32KB) + L1i L#13 (32KB) + Core L#13 + PU L#13 (P#13)
+        L2 L#14 (768KB) + L1d L#14 (32KB) + L1i L#14 (32KB) + Core L#14 + PU L#14 (P#14)
+        L2 L#15 (768KB) + L1d L#15 (32KB) + L1i L#15 (32KB) + Core L#15 + PU L#15 (P#15)
+        L2 L#16 (768KB) + L1d L#16 (32KB) + L1i L#16 (32KB) + Core L#16 + PU L#16 (P#16)
+        L2 L#17 (768KB) + L1d L#17 (32KB) + L1i L#17 (32KB) + Core L#17 + PU L#17 (P#17)
+        L2 L#18 (768KB) + L1d L#18 (32KB) + L1i L#18 (32KB) + Core L#18 + PU L#18 (P#18)
+        L2 L#19 (768KB) + L1d L#19 (32KB) + L1i L#19 (32KB) + Core L#19 + PU L#19 (P#19)
+        L2 L#20 (768KB) + L1d L#20 (32KB) + L1i L#20 (32KB) + Core L#20 + PU L#20 (P#20)
+        L2 L#21 (768KB) + L1d L#21 (32KB) + L1i L#21 (32KB) + Core L#21 + PU L#21 (P#21)
+        L2 L#22 (768KB) + L1d L#22 (32KB) + L1i L#22 (32KB) + Core L#22 + PU L#22 (P#22)
+        L2 L#23 (768KB) + L1d L#23 (32KB) + L1i L#23 (32KB) + Core L#23 + PU L#23 (P#23)
+        L2 L#24 (768KB) + L1d L#24 (32KB) + L1i L#24 (32KB) + Core L#24 + PU L#24 (P#24)
+        L2 L#25 (768KB) + L1d L#25 (32KB) + L1i L#25 (32KB) + Core L#25 + PU L#25 (P#25)
+        L2 L#26 (768KB) + L1d L#26 (32KB) + L1i L#26 (32KB) + Core L#26 + PU L#26 (P#26)
+        L2 L#27 (768KB) + L1d L#27 (32KB) + L1i L#27 (32KB) + Core L#27 + PU L#27 (P#27)
+        L2 L#28 (768KB) + L1d L#28 (32KB) + L1i L#28 (32KB) + Core L#28 + PU L#28 (P#28)
+        L2 L#29 (768KB) + L1d L#29 (32KB) + L1i L#29 (32KB) + Core L#29 + PU L#29 (P#29)
+        L2 L#30 (768KB) + L1d L#30 (32KB) + L1i L#30 (32KB) + Core L#30 + PU L#30 (P#30)
+        L2 L#31 (768KB) + L1d L#31 (32KB) + L1i L#31 (32KB) + Core L#31 + PU L#31 (P#31)
+        L2 L#32 (768KB) + L1d L#32 (32KB) + L1i L#32 (32KB) + Core L#32 + PU L#32 (P#32)
+        L2 L#33 (768KB) + L1d L#33 (32KB) + L1i L#33 (32KB) + Core L#33 + PU L#33 (P#33)
+        L2 L#34 (768KB) + L1d L#34 (32KB) + L1i L#34 (32KB) + Core L#34 + PU L#34 (P#34)
+        L2 L#35 (768KB) + L1d L#35 (32KB) + L1i L#35 (32KB) + Core L#35 + PU L#35 (P#35)
+        L2 L#36 (768KB) + L1d L#36 (32KB) + L1i L#36 (32KB) + Core L#36 + PU L#36 (P#36)
+        L2 L#37 (768KB) + L1d L#37 (32KB) + L1i L#37 (32KB) + Core L#37 + PU L#37 (P#37)
+        HostBridge
+          PCIBridge
+            PCI 02:00.0 (VGA)
+        HostBridge
+          PCIBridge
+            PCI 39:00.0 (Ethernet)
+              Net "eno1"
+              OpenFabrics "hns_0"
+      Group1(Cluster) L#1
+        NUMANode L#2 (P#1 63GB)
+        NUMANode L#3 (P#17 4096MB)
+        L2 L#38 (768KB) + L1d L#38 (32KB) + L1i L#38 (32KB) + Core L#38 + PU L#38 (P#38)
+        L2 L#39 (768KB) + L1d L#39 (32KB) + L1i L#39 (32KB) + Core L#39 + PU L#39 (P#39)
+        L2 L#40 (768KB) + L1d L#40 (32KB) + L1i L#40 (32KB) + Core L#40 + PU L#40 (P#40)
+        L2 L#41 (768KB) + L1d L#41 (32KB) + L1i L#41 (32KB) + Core L#41 + PU L#41 (P#41)
+        L2 L#42 (768KB) + L1d L#42 (32KB) + L1i L#42 (32KB) + Core L#42 + PU L#42 (P#42)
+        L2 L#43 (768KB) + L1d L#43 (32KB) + L1i L#43 (32KB) + Core L#43 + PU L#43 (P#43)
+        L2 L#44 (768KB) + L1d L#44 (32KB) + L1i L#44 (32KB) + Core L#44 + PU L#44 (P#44)
+        L2 L#45 (768KB) + L1d L#45 (32KB) + L1i L#45 (32KB) + Core L#45 + PU L#45 (P#45)
+        L2 L#46 (768KB) + L1d L#46 (32KB) + L1i L#46 (32KB) + Core L#46 + PU L#46 (P#46)
+        L2 L#47 (768KB) + L1d L#47 (32KB) + L1i L#47 (32KB) + Core L#47 + PU L#47 (P#47)
+        L2 L#48 (768KB) + L1d L#48 (32KB) + L1i L#48 (32KB) + Core L#48 + PU L#48 (P#48)
+        L2 L#49 (768KB) + L1d L#49 (32KB) + L1i L#49 (32KB) + Core L#49 + PU L#49 (P#49)
+        L2 L#50 (768KB) + L1d L#50 (32KB) + L1i L#50 (32KB) + Core L#50 + PU L#50 (P#50)
+        L2 L#51 (768KB) + L1d L#51 (32KB) + L1i L#51 (32KB) + Core L#51 + PU L#51 (P#51)
+        L2 L#52 (768KB) + L1d L#52 (32KB) + L1i L#52 (32KB) + Core L#52 + PU L#52 (P#52)
+        L2 L#53 (768KB) + L1d L#53 (32KB) + L1i L#53 (32KB) + Core L#53 + PU L#53 (P#53)
+        L2 L#54 (768KB) + L1d L#54 (32KB) + L1i L#54 (32KB) + Core L#54 + PU L#54 (P#54)
+        L2 L#55 (768KB) + L1d L#55 (32KB) + L1i L#55 (32KB) + Core L#55 + PU L#55 (P#55)
+        L2 L#56 (768KB) + L1d L#56 (32KB) + L1i L#56 (32KB) + Core L#56 + PU L#56 (P#56)
+        L2 L#57 (768KB) + L1d L#57 (32KB) + L1i L#57 (32KB) + Core L#57 + PU L#57 (P#57)
+        L2 L#58 (768KB) + L1d L#58 (32KB) + L1i L#58 (32KB) + Core L#58 + PU L#58 (P#58)
+        L2 L#59 (768KB) + L1d L#59 (32KB) + L1i L#59 (32KB) + Core L#59 + PU L#59 (P#59)
+        L2 L#60 (768KB) + L1d L#60 (32KB) + L1i L#60 (32KB) + Core L#60 + PU L#60 (P#60)
+        L2 L#61 (768KB) + L1d L#61 (32KB) + L1i L#61 (32KB) + Core L#61 + PU L#61 (P#61)
+
+----- hwloc 对象统计 -----
+$ hwloc-info 2>/dev/null | head -20
+depth 0:            1 Machine (type #0)
+ depth 1:           2 Package (type #1)
+  depth 2:          4 Group0 (type #12)
+   depth 3:         16 Group1 (type #12)
+    depth 4:        608 L2Cache (type #5)
+     depth 5:       608 L1dCache (type #4)
+      depth 6:      608 L1iCache (type #9)
+       depth 7:     608 Core (type #2)
+        depth 8:    608 PU (type #3)
+Special depth -3:   32 NUMANode (type #13)
+Special depth -8:   1 MemCache (type #18)
+Special depth -4:   19 Bridge (type #14)
+Special depth -5:   10 PCIDev (type #15)
+Special depth -6:   16 OSDev (type #16)
+Special depth -7:   18 Misc (type #17)
+
+
+========== 3. 内存条（DMI，最关键） ==========
+
+----- 物理内存阵列（dmidecode -t 16） -----
+$ dmidecode -t 16
+# dmidecode 3.4
+Getting SMBIOS data from sysfs.
+SMBIOS 3.3.0 present.
+
+Handle 0x0000, DMI type 16, 23 bytes
+Physical Memory Array
+	Location: System Board Or Motherboard
+	Use: System Memory
+	Error Correction Type: Single-bit ECC
+	Maximum Capacity: 4 TB
+	Error Information Handle: Not Provided
+	Number Of Devices: 16
+
+
+----- 每条内存（dmidecode -t 17） -----
+$ dmidecode -t 17
+# dmidecode 3.4
+Getting SMBIOS data from sysfs.
+SMBIOS 3.3.0 present.
+
+Handle 0x0002, DMI type 17, 92 bytes
+Memory Device
+	Array Handle: 0x0000
+	Error Information Handle: Not Provided
+	Total Width: 80 bits
+	Data Width: 64 bits
+	Size: 64 GB
+	Form Factor: DIMM
+	Set: None
+	Locator: DIMM000
+	Bank Locator: SOCKET 0 CHANNEL 0 DIMM 0
+	Type: DDR5
+	Type Detail: Synchronous Registered (Buffered)
+	Speed: 5600 MT/s
+	Manufacturer: Hynix
+	Serial Number: [REDACTED]
+	Asset Tag: [REDACTED]
+	Part Number: HMCG94AGBRA181N               
+	Rank: 2
+	Configured Memory Speed: 5600 MT/s
+	Minimum Voltage: 1.067 V
+	Maximum Voltage: 1.166 V
+	Configured Voltage: 1.1 V
+	Memory Technology: DRAM
+	Memory Operating Mode Capability: None
+	Firmware Version: Not Specified
+	Module Manufacturer ID: Bank 1, Hex 0xAD
+	Module Product ID: Unknown
+	Memory Subsystem Controller Manufacturer ID: Unknown
+	Memory Subsystem Controller Product ID: Unknown
+	Non-Volatile Size: None
+	Volatile Size: None
+	Cache Size: None
+	Logical Size: None
+
+Handle 0x0003, DMI type 17, 92 bytes
+Memory Device
+	Array Handle: 0x0000
+	Error Information Handle: Not Provided
+	Total Width: 80 bits
+	Data Width: 64 bits
+	Size: 64 GB
+	Form Factor: DIMM
+	Set: None
+	Locator: DIMM010
+	Bank Locator: SOCKET 0 CHANNEL 1 DIMM 0
+	Type: DDR5
+	Type Detail: Synchronous Registered (Buffered)
+	Speed: 5600 MT/s
+	Manufacturer: Hynix
+	Serial Number: [REDACTED]
+	Asset Tag: [REDACTED]
+	Part Number: HMCG94AGBRA182N               
+	Rank: 2
+	Configured Memory Speed: 5600 MT/s
+	Minimum Voltage: 1.067 V
+	Maximum Voltage: 1.166 V
+	Configured Voltage: 1.1 V
+	Memory Technology: DRAM
+	Memory Operating Mode Capability: None
+	Firmware Version: Not Specified
+	Module Manufacturer ID: Bank 1, Hex 0xAD
+	Module Product ID: Unknown
+	Memory Subsystem Controller Manufacturer ID: Unknown
+	Memory Subsystem Controller Product ID: Unknown
+	Non-Volatile Size: None
+	Volatile Size: None
+	Cache Size: None
+	Logical Size: None
+
+Handle 0x0004, DMI type 17, 92 bytes
+Memory Device
+	Array Handle: 0x0000
+	Error Information Handle: Not Provided
+	Total Width: 80 bits
+	Data Width: 64 bits
+	Size: 64 GB
+	Form Factor: DIMM
+	Set: None
+	Locator: DIMM020
+	Bank Locator: SOCKET 0 CHANNEL 2 DIMM 0
+	Type: DDR5
+	Type Detail: Synchronous Registered (Buffered)
+	Speed: 5600 MT/s
+	Manufacturer: Hynix
+	Serial Number: [REDACTED]
+	Asset Tag: [REDACTED]
+	Part Number: HMCG94AGBRA182N               
+	Rank: 2
+	Configured Memory Speed: 5600 MT/s
+	Minimum Voltage: 1.067 V
+	Maximum Voltage: 1.166 V
+	Configured Voltage: 1.1 V
+	Memory Technology: DRAM
+	Memory Operating Mode Capability: None
+	Firmware Version: Not Specified
+	Module Manufacturer ID: Bank 1, Hex 0xAD
+	Module Product ID: Unknown
+	Memory Subsystem Controller Manufacturer ID: Unknown
+	Memory Subsystem Controller Product ID: Unknown
+	Non-Volatile Size: None
+	Volatile Size: None
+	Cache Size: None
+	Logical Size: None
+
+Handle 0x0005, DMI type 17, 92 bytes
+Memory Device
+	Array Handle: 0x0000
+	Error Information Handle: Not Provided
+	Total Width: 80 bits
+	Data Width: 64 bits
+	Size: 64 GB
+	Form Factor: DIMM
+	Set: None
+	Locator: DIMM030
+	Bank Locator: SOCKET 0 CHANNEL 3 DIMM 0
+	Type: DDR5
+	Type Detail: Synchronous Registered (Buffered)
+	Speed: 5600 MT/s
+	Manufacturer: Hynix
+	Serial Number: [REDACTED]
+	Asset Tag: [REDACTED]
+	Part Number: HMCG94AGBRA182N               
+	Rank: 2
+	Configured Memory Speed: 5600 MT/s
+	Minimum Voltage: 1.067 V
+	Maximum Voltage: 1.166 V
+	Configured Voltage: 1.1 V
+	Memory Technology: DRAM
+	Memory Operating Mode Capability: None
+	Firmware Version: Not Specified
+	Module Manufacturer ID: Bank 1, Hex 0xAD
+	Module Product ID: Unknown
+	Memory Subsystem Controller Manufacturer ID: Unknown
+	Memory Subsystem Controller Product ID: Unknown
+	Non-Volatile Size: None
+	Volatile Size: None
+	Cache Size: None
+	Logical Size: None
+
+Handle 0x0006, DMI type 17, 92 bytes
+Memory Device
+	Array Handle: 0x0000
+	Error Information Handle: Not Provided
+	Total Width: 80 bits
+	Data Width: 64 bits
+	Size: 64 GB
+	Form Factor: DIMM
+	Set: None
+	Locator: DIMM040
+	Bank Locator: SOCKET 0 CHANNEL 4 DIMM 0
+	Type: DDR5
+	Type Detail: Synchronous Registered (Buffered)
+	Speed: 5600 MT/s
+	Manufacturer: Hynix
+	Serial Number: [REDACTED]
+	Asset Tag: [REDACTED]
+	Part Number: HMCG94AGBRA181N               
+	Rank: 2
+	Configured Memory Speed: 5600 MT/s
+	Minimum Voltage: 1.067 V
+	Maximum Voltage: 1.166 V
+	Configured Voltage: 1.1 V
+	Memory Technology: DRAM
+	Memory Operating Mode Capability: None
+	Firmware Version: Not Specified
+	Module Manufacturer ID: Bank 1, Hex 0xAD
+	Module Product ID: Unknown
+	Memory Subsystem Controller Manufacturer ID: Unknown
+	Memory Subsystem Controller Product ID: Unknown
+	Non-Volatile Size: None
+	Volatile Size: None
+	Cache Size: None
+	Logical Size: None
+
+Handle 0x0007, DMI type 17, 92 bytes
+Memory Device
+	Array Handle: 0x0000
+	Error Information Handle: Not Provided
+	Total Width: 80 bits
+	Data Width: 64 bits
+	Size: 64 GB
+	Form Factor: DIMM
+	Set: None
+	Locator: DIMM050
+	Bank Locator: SOCKET 0 CHANNEL 5 DIMM 0
+	Type: DDR5
+	Type Detail: Synchronous Registered (Buffered)
+	Speed: 5600 MT/s
+	Manufacturer: Hynix
+	Serial Number: [REDACTED]
+	Asset Tag: [REDACTED]
+	Part Number: HMCG94AGBRA181N               
+	Rank: 2
+	Configured Memory Speed: 5600 MT/s
+	Minimum Voltage: 1.067 V
+	Maximum Voltage: 1.166 V
+	Configured Voltage: 1.1 V
+	Memory Technology: DRAM
+	Memory Operating Mode Capability: None
+	Firmware Version: Not Specified
+	Module Manufacturer ID: Bank 1, Hex 0xAD
+	Module Product ID: Unknown
+	Memory Subsystem Controller Manufacturer ID: Unknown
+	Memory Subsystem Controller Product ID: Unknown
+	Non-Volatile Size: None
+	Volatile Size: None
+	Cache Size: None
+	Logical Size: None
+
+Handle 0x0008, DMI type 17, 92 bytes
+Memory Device
+	Array Handle: 0x0000
+	Error Information Handle: Not Provided
+	Total Width: 80 bits
+	Data Width: 64 bits
+	Size: 64 GB
+	Form Factor: DIMM
+	Set: None
+	Locator: DIMM060
+	Bank Locator: SOCKET 0 CHANNEL 6 DIMM 0
+	Type: DDR5
+	Type Detail: Synchronous Registered (Buffered)
+	Speed: 5600 MT/s
+	Manufacturer: Hynix
+	Serial Number: [REDACTED]
+	Asset Tag: [REDACTED]
+	Part Number: HMCG94AGBRA182N               
+	Rank: 2
+	Configured Memory Speed: 5600 MT/s
+	Minimum Voltage: 1.067 V
+	Maximum Voltage: 1.166 V
+	Configured Voltage: 1.1 V
+	Memory Technology: DRAM
+	Memory Operating Mode Capability: None
+	Firmware Version: Not Specified
+	Module Manufacturer ID: Bank 1, Hex 0xAD
+	Module Product ID: Unknown
+	Memory Subsystem Controller Manufacturer ID: Unknown
+	Memory Subsystem Controller Product ID: Unknown
+	Non-Volatile Size: None
+	Volatile Size: None
+	Cache Size: None
+	Logical Size: None
+
+Handle 0x0009, DMI type 17, 92 bytes
+Memory Device
+	Array Handle: 0x0000
+	Error Information Handle: Not Provided
+	Total Width: 80 bits
+	Data Width: 64 bits
+	Size: 64 GB
+	Form Factor: DIMM
+	Set: None
+	Locator: DIMM070
+	Bank Locator: SOCKET 0 CHANNEL 7 DIMM 0
+	Type: DDR5
+	Type Detail: Synchronous Registered (Buffered)
+	Speed: 5600 MT/s
+	Manufacturer: Hynix
+	Serial Number: [REDACTED]
+	Asset Tag: [REDACTED]
+	Part Number: HMCG94AGBRA181N               
+	Rank: 2
+	Configured Memory Speed: 5600 MT/s
+	Minimum Voltage: 1.067 V
+	Maximum Voltage: 1.166 V
+	Configured Voltage: 1.1 V
+	Memory Technology: DRAM
+	Memory Operating Mode Capability: None
+	Firmware Version: Not Specified
+	Module Manufacturer ID: Bank 1, Hex 0xAD
+	Module Product ID: Unknown
+	Memory Subsystem Controller Manufacturer ID: Unknown
+	Memory Subsystem Controller Product ID: Unknown
+	Non-Volatile Size: None
+	Volatile Size: None
+	Cache Size: None
+	Logical Size: None
+
+Handle 0x000A, DMI type 17, 92 bytes
+Memory Device
+	Array Handle: 0x0000
+	Error Information Handle: Not Provided
+	Total Width: 80 bits
+	Data Width: 64 bits
+	Size: 64 GB
+	Form Factor: DIMM
+	Set: None
+	Locator: DIMM100
+	Bank Locator: SOCKET 1 CHANNEL 0 DIMM 0
+	Type: DDR5
+	Type Detail: Synchronous Registered (Buffered)
+	Speed: 5600 MT/s
+	Manufacturer: Hynix
+	Serial Number: [REDACTED]
+	Asset Tag: [REDACTED]
+	Part Number: HMCG94AGBRA182N               
+	Rank: 2
+	Configured Memory Speed: 5600 MT/s
+	Minimum Voltage: 1.067 V
+	Maximum Voltage: 1.166 V
+	Configured Voltage: 1.1 V
+	Memory Technology: DRAM
+	Memory Operating Mode Capability: None
+	Firmware Version: Not Specified
+	Module Manufacturer ID: Bank 1, Hex 0xAD
+	Module Product ID: Unknown
+	Memory Subsystem Controller Manufacturer ID: Unknown
+	Memory Subsystem Controller Product ID: Unknown
+	Non-Volatile Size: None
+	Volatile Size: None
+	Cache Size: None
+	Logical Size: None
+
+Handle 0x000B, DMI type 17, 92 bytes
+Memory Device
+	Array Handle: 0x0000
+	Error Information Handle: Not Provided
+	Total Width: 80 bits
+	Data Width: 64 bits
+	Size: 64 GB
+	Form Factor: DIMM
+	Set: None
+	Locator: DIMM110
+	Bank Locator: SOCKET 1 CHANNEL 1 DIMM 0
+	Type: DDR5
+	Type Detail: Synchronous Registered (Buffered)
+	Speed: 5600 MT/s
+	Manufacturer: Hynix
+	Serial Number: [REDACTED]
+	Asset Tag: [REDACTED]
+	Part Number: HMCG94AGBRA182N               
+	Rank: 2
+	Configured Memory Speed: 5600 MT/s
+	Minimum Voltage: 1.067 V
+	Maximum Voltage: 1.166 V
+	Configured Voltage: 1.1 V
+	Memory Technology: DRAM
+	Memory Operating Mode Capability: None
+	Firmware Version: Not Specified
+	Module Manufacturer ID: Bank 1, Hex 0xAD
+	Module Product ID: Unknown
+	Memory Subsystem Controller Manufacturer ID: Unknown
+	Memory Subsystem Controller Product ID: Unknown
+	Non-Volatile Size: None
+	Volatile Size: None
+	Cache Size: None
+	Logical Size: None
+
+Handle 0x000C, DMI type 17, 92 bytes
+Memory Device
+	Array Handle: 0x0000
+	Error Information Handle: Not Provided
+	Total Width: 80 bits
+	Data Width: 64 bits
+	Size: 64 GB
+	Form Factor: DIMM
+	Set: None
+	Locator: DIMM120
+	Bank Locator: SOCKET 1 CHANNEL 2 DIMM 0
+	Type: DDR5
+	Type Detail: Synchronous Registered (Buffered)
+	Speed: 5600 MT/s
+	Manufacturer: Hynix
+	Serial Number: [REDACTED]
+	Asset Tag: [REDACTED]
+	Part Number: HMCG94AGBRA182N               
+	Rank: 2
+	Configured Memory Speed: 5600 MT/s
+	Minimum Voltage: 1.067 V
+	Maximum Voltage: 1.166 V
+	Configured Voltage: 1.1 V
+	Memory Technology: DRAM
+	Memory Operating Mode Capability: None
+	Firmware Version: Not Specified
+	Module Manufacturer ID: Bank 1, Hex 0xAD
+	Module Product ID: Unknown
+	Memory Subsystem Controller Manufacturer ID: Unknown
+	Memory Subsystem Controller Product ID: Unknown
+	Non-Volatile Size: None
+	Volatile Size: None
+	Cache Size: None
+	Logical Size: None
+
+Handle 0x000D, DMI type 17, 92 bytes
+Memory Device
+	Array Handle: 0x0000
+	Error Information Handle: Not Provided
+	Total Width: 80 bits
+	Data Width: 64 bits
+	Size: 64 GB
+	Form Factor: DIMM
+	Set: None
+	Locator: DIMM130
+	Bank Locator: SOCKET 1 CHANNEL 3 DIMM 0
+	Type: DDR5
+	Type Detail: Synchronous Registered (Buffered)
+	Speed: 5600 MT/s
+	Manufacturer: Hynix
+	Serial Number: [REDACTED]
+	Asset Tag: [REDACTED]
+	Part Number: HMCG94AGBRA182N               
+	Rank: 2
+	Configured Memory Speed: 5600 MT/s
+	Minimum Voltage: 1.067 V
+	Maximum Voltage: 1.166 V
+	Configured Voltage: 1.1 V
+	Memory Technology: DRAM
+	Memory Operating Mode Capability: None
+	Firmware Version: Not Specified
+	Module Manufacturer ID: Bank 1, Hex 0xAD
+	Module Product ID: Unknown
+	Memory Subsystem Controller Manufacturer ID: Unknown
+	Memory Subsystem Controller Product ID: Unknown
+	Non-Volatile Size: None
+	Volatile Size: None
+	Cache Size: None
+	Logical Size: None
+
+Handle 0x000E, DMI type 17, 92 bytes
+Memory Device
+	Array Handle: 0x0000
+	Error Information Handle: Not Provided
+	Total Width: 80 bits
+	Data Width: 64 bits
+	Size: 64 GB
+	Form Factor: DIMM
+	Set: None
+	Locator: DIMM140
+	Bank Locator: SOCKET 1 CHANNEL 4 DIMM 0
+	Type: DDR5
+	Type Detail: Synchronous Registered (Buffered)
+	Speed: 5600 MT/s
+	Manufacturer: Hynix
+	Serial Number: [REDACTED]
+	Asset Tag: [REDACTED]
+	Part Number: HMCG94AGBRA182N               
+	Rank: 2
+	Configured Memory Speed: 5600 MT/s
+	Minimum Voltage: 1.067 V
+	Maximum Voltage: 1.166 V
+	Configured Voltage: 1.1 V
+	Memory Technology: DRAM
+	Memory Operating Mode Capability: None
+	Firmware Version: Not Specified
+	Module Manufacturer ID: Bank 1, Hex 0xAD
+	Module Product ID: Unknown
+	Memory Subsystem Controller Manufacturer ID: Unknown
+	Memory Subsystem Controller Product ID: Unknown
+	Non-Volatile Size: None
+	Volatile Size: None
+	Cache Size: None
+	Logical Size: None
+
+Handle 0x000F, DMI type 17, 92 bytes
+Memory Device
+	Array Handle: 0x0000
+	Error Information Handle: Not Provided
+	Total Width: 80 bits
+	Data Width: 64 bits
+	Size: 64 GB
+	Form Factor: DIMM
+	Set: None
+	Locator: DIMM150
+	Bank Locator: SOCKET 1 CHANNEL 5 DIMM 0
+	Type: DDR5
+	Type Detail: Synchronous Registered (Buffered)
+	Speed: 5600 MT/s
+	Manufacturer: Hynix
+	Serial Number: [REDACTED]
+	Asset Tag: [REDACTED]
+	Part Number: HMCG94AGBRA182N               
+	Rank: 2
+	Configured Memory Speed: 5600 MT/s
+	Minimum Voltage: 1.067 V
+	Maximum Voltage: 1.166 V
+	Configured Voltage: 1.1 V
+	Memory Technology: DRAM
+	Memory Operating Mode Capability: None
+	Firmware Version: Not Specified
+	Module Manufacturer ID: Bank 1, Hex 0xAD
+	Module Product ID: Unknown
+	Memory Subsystem Controller Manufacturer ID: Unknown
+	Memory Subsystem Controller Product ID: Unknown
+	Non-Volatile Size: None
+	Volatile Size: None
+	Cache Size: None
+	Logical Size: None
+
+Handle 0x0010, DMI type 17, 92 bytes
+Memory Device
+	Array Handle: 0x0000
+	Error Information Handle: Not Provided
+	Total Width: 80 bits
+	Data Width: 64 bits
+	Size: 64 GB
+	Form Factor: DIMM
+	Set: None
+	Locator: DIMM160
+	Bank Locator: SOCKET 1 CHANNEL 6 DIMM 0
+	Type: DDR5
+	Type Detail: Synchronous Registered (Buffered)
+	Speed: 5600 MT/s
+	Manufacturer: Hynix
+	Serial Number: [REDACTED]
+	Asset Tag: [REDACTED]
+	Part Number: HMCG94AGBRA181N               
+	Rank: 2
+	Configured Memory Speed: 5600 MT/s
+	Minimum Voltage: 1.067 V
+	Maximum Voltage: 1.166 V
+	Configured Voltage: 1.1 V
+	Memory Technology: DRAM
+	Memory Operating Mode Capability: None
+	Firmware Version: Not Specified
+	Module Manufacturer ID: Bank 1, Hex 0xAD
+	Module Product ID: Unknown
+	Memory Subsystem Controller Manufacturer ID: Unknown
+	Memory Subsystem Controller Product ID: Unknown
+	Non-Volatile Size: None
+	Volatile Size: None
+	Cache Size: None
+	Logical Size: None
+
+Handle 0x0011, DMI type 17, 92 bytes
+Memory Device
+	Array Handle: 0x0000
+	Error Information Handle: Not Provided
+	Total Width: 80 bits
+	Data Width: 64 bits
+	Size: 64 GB
+	Form Factor: DIMM
+	Set: None
+	Locator: DIMM170
+	Bank Locator: SOCKET 1 CHANNEL 7 DIMM 0
+	Type: DDR5
+	Type Detail: Synchronous Registered (Buffered)
+	Speed: 5600 MT/s
+	Manufacturer: Hynix
+	Serial Number: [REDACTED]
+	Asset Tag: [REDACTED]
+	Part Number: HMCG94AGBRA181N               
+	Rank: 2
+	Configured Memory Speed: 5600 MT/s
+	Minimum Voltage: 1.067 V
+	Maximum Voltage: 1.166 V
+	Configured Voltage: 1.1 V
+	Memory Technology: DRAM
+	Memory Operating Mode Capability: None
+	Firmware Version: Not Specified
+	Module Manufacturer ID: Bank 1, Hex 0xAD
+	Module Product ID: Unknown
+	Memory Subsystem Controller Manufacturer ID: Unknown
+	Memory Subsystem Controller Product ID: Unknown
+	Non-Volatile Size: None
+	Volatile Size: None
+	Cache Size: None
+	Logical Size: None
+
+Handle 0x0014, DMI type 17, 92 bytes
+Memory Device
+	Array Handle: 0xFFFE
+	Error Information Handle: Not Provided
+	Total Width: 64 bits
+	Data Width: 64 bits
+	Size: 32 GB
+	Form Factor: Die
+	Set: None
+	Locator: CPU1MemoryOnChip
+	Bank Locator: Unknown
+	Type: DRAM
+	Type Detail: Synchronous
+	Speed: 10000 MT/s
+	Manufacturer: Unknown
+	Serial Number: [REDACTED]
+	Asset Tag: [REDACTED]
+	Part Number: Unknown
+	Rank: 1
+	Configured Memory Speed: 10000 MT/s
+	Minimum Voltage: 1.14 V
+	Maximum Voltage: 1.26 V
+	Configured Voltage: 1.225 V
+	Memory Technology: DRAM
+	Memory Operating Mode Capability: None
+	Firmware Version: Not Specified
+	Module Manufacturer ID: Unknown
+	Module Product ID: Unknown
+	Memory Subsystem Controller Manufacturer ID: Unknown
+	Memory Subsystem Controller Product ID: Unknown
+	Non-Volatile Size: None
+	Volatile Size: None
+	Cache Size: None
+	Logical Size: 32 GB
+
+Handle 0x0015, DMI type 17, 92 bytes
+Memory Device
+	Array Handle: 0xFFFE
+	Error Information Handle: Not Provided
+	Total Width: 64 bits
+	Data Width: 64 bits
+	Size: 32 GB
+	Form Factor: Die
+	Set: None
+	Locator: CPU2MemoryOnChip
+	Bank Locator: Unknown
+	Type: DRAM
+	Type Detail: Synchronous
+	Speed: 10000 MT/s
+	Manufacturer: Unknown
+	Serial Number: [REDACTED]
+	Asset Tag: [REDACTED]
+	Part Number: Unknown
+	Rank: 1
+	Configured Memory Speed: 10000 MT/s
+	Minimum Voltage: 1.14 V
+	Maximum Voltage: 1.26 V
+	Configured Voltage: 1.225 V
+	Memory Technology: DRAM
+	Memory Operating Mode Capability: None
+	Firmware Version: Not Specified
+	Module Manufacturer ID: Unknown
+	Module Product ID: Unknown
+	Memory Subsystem Controller Manufacturer ID: Unknown
+	Memory Subsystem Controller Product ID: Unknown
+	Non-Volatile Size: None
+	Volatile Size: None
+	Cache Size: None
+	Logical Size: 32 GB
+
+
+----- 内存概览（dmidecode -t memory） -----
+$ dmidecode -t memory
+# dmidecode 3.4
+Getting SMBIOS data from sysfs.
+SMBIOS 3.3.0 present.
+
+Handle 0x0000, DMI type 16, 23 bytes
+Physical Memory Array
+	Location: System Board Or Motherboard
+	Use: System Memory
+	Error Correction Type: Single-bit ECC
+	Maximum Capacity: 4 TB
+	Error Information Handle: Not Provided
+	Number Of Devices: 16
+
+Handle 0x0002, DMI type 17, 92 bytes
+Memory Device
+	Array Handle: 0x0000
+	Error Information Handle: Not Provided
+	Total Width: 80 bits
+	Data Width: 64 bits
+	Size: 64 GB
+	Form Factor: DIMM
+	Set: None
+	Locator: DIMM000
+	Bank Locator: SOCKET 0 CHANNEL 0 DIMM 0
+	Type: DDR5
+	Type Detail: Synchronous Registered (Buffered)
+	Speed: 5600 MT/s
+	Manufacturer: Hynix
+	Serial Number: [REDACTED]
+	Asset Tag: [REDACTED]
+	Part Number: HMCG94AGBRA181N               
+	Rank: 2
+	Configured Memory Speed: 5600 MT/s
+	Minimum Voltage: 1.067 V
+	Maximum Voltage: 1.166 V
+	Configured Voltage: 1.1 V
+	Memory Technology: DRAM
+	Memory Operating Mode Capability: None
+	Firmware Version: Not Specified
+	Module Manufacturer ID: Bank 1, Hex 0xAD
+	Module Product ID: Unknown
+	Memory Subsystem Controller Manufacturer ID: Unknown
+	Memory Subsystem Controller Product ID: Unknown
+	Non-Volatile Size: None
+	Volatile Size: None
+	Cache Size: None
+	Logical Size: None
+
+Handle 0x0003, DMI type 17, 92 bytes
+Memory Device
+	Array Handle: 0x0000
+	Error Information Handle: Not Provided
+	Total Width: 80 bits
+	Data Width: 64 bits
+	Size: 64 GB
+	Form Factor: DIMM
+	Set: None
+	Locator: DIMM010
+	Bank Locator: SOCKET 0 CHANNEL 1 DIMM 0
+	Type: DDR5
+	Type Detail: Synchronous Registered (Buffered)
+	Speed: 5600 MT/s
+	Manufacturer: Hynix
+	Serial Number: [REDACTED]
+	Asset Tag: [REDACTED]
+	Part Number: HMCG94AGBRA182N               
+	Rank: 2
+	Configured Memory Speed: 5600 MT/s
+	Minimum Voltage: 1.067 V
+	Maximum Voltage: 1.166 V
+	Configured Voltage: 1.1 V
+	Memory Technology: DRAM
+	Memory Operating Mode Capability: None
+	Firmware Version: Not Specified
+	Module Manufacturer ID: Bank 1, Hex 0xAD
+	Module Product ID: Unknown
+	Memory Subsystem Controller Manufacturer ID: Unknown
+	Memory Subsystem Controller Product ID: Unknown
+	Non-Volatile Size: None
+	Volatile Size: None
+	Cache Size: None
+	Logical Size: None
+
+Handle 0x0004, DMI type 17, 92 bytes
+Memory Device
+	Array Handle: 0x0000
+	Error Information Handle: Not Provided
+	Total Width: 80 bits
+	Data Width: 64 bits
+	Size: 64 GB
+	Form Factor: DIMM
+	Set: None
+	Locator: DIMM020
+	Bank Locator: SOCKET 0 CHANNEL 2 DIMM 0
+	Type: DDR5
+	Type Detail: Synchronous Registered (Buffered)
+	Speed: 5600 MT/s
+	Manufacturer: Hynix
+	Serial Number: [REDACTED]
+	Asset Tag: [REDACTED]
+	Part Number: HMCG94AGBRA182N               
+	Rank: 2
+	Configured Memory Speed: 5600 MT/s
+	Minimum Voltage: 1.067 V
+	Maximum Voltage: 1.166 V
+	Configured Voltage: 1.1 V
+	Memory Technology: DRAM
+	Memory Operating Mode Capability: None
+	Firmware Version: Not Specified
+	Module Manufacturer ID: Bank 1, Hex 0xAD
+	Module Product ID: Unknown
+	Memory Subsystem Controller Manufacturer ID: Unknown
+	Memory Subsystem Controller Product ID: Unknown
+	Non-Volatile Size: None
+	Volatile Size: None
+	Cache Size: None
+	Logical Size: None
+
+Handle 0x0005, DMI type 17, 92 bytes
+Memory Device
+	Array Handle: 0x0000
+	Error Information Handle: Not Provided
+	Total Width: 80 bits
+	Data Width: 64 bits
+	Size: 64 GB
+	Form Factor: DIMM
+	Set: None
+	Locator: DIMM030
+	Bank Locator: SOCKET 0 CHANNEL 3 DIMM 0
+	Type: DDR5
+	Type Detail: Synchronous Registered (Buffered)
+	Speed: 5600 MT/s
+	Manufacturer: Hynix
+	Serial Number: [REDACTED]
+	Asset Tag: [REDACTED]
+	Part Number: HMCG94AGBRA182N               
+	Rank: 2
+	Configured Memory Speed: 5600 MT/s
+	Minimum Voltage: 1.067 V
+	Maximum Voltage: 1.166 V
+	Configured Voltage: 1.1 V
+	Memory Technology: DRAM
+	Memory Operating Mode Capability: None
+	Firmware Version: Not Specified
+	Module Manufacturer ID: Bank 1, Hex 0xAD
+	Module Product ID: Unknown
+	Memory Subsystem Controller Manufacturer ID: Unknown
+	Memory Subsystem Controller Product ID: Unknown
+	Non-Volatile Size: None
+	Volatile Size: None
+	Cache Size: None
+	Logical Size: None
+
+Handle 0x0006, DMI type 17, 92 bytes
+Memory Device
+	Array Handle: 0x0000
+	Error Information Handle: Not Provided
+	Total Width: 80 bits
+	Data Width: 64 bits
+	Size: 64 GB
+	Form Factor: DIMM
+	Set: None
+	Locator: DIMM040
+	Bank Locator: SOCKET 0 CHANNEL 4 DIMM 0
+	Type: DDR5
+	Type Detail: Synchronous Registered (Buffered)
+	Speed: 5600 MT/s
+	Manufacturer: Hynix
+	Serial Number: [REDACTED]
+	Asset Tag: [REDACTED]
+	Part Number: HMCG94AGBRA181N               
+	Rank: 2
+	Configured Memory Speed: 5600 MT/s
+	Minimum Voltage: 1.067 V
+	Maximum Voltage: 1.166 V
+	Configured Voltage: 1.1 V
+	Memory Technology: DRAM
+	Memory Operating Mode Capability: None
+	Firmware Version: Not Specified
+	Module Manufacturer ID: Bank 1, Hex 0xAD
+	Module Product ID: Unknown
+	Memory Subsystem Controller Manufacturer ID: Unknown
+	Memory Subsystem Controller Product ID: Unknown
+	Non-Volatile Size: None
+	Volatile Size: None
+	Cache Size: None
+	Logical Size: None
+
+Handle 0x0007, DMI type 17, 92 bytes
+Memory Device
+	Array Handle: 0x0000
+	Error Information Handle: Not Provided
+	Total Width: 80 bits
+	Data Width: 64 bits
+	Size: 64 GB
+	Form Factor: DIMM
+	Set: None
+	Locator: DIMM050
+	Bank Locator: SOCKET 0 CHANNEL 5 DIMM 0
+	Type: DDR5
+	Type Detail: Synchronous Registered (Buffered)
+	Speed: 5600 MT/s
+	Manufacturer: Hynix
+	Serial Number: [REDACTED]
+	Asset Tag: [REDACTED]
+	Part Number: HMCG94AGBRA181N               
+	Rank: 2
+	Configured Memory Speed: 5600 MT/s
+	Minimum Voltage: 1.067 V
+	Maximum Voltage: 1.166 V
+	Configured Voltage: 1.1 V
+	Memory Technology: DRAM
+	Memory Operating Mode Capability: None
+	Firmware Version: Not Specified
+	Module Manufacturer ID: Bank 1, Hex 0xAD
+	Module Product ID: Unknown
+	Memory Subsystem Controller Manufacturer ID: Unknown
+	Memory Subsystem Controller Product ID: Unknown
+	Non-Volatile Size: None
+	Volatile Size: None
+	Cache Size: None
+	Logical Size: None
+
+Handle 0x0008, DMI type 17, 92 bytes
+Memory Device
+	Array Handle: 0x0000
+	Error Information Handle: Not Provided
+	Total Width: 80 bits
+	Data Width: 64 bits
+	Size: 64 GB
+	Form Factor: DIMM
+	Set: None
+	Locator: DIMM060
+	Bank Locator: SOCKET 0 CHANNEL 6 DIMM 0
+	Type: DDR5
+	Type Detail: Synchronous Registered (Buffered)
+	Speed: 5600 MT/s
+	Manufacturer: Hynix
+	Serial Number: [REDACTED]
+	Asset Tag: [REDACTED]
+	Part Number: HMCG94AGBRA182N               
+	Rank: 2
+	Configured Memory Speed: 5600 MT/s
+	Minimum Voltage: 1.067 V
+	Maximum Voltage: 1.166 V
+	Configured Voltage: 1.1 V
+	Memory Technology: DRAM
+	Memory Operating Mode Capability: None
+	Firmware Version: Not Specified
+	Module Manufacturer ID: Bank 1, Hex 0xAD
+	Module Product ID: Unknown
+	Memory Subsystem Controller Manufacturer ID: Unknown
+	Memory Subsystem Controller Product ID: Unknown
+	Non-Volatile Size: None
+	Volatile Size: None
+	Cache Size: None
+	Logical Size: None
+
+Handle 0x0009, DMI type 17, 92 bytes
+Memory Device
+	Array Handle: 0x0000
+	Error Information Handle: Not Provided
+	Total Width: 80 bits
+	Data Width: 64 bits
+	Size: 64 GB
+	Form Factor: DIMM
+	Set: None
+	Locator: DIMM070
+	Bank Locator: SOCKET 0 CHANNEL 7 DIMM 0
+	Type: DDR5
+	Type Detail: Synchronous Registered (Buffered)
+	Speed: 5600 MT/s
+	Manufacturer: Hynix
+	Serial Number: [REDACTED]
+	Asset Tag: [REDACTED]
+	Part Number: HMCG94AGBRA181N               
+	Rank: 2
+	Configured Memory Speed: 5600 MT/s
+	Minimum Voltage: 1.067 V
+	Maximum Voltage: 1.166 V
+	Configured Voltage: 1.1 V
+	Memory Technology: DRAM
+	Memory Operating Mode Capability: None
+	Firmware Version: Not Specified
+	Module Manufacturer ID: Bank 1, Hex 0xAD
+	Module Product ID: Unknown
+	Memory Subsystem Controller Manufacturer ID: Unknown
+	Memory Subsystem Controller Product ID: Unknown
+	Non-Volatile Size: None
+	Volatile Size: None
+	Cache Size: None
+	Logical Size: None
+
+Handle 0x000A, DMI type 17, 92 bytes
+Memory Device
+	Array Handle: 0x0000
+	Error Information Handle: Not Provided
+	Total Width: 80 bits
+	Data Width: 64 bits
+	Size: 64 GB
+	Form Factor: DIMM
+	Set: None
+	Locator: DIMM100
+	Bank Locator: SOCKET 1 CHANNEL 0 DIMM 0
+	Type: DDR5
+	Type Detail: Synchronous Registered (Buffered)
+	Speed: 5600 MT/s
+	Manufacturer: Hynix
+	Serial Number: [REDACTED]
+	Asset Tag: [REDACTED]
+	Part Number: HMCG94AGBRA182N               
+	Rank: 2
+	Configured Memory Speed: 5600 MT/s
+	Minimum Voltage: 1.067 V
+	Maximum Voltage: 1.166 V
+	Configured Voltage: 1.1 V
+	Memory Technology: DRAM
+	Memory Operating Mode Capability: None
+	Firmware Version: Not Specified
+	Module Manufacturer ID: Bank 1, Hex 0xAD
+	Module Product ID: Unknown
+	Memory Subsystem Controller Manufacturer ID: Unknown
+	Memory Subsystem Controller Product ID: Unknown
+	Non-Volatile Size: None
+	Volatile Size: None
+	Cache Size: None
+	Logical Size: None
+
+Handle 0x000B, DMI type 17, 92 bytes
+Memory Device
+	Array Handle: 0x0000
+	Error Information Handle: Not Provided
+	Total Width: 80 bits
+	Data Width: 64 bits
+	Size: 64 GB
+	Form Factor: DIMM
+	Set: None
+	Locator: DIMM110
+	Bank Locator: SOCKET 1 CHANNEL 1 DIMM 0
+	Type: DDR5
+	Type Detail: Synchronous Registered (Buffered)
+	Speed: 5600 MT/s
+	Manufacturer: Hynix
+	Serial Number: [REDACTED]
+	Asset Tag: [REDACTED]
+	Part Number: HMCG94AGBRA182N               
+	Rank: 2
+	Configured Memory Speed: 5600 MT/s
+	Minimum Voltage: 1.067 V
+	Maximum Voltage: 1.166 V
+	Configured Voltage: 1.1 V
+	Memory Technology: DRAM
+	Memory Operating Mode Capability: None
+	Firmware Version: Not Specified
+	Module Manufacturer ID: Bank 1, Hex 0xAD
+	Module Product ID: Unknown
+	Memory Subsystem Controller Manufacturer ID: Unknown
+	Memory Subsystem Controller Product ID: Unknown
+	Non-Volatile Size: None
+	Volatile Size: None
+	Cache Size: None
+	Logical Size: None
+
+Handle 0x000C, DMI type 17, 92 bytes
+Memory Device
+	Array Handle: 0x0000
+	Error Information Handle: Not Provided
+	Total Width: 80 bits
+	Data Width: 64 bits
+	Size: 64 GB
+	Form Factor: DIMM
+	Set: None
+	Locator: DIMM120
+	Bank Locator: SOCKET 1 CHANNEL 2 DIMM 0
+	Type: DDR5
+	Type Detail: Synchronous Registered (Buffered)
+	Speed: 5600 MT/s
+	Manufacturer: Hynix
+	Serial Number: [REDACTED]
+	Asset Tag: [REDACTED]
+	Part Number: HMCG94AGBRA182N               
+	Rank: 2
+	Configured Memory Speed: 5600 MT/s
+	Minimum Voltage: 1.067 V
+	Maximum Voltage: 1.166 V
+	Configured Voltage: 1.1 V
+	Memory Technology: DRAM
+	Memory Operating Mode Capability: None
+	Firmware Version: Not Specified
+	Module Manufacturer ID: Bank 1, Hex 0xAD
+	Module Product ID: Unknown
+	Memory Subsystem Controller Manufacturer ID: Unknown
+	Memory Subsystem Controller Product ID: Unknown
+	Non-Volatile Size: None
+	Volatile Size: None
+	Cache Size: None
+	Logical Size: None
+
+Handle 0x000D, DMI type 17, 92 bytes
+Memory Device
+	Array Handle: 0x0000
+	Error Information Handle: Not Provided
+	Total Width: 80 bits
+	Data Width: 64 bits
+	Size: 64 GB
+	Form Factor: DIMM
+	Set: None
+	Locator: DIMM130
+	Bank Locator: SOCKET 1 CHANNEL 3 DIMM 0
+	Type: DDR5
+	Type Detail: Synchronous Registered (Buffered)
+	Speed: 5600 MT/s
+	Manufacturer: Hynix
+	Serial Number: [REDACTED]
+	Asset Tag: [REDACTED]
+	Part Number: HMCG94AGBRA182N               
+	Rank: 2
+	Configured Memory Speed: 5600 MT/s
+	Minimum Voltage: 1.067 V
+	Maximum Voltage: 1.166 V
+	Configured Voltage: 1.1 V
+	Memory Technology: DRAM
+	Memory Operating Mode Capability: None
+	Firmware Version: Not Specified
+	Module Manufacturer ID: Bank 1, Hex 0xAD
+	Module Product ID: Unknown
+	Memory Subsystem Controller Manufacturer ID: Unknown
+	Memory Subsystem Controller Product ID: Unknown
+	Non-Volatile Size: None
+	Volatile Size: None
+	Cache Size: None
+	Logical Size: None
+
+Handle 0x000E, DMI type 17, 92 bytes
+Memory Device
+	Array Handle: 0x0000
+	Error Information Handle: Not Provided
+	Total Width: 80 bits
+	Data Width: 64 bits
+	Size: 64 GB
+	Form Factor: DIMM
+	Set: None
+	Locator: DIMM140
+	Bank Locator: SOCKET 1 CHANNEL 4 DIMM 0
+	Type: DDR5
+	Type Detail: Synchronous Registered (Buffered)
+	Speed: 5600 MT/s
+	Manufacturer: Hynix
+	Serial Number: [REDACTED]
+	Asset Tag: [REDACTED]
+	Part Number: HMCG94AGBRA182N               
+	Rank: 2
+	Configured Memory Speed: 5600 MT/s
+	Minimum Voltage: 1.067 V
+	Maximum Voltage: 1.166 V
+	Configured Voltage: 1.1 V
+	Memory Technology: DRAM
+	Memory Operating Mode Capability: None
+	Firmware Version: Not Specified
+	Module Manufacturer ID: Bank 1, Hex 0xAD
+	Module Product ID: Unknown
+	Memory Subsystem Controller Manufacturer ID: Unknown
+	Memory Subsystem Controller Product ID: Unknown
+	Non-Volatile Size: None
+	Volatile Size: None
+	Cache Size: None
+	Logical Size: None
+
+Handle 0x000F, DMI type 17, 92 bytes
+Memory Device
+	Array Handle: 0x0000
+	Error Information Handle: Not Provided
+	Total Width: 80 bits
+	Data Width: 64 bits
+	Size: 64 GB
+	Form Factor: DIMM
+	Set: None
+	Locator: DIMM150
+	Bank Locator: SOCKET 1 CHANNEL 5 DIMM 0
+	Type: DDR5
+	Type Detail: Synchronous Registered (Buffered)
+	Speed: 5600 MT/s
+	Manufacturer: Hynix
+	Serial Number: [REDACTED]
+	Asset Tag: [REDACTED]
+	Part Number: HMCG94AGBRA182N               
+	Rank: 2
+	Configured Memory Speed: 5600 MT/s
+	Minimum Voltage: 1.067 V
+	Maximum Voltage: 1.166 V
+	Configured Voltage: 1.1 V
+	Memory Technology: DRAM
+	Memory Operating Mode Capability: None
+	Firmware Version: Not Specified
+	Module Manufacturer ID: Bank 1, Hex 0xAD
+	Module Product ID: Unknown
+	Memory Subsystem Controller Manufacturer ID: Unknown
+	Memory Subsystem Controller Product ID: Unknown
+	Non-Volatile Size: None
+	Volatile Size: None
+	Cache Size: None
+	Logical Size: None
+
+Handle 0x0010, DMI type 17, 92 bytes
+Memory Device
+	Array Handle: 0x0000
+	Error Information Handle: Not Provided
+	Total Width: 80 bits
+	Data Width: 64 bits
+	Size: 64 GB
+	Form Factor: DIMM
+	Set: None
+	Locator: DIMM160
+	Bank Locator: SOCKET 1 CHANNEL 6 DIMM 0
+	Type: DDR5
+	Type Detail: Synchronous Registered (Buffered)
+	Speed: 5600 MT/s
+	Manufacturer: Hynix
+	Serial Number: [REDACTED]
+	Asset Tag: [REDACTED]
+	Part Number: HMCG94AGBRA181N               
+	Rank: 2
+	Configured Memory Speed: 5600 MT/s
+	Minimum Voltage: 1.067 V
+	Maximum Voltage: 1.166 V
+	Configured Voltage: 1.1 V
+	Memory Technology: DRAM
+	Memory Operating Mode Capability: None
+	Firmware Version: Not Specified
+	Module Manufacturer ID: Bank 1, Hex 0xAD
+	Module Product ID: Unknown
+	Memory Subsystem Controller Manufacturer ID: Unknown
+	Memory Subsystem Controller Product ID: Unknown
+	Non-Volatile Size: None
+	Volatile Size: None
+	Cache Size: None
+	Logical Size: None
+
+Handle 0x0011, DMI type 17, 92 bytes
+Memory Device
+	Array Handle: 0x0000
+	Error Information Handle: Not Provided
+	Total Width: 80 bits
+	Data Width: 64 bits
+	Size: 64 GB
+	Form Factor: DIMM
+	Set: None
+	Locator: DIMM170
+	Bank Locator: SOCKET 1 CHANNEL 7 DIMM 0
+	Type: DDR5
+	Type Detail: Synchronous Registered (Buffered)
+	Speed: 5600 MT/s
+	Manufacturer: Hynix
+	Serial Number: [REDACTED]
+	Asset Tag: [REDACTED]
+	Part Number: HMCG94AGBRA181N               
+	Rank: 2
+	Configured Memory Speed: 5600 MT/s
+	Minimum Voltage: 1.067 V
+	Maximum Voltage: 1.166 V
+	Configured Voltage: 1.1 V
+	Memory Technology: DRAM
+	Memory Operating Mode Capability: None
+	Firmware Version: Not Specified
+	Module Manufacturer ID: Bank 1, Hex 0xAD
+	Module Product ID: Unknown
+	Memory Subsystem Controller Manufacturer ID: Unknown
+	Memory Subsystem Controller Product ID: Unknown
+	Non-Volatile Size: None
+	Volatile Size: None
+	Cache Size: None
+	Logical Size: None
+
+Handle 0x0014, DMI type 17, 92 bytes
+Memory Device
+	Array Handle: 0xFFFE
+	Error Information Handle: Not Provided
+	Total Width: 64 bits
+	Data Width: 64 bits
+	Size: 32 GB
+	Form Factor: Die
+	Set: None
+	Locator: CPU1MemoryOnChip
+	Bank Locator: Unknown
+	Type: DRAM
+	Type Detail: Synchronous
+	Speed: 10000 MT/s
+	Manufacturer: Unknown
+	Serial Number: [REDACTED]
+	Asset Tag: [REDACTED]
+	Part Number: Unknown
+	Rank: 1
+	Configured Memory Speed: 10000 MT/s
+	Minimum Voltage: 1.14 V
+	Maximum Voltage: 1.26 V
+	Configured Voltage: 1.225 V
+	Memory Technology: DRAM
+	Memory Operating Mode Capability: None
+	Firmware Version: Not Specified
+	Module Manufacturer ID: Unknown
+	Module Product ID: Unknown
+	Memory Subsystem Controller Manufacturer ID: Unknown
+	Memory Subsystem Controller Product ID: Unknown
+	Non-Volatile Size: None
+	Volatile Size: None
+	Cache Size: None
+	Logical Size: 32 GB
+
+Handle 0x0015, DMI type 17, 92 bytes
+Memory Device
+	Array Handle: 0xFFFE
+	Error Information Handle: Not Provided
+	Total Width: 64 bits
+	Data Width: 64 bits
+	Size: 32 GB
+	Form Factor: Die
+	Set: None
+	Locator: CPU2MemoryOnChip
+	Bank Locator: Unknown
+	Type: DRAM
+	Type Detail: Synchronous
+	Speed: 10000 MT/s
+	Manufacturer: Unknown
+	Serial Number: [REDACTED]
+	Asset Tag: [REDACTED]
+	Part Number: Unknown
+	Rank: 1
+	Configured Memory Speed: 10000 MT/s
+	Minimum Voltage: 1.14 V
+	Maximum Voltage: 1.26 V
+	Configured Voltage: 1.225 V
+	Memory Technology: DRAM
+	Memory Operating Mode Capability: None
+	Firmware Version: Not Specified
+	Module Manufacturer ID: Unknown
+	Module Product ID: Unknown
+	Memory Subsystem Controller Manufacturer ID: Unknown
+	Memory Subsystem Controller Product ID: Unknown
+	Non-Volatile Size: None
+	Volatile Size: None
+	Cache Size: None
+	Logical Size: 32 GB
+
+
+----- 缓存（dmidecode -t cache） -----
+$ dmidecode -t cache
+# dmidecode 3.4
+Getting SMBIOS data from sysfs.
+SMBIOS 3.3.0 present.
+
+Handle 0x0018, DMI type 7, 27 bytes
+Cache Information
+	Socket Designation: L1 Cache
+	Configuration: Enabled, Not Socketed, Level 1
+	Operational Mode: Write Back
+	Location: Internal
+	Installed Size: 19 MB
+	Maximum Size: 19 MB
+	Supported SRAM Types:
+		Synchronous
+	Installed SRAM Type: Synchronous
+	Speed: Unknown
+	Error Correction Type: Single-bit ECC
+	System Type: Unified
+	Associativity: 4-way Set-associative
+
+Handle 0x0019, DMI type 7, 27 bytes
+Cache Information
+	Socket Designation: L2 Cache
+	Configuration: Enabled, Not Socketed, Level 2
+	Operational Mode: Varies With Memory Address
+	Location: Internal
+	Installed Size: 228 MB
+	Maximum Size: 228 MB
+	Supported SRAM Types:
+		Synchronous
+	Installed SRAM Type: Synchronous
+	Speed: Unknown
+	Error Correction Type: Single-bit ECC
+	System Type: Unified
+	Associativity: 8-way Set-associative
+
+Handle 0x001B, DMI type 7, 27 bytes
+Cache Information
+	Socket Designation: L1 Cache
+	Configuration: Enabled, Not Socketed, Level 1
+	Operational Mode: Write Back
+	Location: Internal
+	Installed Size: 19 MB
+	Maximum Size: 19 MB
+	Supported SRAM Types:
+		Synchronous
+	Installed SRAM Type: Synchronous
+	Speed: Unknown
+	Error Correction Type: Single-bit ECC
+	System Type: Unified
+	Associativity: 4-way Set-associative
+
+Handle 0x001C, DMI type 7, 27 bytes
+Cache Information
+	Socket Designation: L2 Cache
+	Configuration: Enabled, Not Socketed, Level 2
+	Operational Mode: Varies With Memory Address
+	Location: Internal
+	Installed Size: 228 MB
+	Maximum Size: 228 MB
+	Supported SRAM Types:
+		Synchronous
+	Installed SRAM Type: Synchronous
+	Speed: Unknown
+	Error Correction Type: Single-bit ECC
+	System Type: Unified
+	Associativity: 8-way Set-associative
+
+
+
+========== 4. ACPI：NUMA/内存拓扑的固件描述 ==========
+
+----- SRAT（字符串视图，前 60 行） -----
+原始表已存: /home/z00889957/100Work/1012_index_op_opt_920F/pytorch-v2.12.1/pytorch-v2.12.1/index_sve/hw-raw-20261104-144311/SRAT.bin（12936 字节）
+SRAT
+1HISI  HIP11   
+HISI$
+
+----- SLIT（字符串视图，前 60 行） -----
+原始表已存: /home/z00889957/100Work/1012_index_op_opt_920F/pytorch-v2.12.1/pytorch-v2.12.1/index_sve/hw-raw-20261104-144311/SLIT.bin（1068 字节）
+SLIT,
+|HISI  HIP11   
+HISI$
+((((((((=GGGQQQQ[[[[[[[[
+((((((((G=GGQQQQ[[[[[[[[
+((((((((GG=GQQQQ[[[[[[[[
+((((((((GGG=QQQQ[[[[[[[[
+((((((((QQQQ=GGG[[[[[[[[
+((((((((QQQQG=GG[[[[[[[[
+((((((((QQQQGG=G[[[[[[[[
+((((((((QQQQGGG=[[[[[[[[((((((((
+[[[[[[[[=GGGQQQQ((((((((
+[[[[[[[[G=GGQQQQ((((((((
+[[[[[[[[GG=GQQQQ((((((((
+[[[[[[[[GGG=QQQQ((((((((
+[[[[[[[[QQQQ=GGG((((((((
+[[[[[[[[QQQQG=GG((((((((
+[[[[[[[[QQQQGG=G((((((((
+[[[[[[[[QQQQGGG==GGGQQQQ[[[[[[[[
+G=GGQQQQ[[[[[[[[
+GG=GQQQQ[[[[[[[[
+GGG=QQQQ[[[[[[[[
+QQQQ=GGG[[[[[[[[
+QQQQG=GG[[[[[[[[
+QQQQGG=G[[[[[[[[
+QQQQGGG=[[[[[[[[
+[[[[[[[[=GGGQQQQ
+[[[[[[[[G=GGQQQQ
+[[[[[[[[GG=GQQQQ
+[[[[[[[[GGG=QQQQ
+[[[[[[[[QQQQ=GGG
+[[[[[[[[QQQQG=GG
+[[[[[[[[QQQQGG=G
+[[[[[[[[QQQQGGG=
+
+----- HMAT（字符串视图，前 60 行） -----
+原始表已存: /home/z00889957/100Work/1012_index_op_opt_920F/pytorch-v2.12.1/pytorch-v2.12.1/index_sve/hw-raw-20261104-144311/HMAT.bin（3848 字节）
+HMAT
+HHISI  HIP11   
+HISI$
+
+----- NFIT -----
+不存在（这台机器的固件没暴露）
+
+
+========== 5. 内核怎么看 NUMA / 内存 ==========
+
+----- dmesg 里的 NUMA/SRAT/HMAT -----
+$ dmesg 2>/dev/null | grep -iE 'numa|srat|hmat|slit|node.*mem' | head -60
+[    0.000000] ACPI: SRAT 0x000000005FFE7518 003288 (v03 HISI   HIP11    00000000 HISI 20151124)
+[    0.000000] ACPI: SLIT 0x000000005FFEBD18 00042C (v01 HISI   HIP11    00000000 HISI 20151124)
+[    0.000000] ACPI: HMAT 0x000000005FFEC398 000F08 (v02 HISI   HIP11    00000000 HISI 20151124)
+[    0.000000] ACPI: SRAT: Node 0 PXM 0 [mem 0x00000000-0x7fffffff]
+[    0.000000] ACPI: SRAT: Node 0 PXM 0 [mem 0x10000000000-0x10fffffffff]
+[    0.000000] ACPI: SRAT: Node 1 PXM 1 [mem 0x11000000000-0x11fffffffff]
+[    0.000000] ACPI: SRAT: Node 2 PXM 2 [mem 0x12000000000-0x12fffffffff]
+[    0.000000] ACPI: SRAT: Node 3 PXM 3 [mem 0x13000000000-0x13fffffffff]
+[    0.000000] ACPI: SRAT: Node 4 PXM 4 [mem 0x14000000000-0x14fffffffff]
+[    0.000000] ACPI: SRAT: Node 5 PXM 5 [mem 0x15000000000-0x15fffffffff]
+[    0.000000] ACPI: SRAT: Node 6 PXM 6 [mem 0x16000000000-0x16fffffffff]
+[    0.000000] ACPI: SRAT: Node 7 PXM 7 [mem 0x17000000000-0x17fffffffff]
+[    0.000000] ACPI: SRAT: Node 8 PXM 8 [mem 0x90000000000-0x90fffffffff]
+[    0.000000] ACPI: SRAT: Node 9 PXM 9 [mem 0x91000000000-0x91fffffffff]
+[    0.000000] ACPI: SRAT: Node 10 PXM 10 [mem 0x92000000000-0x92fffffffff]
+[    0.000000] ACPI: SRAT: Node 11 PXM 11 [mem 0x93000000000-0x93fffffffff]
+[    0.000000] ACPI: SRAT: Node 12 PXM 12 [mem 0x94000000000-0x94fffffffff]
+[    0.000000] ACPI: SRAT: Node 13 PXM 13 [mem 0x95000000000-0x95fffffffff]
+[    0.000000] ACPI: SRAT: Node 14 PXM 14 [mem 0x96000000000-0x96fffffffff]
+[    0.000000] ACPI: SRAT: Node 15 PXM 15 [mem 0x97000000000-0x97fffffffff]
+[    0.000000] ACPI: SRAT: Node 16 PXM 16 [mem 0x1000000000-0x10ffffffff] hotplug
+[    0.000000] ACPI: SRAT: Node 17 PXM 17 [mem 0x1100000000-0x11ffffffff] hotplug
+[    0.000000] ACPI: SRAT: Node 18 PXM 18 [mem 0x1200000000-0x12ffffffff] hotplug
+[    0.000000] ACPI: SRAT: Node 19 PXM 19 [mem 0x1300000000-0x13ffffffff] hotplug
+[    0.000000] ACPI: SRAT: Node 20 PXM 20 [mem 0x1400000000-0x14ffffffff] hotplug
+[    0.000000] ACPI: SRAT: Node 21 PXM 21 [mem 0x1500000000-0x15ffffffff] hotplug
+[    0.000000] ACPI: SRAT: Node 22 PXM 22 [mem 0x1600000000-0x16ffffffff] hotplug
+[    0.000000] ACPI: SRAT: Node 23 PXM 23 [mem 0x1700000000-0x17ffffffff] hotplug
+[    0.000000] ACPI: SRAT: Node 24 PXM 24 [mem 0x81000000000-0x810ffffffff] hotplug
+[    0.000000] ACPI: SRAT: Node 25 PXM 25 [mem 0x81100000000-0x811ffffffff] hotplug
+[    0.000000] ACPI: SRAT: Node 26 PXM 26 [mem 0x81200000000-0x812ffffffff] hotplug
+[    0.000000] ACPI: SRAT: Node 27 PXM 27 [mem 0x81300000000-0x813ffffffff] hotplug
+[    0.000000] ACPI: SRAT: Node 28 PXM 28 [mem 0x81400000000-0x814ffffffff] hotplug
+[    0.000000] ACPI: SRAT: Node 29 PXM 29 [mem 0x81500000000-0x815ffffffff] hotplug
+[    0.000000] ACPI: SRAT: Node 30 PXM 30 [mem 0x81600000000-0x816ffffffff] hotplug
+[    0.000000] ACPI: SRAT: Node 31 PXM 31 [mem 0x81700000000-0x817ffffffff] hotplug
+[    0.000000] NUMA: NODE_DATA [mem 0x10fffffa2c0-0x10fffffffff]
+[    0.000000] NUMA: NODE_DATA [mem 0x11fffffa2c0-0x11fffffffff]
+[    0.000000] NUMA: NODE_DATA [mem 0x12fffffa2c0-0x12fffffffff]
+[    0.000000] NUMA: NODE_DATA [mem 0x13fffffa2c0-0x13fffffffff]
+[    0.000000] NUMA: NODE_DATA [mem 0x14fffffa2c0-0x14fffffffff]
+[    0.000000] NUMA: NODE_DATA [mem 0x15fffffa2c0-0x15fffffffff]
+[    0.000000] NUMA: NODE_DATA [mem 0x16fffffa2c0-0x16fffffffff]
+[    0.000000] NUMA: NODE_DATA [mem 0x17fffffa2c0-0x17fffffffff]
+[    0.000000] NUMA: NODE_DATA [mem 0x90fffffa2c0-0x90fffffffff]
+[    0.000000] NUMA: NODE_DATA [mem 0x91fffffa2c0-0x91fffffffff]
+[    0.000000] NUMA: NODE_DATA [mem 0x92fffffa2c0-0x92fffffffff]
+[    0.000000] NUMA: NODE_DATA [mem 0x93fffffa2c0-0x93fffffffff]
+[    0.000000] NUMA: NODE_DATA [mem 0x94fffffa2c0-0x94fffffffff]
+[    0.000000] NUMA: NODE_DATA [mem 0x95fffffa2c0-0x95fffffffff]
+[    0.000000] NUMA: NODE_DATA [mem 0x96fffffa2c0-0x96fffffffff]
+[    0.000000] NUMA: NODE_DATA [mem 0x97fbfde22c0-0x97fbfde7fff]
+[    0.000000] NUMA: Initmem setup node 16 [<memory-less node>]
+[    0.000000] NUMA: NODE_DATA [mem 0x97fbfddc580-0x97fbfde22bf]
+[    0.000000] NUMA: NODE_DATA(16) on node 15
+[    0.000000] NUMA: Initmem setup node 17 [<memory-less node>]
+[    0.000000] NUMA: NODE_DATA [mem 0x97fbfdd6840-0x97fbfddc57f]
+[    0.000000] NUMA: NODE_DATA(17) on node 15
+[    0.000000] NUMA: Initmem setup node 18 [<memory-less node>]
+[    0.000000] NUMA: NODE_DATA [mem 0x97fbfdd0b00-0x97fbfdd683f]
+
+----- dmesg 里的 EDAC / 内存控制器 -----
+$ dmesg 2>/dev/null | grep -iE 'edac|ddrc|memory controller|hbm|cxl' | head -40
+[   33.672512] EDAC MC0: Giving out device to module ghes_edac.c controller ghes_edac: DEV ghes (INTERRUPT)
+[   75.250837] EDAC MC: Ver: 3.0.0
+[  506.161121] IPv6: ADDRCONF(NETDEV_CHANGE): eno1: link becomes ready
+[78449.589034] IPv6: ADDRCONF(NETDEV_CHANGE): vethde88c98: link becomes ready
+[78449.630419] IPv6: ADDRCONF(NETDEV_CHANGE): docker0: link becomes ready
+[78451.909540] IPv6: ADDRCONF(NETDEV_CHANGE): veth381bf5e: link becomes ready
+[78619.359567] IPv6: ADDRCONF(NETDEV_CHANGE): veth23f8673: link becomes ready
+[78736.752212] IPv6: ADDRCONF(NETDEV_CHANGE): veth1362faa: link becomes ready
+[81197.659263] IPv6: ADDRCONF(NETDEV_CHANGE): veth420ef4c: link becomes ready
+[133257.184959] IPv6: ADDRCONF(NETDEV_CHANGE): vethb87806e: link becomes ready
+[133448.446026] IPv6: ADDRCONF(NETDEV_CHANGE): veth6048a07: link becomes ready
+[133693.561634] IPv6: ADDRCONF(NETDEV_CHANGE): vethf02423a: link becomes ready
+[133889.532296] IPv6: ADDRCONF(NETDEV_CHANGE): veth18ff3d7: link becomes ready
+[134084.380682] IPv6: ADDRCONF(NETDEV_CHANGE): vethac38300: link becomes ready
+[134108.708134] IPv6: ADDRCONF(NETDEV_CHANGE): veth40d2835: link becomes ready
+[134157.360765] IPv6: ADDRCONF(NETDEV_CHANGE): veth970d46f: link becomes ready
+[134189.771645] IPv6: ADDRCONF(NETDEV_CHANGE): veth8870f49: link becomes ready
+[134373.582151] IPv6: ADDRCONF(NETDEV_CHANGE): veth5ae49d7: link becomes ready
+[134375.658997] IPv6: ADDRCONF(NETDEV_CHANGE): veth3fc8142: link becomes ready
+[134417.506307] IPv6: ADDRCONF(NETDEV_CHANGE): veth5e4f66c: link becomes ready
+[134441.291158] IPv6: ADDRCONF(NETDEV_CHANGE): veth24c50af: link becomes ready
+[134467.189672] IPv6: ADDRCONF(NETDEV_CHANGE): veth96c0c3a: link becomes ready
+[134615.753839] IPv6: ADDRCONF(NETDEV_CHANGE): veth8a3d532: link becomes ready
+[134822.266146] IPv6: ADDRCONF(NETDEV_CHANGE): veth9fffcbc: link becomes ready
+[134824.601689] IPv6: ADDRCONF(NETDEV_CHANGE): vethe45e197: link becomes ready
+[134878.123706] IPv6: ADDRCONF(NETDEV_CHANGE): veth0347407: link becomes ready
+[134904.992760] IPv6: ADDRCONF(NETDEV_CHANGE): vethf7ac662: link becomes ready
+[135779.550841] IPv6: ADDRCONF(NETDEV_CHANGE): vethe451d34: link becomes ready
+[135798.020968] IPv6: ADDRCONF(NETDEV_CHANGE): veth96a60b6: link becomes ready
+[135964.328740] IPv6: ADDRCONF(NETDEV_CHANGE): veth7fd9642: link becomes ready
+[136047.658720] IPv6: ADDRCONF(NETDEV_CHANGE): vethfe46b6a: link becomes ready
+[136135.102044] IPv6: ADDRCONF(NETDEV_CHANGE): vethc4cfd7c: link becomes ready
+[136289.788700] IPv6: ADDRCONF(NETDEV_CHANGE): veth76197c2: link becomes ready
+[136424.523966] IPv6: ADDRCONF(NETDEV_CHANGE): veth99276c7: link becomes ready
+[136908.238893] IPv6: ADDRCONF(NETDEV_CHANGE): vethad7835c: link becomes ready
+[138031.272938] IPv6: ADDRCONF(NETDEV_CHANGE): veth251feab: link becomes ready
+[138242.617381] IPv6: ADDRCONF(NETDEV_CHANGE): vethaafc7ef: link becomes ready
+[139093.379710] IPv6: ADDRCONF(NETDEV_CHANGE): vethfb04c16: link becomes ready
+[139137.627106] IPv6: ADDRCONF(NETDEV_CHANGE): veth69d983e: link becomes ready
+[139267.305561] IPv6: ADDRCONF(NETDEV_CHANGE): vethc6c5060: link becomes ready
+
+----- EDAC 实例 -----
+$ ls -l /sys/devices/system/edac/mc/ 2>/dev/null
+total 0
+drwxr-xr-x. 2 root root    0 Sep  4 14:06 power
+lrwxrwxrwx. 1 root root    0 Sep  4 14:06 subsystem -> ../../../../bus/edac
+-rw-r--r--. 1 root root 4096 Sep  4 14:06 uevent
+
+
+========== 6. 物理地址布局 ==========
+
+----- /proc/iomem（前 60 行） -----
+$ head -60 /proc/iomem
+00000000-03f7ffff : reserved
+  00000000-00000fff : arm-smmu-v3-pmcg.39.auto
+    00000000-00000fff : arm-smmu-v3-pmcg.38.auto
+      00000000-00000fff : arm-smmu-v3-pmcg.37.auto
+        00000000-00000fff : arm-smmu-v3-pmcg.36.auto
+          00000000-00000fff : arm-smmu-v3-pmcg.35.auto
+          00000000-00000fff : arm-smmu-v3-pmcg.34.auto
+          00000000-00000fff : arm-smmu-v3-pmcg.33.auto
+          00000000-00000fff : arm-smmu-v3-pmcg.32.auto
+          00000000-00000fff : arm-smmu-v3-pmcg.31.auto
+          00000000-00000fff : arm-smmu-v3-pmcg.30.auto
+          00000000-00000fff : arm-smmu-v3-pmcg.29.auto
+          00000000-00000fff : arm-smmu-v3-pmcg.28.auto
+          00000000-00000fff : arm-smmu-v3-pmcg.27.auto
+          00000000-00000fff : arm-smmu-v3-pmcg.26.auto
+          00000000-00000fff : arm-smmu-v3-pmcg.25.auto
+          00000000-00000fff : arm-smmu-v3-pmcg.24.auto
+          00000000-00000fff : arm-smmu-v3-pmcg.23.auto
+          00000000-00000fff : arm-smmu-v3-pmcg.22.auto
+          00000000-00000fff : arm-smmu-v3-pmcg.21.auto
+          00000000-00000fff : arm-smmu-v3-pmcg.20.auto
+04000000-07efffff : reserved
+0c000000-0fffffff : reserved
+11000000-1bffffff : System RAM
+1c000000-1fffffff : reserved
+20000000-3bffffff : System RAM
+3c000000-3fffffff : reserved
+40000000-5e26ffff : System RAM
+  4a96f000-4bffffff : reserved
+  4c600000-4c600fff : reserved
+  4fb81000-4fb82fff : reserved
+  4fbc5000-4fbc5fff : reserved
+  4fc1f000-4fc1ffff : reserved
+5e270000-5fbeffff : reserved
+5fbf0000-7fffffff : System RAM
+  5fbf0000-5ffeffff : reserved
+  6c000000-6fffffff : reserved
+  70000000-7fffffff : Crash kernel
+88000000-8ffe0000 : PCI Bus 0000:00
+  88000000-89ffffff : PCI Bus 0000:02
+    88000000-89ffffff : 0000:02:00.0
+  8a000000-8a7fffff : PCI Bus 0000:03
+    8a000000-8a7fffff : 0000:03:00.0
+      8a000000-8a7fffff : edma_drv
+  8b000000-8c0fffff : PCI Bus 0000:03
+    8b000000-8bffffff : 0000:03:00.0
+      8b000000-8bffffff : edma_drv
+    8c000000-8c0fffff : 0000:03:00.0
+      8c000000-8c0fffff : edma_drv
+  8c200000-8c3fffff : PCI Bus 0000:02
+    8c200000-8c3fffff : 0000:02:00.0
+90000000-97fe0000 : PCI Bus 0000:10
+  90000000-901fffff : PCI Bus 0000:11
+  90200000-903fffff : PCI Bus 0000:12
+a8000000-affe0000 : PCI Bus 0000:40
+  a8000000-a80fffff : PCI Bus 0000:42
+    a8000000-a801ffff : 0000:42:00.0
+    a8020000-a803ffff : 0000:42:00.0
+      a8020000-a803ffff : nvme
+    a8040000-a804ffff : 0000:42:00.0
+
+
+========== 7. 内存通道计数器（华为 DDRC PMU） ==========
+
+----- DDRC 设备数量与清单 -----
+$ ls /sys/bus/event_source/devices/ | grep -c ddrc; ls /sys/bus/event_source/devices/ | grep ddrc
+32
+hisi_sccl0_ddrc0_0
+hisi_sccl0_ddrc0_1
+hisi_sccl0_ddrc1_0
+hisi_sccl0_ddrc1_1
+hisi_sccl0_ddrc2_0
+hisi_sccl0_ddrc2_1
+hisi_sccl0_ddrc3_0
+hisi_sccl0_ddrc3_1
+hisi_sccl1_ddrc0_0
+hisi_sccl1_ddrc0_1
+hisi_sccl1_ddrc1_0
+hisi_sccl1_ddrc1_1
+hisi_sccl1_ddrc2_0
+hisi_sccl1_ddrc2_1
+hisi_sccl1_ddrc3_0
+hisi_sccl1_ddrc3_1
+hisi_sccl8_ddrc0_0
+hisi_sccl8_ddrc0_1
+hisi_sccl8_ddrc1_0
+hisi_sccl8_ddrc1_1
+hisi_sccl8_ddrc2_0
+hisi_sccl8_ddrc2_1
+hisi_sccl8_ddrc3_0
+hisi_sccl8_ddrc3_1
+hisi_sccl9_ddrc0_0
+hisi_sccl9_ddrc0_1
+hisi_sccl9_ddrc1_0
+hisi_sccl9_ddrc1_1
+hisi_sccl9_ddrc2_0
+hisi_sccl9_ddrc2_1
+hisi_sccl9_ddrc3_0
+hisi_sccl9_ddrc3_1
+
+----- 单个 DDRC 暴露的事件 -----
+$ for e in /sys/bus/event_source/devices/hisi_sccl0_ddrc0_0/events/*; do echo -n "$(basename $e): "; cat $e; done 2>/dev/null
+cycles: config=0x0
+flux_rd: config=0x84
+flux_wr: config=0x83
+
+----- 空载 1 秒的通道读数（背景噪声） -----
+$ EV=$(for s in 0 1 8 9; do for d in 0 1 2 3; do for c in 0 1; do echo -n "hisi_sccl${s}_ddrc${d}_${c}/flux_rd/,"; done; done; done | sed 's/,$//'); perf stat -a -e "$EV" sleep 1 2>&1 | tail -40
+
+ Performance counter stats for 'system wide':
+
+           108,652      hisi_sccl0_ddrc0_0/flux_rd/                                   
+           121,772      hisi_sccl0_ddrc0_1/flux_rd/                                   
+           120,806      hisi_sccl0_ddrc1_0/flux_rd/                                   
+           140,348      hisi_sccl0_ddrc1_1/flux_rd/                                   
+           101,716      hisi_sccl0_ddrc2_0/flux_rd/                                   
+           117,744      hisi_sccl0_ddrc2_1/flux_rd/                                   
+           106,502      hisi_sccl0_ddrc3_0/flux_rd/                                   
+           114,244      hisi_sccl0_ddrc3_1/flux_rd/                                   
+            49,552      hisi_sccl1_ddrc0_0/flux_rd/                                   
+            45,862      hisi_sccl1_ddrc0_1/flux_rd/                                   
+            43,812      hisi_sccl1_ddrc1_0/flux_rd/                                   
+            40,036      hisi_sccl1_ddrc1_1/flux_rd/                                   
+            41,952      hisi_sccl1_ddrc2_0/flux_rd/                                   
+            42,000      hisi_sccl1_ddrc2_1/flux_rd/                                   
+            40,660      hisi_sccl1_ddrc3_0/flux_rd/                                   
+            41,396      hisi_sccl1_ddrc3_1/flux_rd/                                   
+           145,520      hisi_sccl8_ddrc0_0/flux_rd/                                   
+           139,778      hisi_sccl8_ddrc0_1/flux_rd/                                   
+           143,448      hisi_sccl8_ddrc1_0/flux_rd/                                   
+           139,528      hisi_sccl8_ddrc1_1/flux_rd/                                   
+           137,150      hisi_sccl8_ddrc2_0/flux_rd/                                   
+           135,350      hisi_sccl8_ddrc2_1/flux_rd/                                   
+           144,128      hisi_sccl8_ddrc3_0/flux_rd/                                   
+           142,156      hisi_sccl8_ddrc3_1/flux_rd/                                   
+           682,132      hisi_sccl9_ddrc0_0/flux_rd/                                   
+           681,786      hisi_sccl9_ddrc0_1/flux_rd/                                   
+           677,722      hisi_sccl9_ddrc1_0/flux_rd/                                   
+           676,504      hisi_sccl9_ddrc1_1/flux_rd/                                   
+           679,188      hisi_sccl9_ddrc2_0/flux_rd/                                   
+           669,896      hisi_sccl9_ddrc2_1/flux_rd/                                   
+           682,118      hisi_sccl9_ddrc3_0/flux_rd/                                   
+           675,836      hisi_sccl9_ddrc3_1/flux_rd/                                   
+
+       1.002947370 seconds time elapsed
+
+
+
+========== 8. 内存使用现状 ==========
+
+----- numastat -m -----
+$ numastat -m 2>&1 | head -30
+
+Per-node system memory usage (in MBs):
+Token FileHugePages not in hash table.
+Token FilePmdMapped not in hash table.
+Token FileHugePages not in hash table.
+Token FilePmdMapped not in hash table.
+Token FileHugePages not in hash table.
+Token FilePmdMapped not in hash table.
+Token FileHugePages not in hash table.
+Token FilePmdMapped not in hash table.
+Token FileHugePages not in hash table.
+Token FilePmdMapped not in hash table.
+Token FileHugePages not in hash table.
+Token FilePmdMapped not in hash table.
+Token FileHugePages not in hash table.
+Token FilePmdMapped not in hash table.
+Token FileHugePages not in hash table.
+Token FilePmdMapped not in hash table.
+Token FileHugePages not in hash table.
+Token FilePmdMapped not in hash table.
+Token FileHugePages not in hash table.
+Token FilePmdMapped not in hash table.
+Token FileHugePages not in hash table.
+Token FilePmdMapped not in hash table.
+Token FileHugePages not in hash table.
+Token FilePmdMapped not in hash table.
+Token FileHugePages not in hash table.
+Token FilePmdMapped not in hash table.
+Token FileHugePages not in hash table.
+Token FilePmdMapped not in hash table.
+
+----- 每 node 的 zone 概要 -----
+$ awk '/^Node [0-9]+, zone/{n=$2; z=$4} /managed/{if($1=="managed") printf "node%-3s %-8s managed=%s pages\n", n, z, $2}' /proc/zoneinfo | head -60
+node0,  DMA      managed=332410 pages
+node0,  DMA32    managed=0 pages
+node0,  Normal   managed=15956630 pages
+node0,  Movable  managed=0 pages
+node1,  DMA      managed=0 pages
+node1,  DMA32    managed=0 pages
+node1,  Normal   managed=16513691 pages
+node1,  Movable  managed=0 pages
+node2,  DMA      managed=0 pages
+node2,  DMA32    managed=0 pages
+node2,  Normal   managed=16503424 pages
+node2,  Movable  managed=0 pages
+node3,  DMA      managed=0 pages
+node3,  DMA32    managed=0 pages
+node3,  Normal   managed=16513691 pages
+node3,  Movable  managed=0 pages
+node4,  DMA      managed=0 pages
+node4,  DMA32    managed=0 pages
+node4,  Normal   managed=16513690 pages
+node4,  Movable  managed=0 pages
+node5,  DMA      managed=0 pages
+node5,  DMA32    managed=0 pages
+node5,  Normal   managed=16513691 pages
+node5,  Movable  managed=0 pages
+node6,  DMA      managed=0 pages
+node6,  DMA32    managed=0 pages
+node6,  Normal   managed=16513691 pages
+node6,  Movable  managed=0 pages
+node7,  DMA      managed=0 pages
+node7,  DMA32    managed=0 pages
+node7,  Normal   managed=16513691 pages
+node7,  Movable  managed=0 pages
+node8,  DMA      managed=0 pages
+node8,  DMA32    managed=0 pages
+node8,  Normal   managed=16513689 pages
+node8,  Movable  managed=0 pages
+node9,  DMA      managed=0 pages
+node9,  DMA32    managed=0 pages
+node9,  Normal   managed=16513691 pages
+node9,  Movable  managed=0 pages
+node10, DMA      managed=0 pages
+node10, DMA32    managed=0 pages
+node10, Normal   managed=16513691 pages
+node10, Movable  managed=0 pages
+node11, DMA      managed=0 pages
+node11, DMA32    managed=0 pages
+node11, Normal   managed=16513691 pages
+node11, Movable  managed=0 pages
+node12, DMA      managed=0 pages
+node12, DMA32    managed=0 pages
+node12, Normal   managed=16513690 pages
+node12, Movable  managed=0 pages
+node13, DMA      managed=0 pages
+node13, DMA32    managed=0 pages
+node13, Normal   managed=16513691 pages
+node13, Movable  managed=0 pages
+node14, DMA      managed=0 pages
+node14, DMA32    managed=0 pages
+node14, Normal   managed=16513691 pages
+node14, Movable  managed=0 pages
+
+
+========== 9. 其他 ==========
+
+----- 大页配置 -----
+$ cat /proc/sys/vm/nr_hugepages 2>/dev/null; cat /sys/kernel/mm/transparent_hugepage/defrag 2>/dev/null
+4084
+always defer defer+madvise [madvise] never
+
+----- 当前负载 -----
+$ uptime; cat /proc/loadavg
+ 14:43:16 up 63 days, 17:40,  4 users,  load average: 3.48, 1.89, 1.94
+3.48 1.89 1.94 2/10611 957679
+
+============================================================
+完成：/home/z00889957/100Work/1012_index_op_opt_920F/pytorch-v2.12.1/pytorch-v2.12.1/index_sve/hw-report-20261104-144311.txt
+行数：2265
+============================================================
+
+===== 快速摘要 =====
+BIOS Model name:                    Kunpeng 920 72F8
+CPU(s):                             608
+Thread(s) per core:                 1
+Core(s) per socket:                 304
+Socket(s):                          2
+NUMA node(s):                       32
+DDRC 通道实例数: 32
+内存条条目数: 36
