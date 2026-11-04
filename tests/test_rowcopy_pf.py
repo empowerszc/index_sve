@@ -1,8 +1,9 @@
-"""行拷贝软件预取（H1）的正确性守护。
+"""行拷贝软件预取（H1/H6）的正确性守护。
 
-预取只改循环结构，输出必须与关掉预取时**逐位一致**；`HPC_PF_DIST` 是运行时旋钮
-（每次调用读一次），所以这里可以在同一进程内把 D 扫一遍，包括 D > K、D 越过
-下标数组尾巴、D=0 这些边界。性能对照见 RESULTS §2.18。
+预取（H1）与预取记账的批量化（H6）都只改循环结构，输出必须与关掉时**逐位一致**；
+`HPC_PF_DIST` / `HPC_PF_BATCH` 都是运行时旋钮（每次调用读一次），所以这里可以在
+同一进程内把它们扫一遍，包括 D > K、D 越过下标数组尾巴、D=0、批大小不整除等边界。
+性能对照见 RESULTS §2.18 / §2.21.4。
 """
 import os
 import sys
@@ -13,6 +14,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import index_sve  # noqa: F401
 
 PF_ENV = "HPC_PF_DIST"
+BATCH_ENV = "HPC_PF_BATCH"
 
 
 def _set_d(d):
@@ -22,23 +24,34 @@ def _set_d(d):
         os.environ[PF_ENV] = str(d)
 
 
-def _check_all_d(x, idx, ref, threads=1, ds=(None, 0, 1, 3, 16, 64, 4096)):
+def _set_batch(b):
+    if b is None:
+        os.environ.pop(BATCH_ENV, None)
+    else:
+        os.environ[BATCH_ENV] = str(b)
+
+
+def _check_all_d(x, idx, ref, threads=1, ds=(None, 0, 1, 3, 16, 64, 4096),
+                 batches=(None, 0, 3, 4, 8)):
     old = torch.get_num_threads()
     base = None
     try:
         torch.set_num_threads(threads)
-        for d in ds:
-            _set_d(d)
-            y = index_sve.index(x, [idx])
-            assert y.shape == ref.shape, (d, y.shape, ref.shape)
-            if base is None:
-                assert torch.equal(y, ref), f"D={d} differs from aten"
-                base = y
-            else:
-                assert torch.equal(y, base), f"D={d} changed the output"
+        for b in batches:
+            _set_batch(b)
+            for d in ds:
+                _set_d(d)
+                y = index_sve.index(x, [idx])
+                assert y.shape == ref.shape, (b, d, y.shape, ref.shape)
+                if base is None:
+                    assert torch.equal(y, ref), f"B={b} D={d} differs from aten"
+                    base = y
+                else:
+                    assert torch.equal(y, base), f"B={b} D={d} changed the output"
     finally:
         torch.set_num_threads(old)
         _set_d(None)
+        _set_batch(None)
 
 
 def test_pf_invariance_short_row():
@@ -93,22 +106,37 @@ def test_pf_negative_index():
 
 def test_pf_oob_reports_first_bad_index():
     # 预取会提前读第 k+D 个下标，但越界判定/报错仍必须按原顺序发生在第 1 个坏下标上
+    # （H6 批量化后同样成立：一批先发 4 条预取，报错仍由 row() 按序负责）
     torch.manual_seed(6)
     x = torch.randn(1500, 16)
     idx = torch.randint(0, 1500, (1500,), dtype=torch.int64)
     idx[100] = 200000
     idx[1300] = 300000
-    for d in (None, 0, 16, 64):
-        _set_d(d)
-        try:
-            index_sve.index(x, [idx])
-        except IndexError as e:
-            msg = str(e)
-            assert "200000" in msg and "300000" not in msg, f"D={d}: {msg}"
-        else:
-            raise AssertionError(f"D={d} did not raise")
-        finally:
-            _set_d(None)
+    try:
+        for b in (None, 0, 3, 4):
+            _set_batch(b)
+            for d in (None, 0, 16, 64):
+                _set_d(d)
+                try:
+                    index_sve.index(x, [idx])
+                except IndexError as e:
+                    msg = str(e)
+                    assert "200000" in msg and "300000" not in msg, f"B={b} D={d}: {msg}"
+                else:
+                    raise AssertionError(f"B={b} D={d} did not raise")
+    finally:
+        _set_d(None)
+        _set_batch(None)
+
+
+def test_pf_invariance_linearize_broadcast():
+    # B>1 且 K 刚过 raw 门（65536）→ linearize + rowcopy_sve 的 B>1 循环（H6 批量化
+    # 的第二个落点：q/K 跨行边界那段）
+    torch.manual_seed(7)
+    x = torch.randn(65537, 4, 16)
+    idx = torch.randint(0, 65537, (65537,), dtype=torch.int64)
+    ref = torch.index_select(x, 0, idx)
+    _check_all_d(x, idx, ref, threads=8, ds=(None, 0, 16), batches=(None, 0, 4))
 
 
 if __name__ == "__main__":

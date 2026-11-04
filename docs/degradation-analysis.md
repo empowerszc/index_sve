@@ -829,7 +829,7 @@ node 5，用本算子直调（排除 aten 噪声），每格把
 - 串行段在哪里（**2026-11-03 之前的结构**，本节数据都基于它）：`bucket_gather_pure_raw`
   是**两趟 `at::parallel_for` 夹一段串行代码**——第一趟求值域 min/max，随后**串行**
   归约 `nchunk` 个局部值、**串行**建表（`for v in 0..dom`），第二趟查表；两趟之间
-  还有全线程 barrier（`gather.cpp:431-471`）。**之后已按 §2.21 的账拆掉两块**：
+  还有全线程 barrier（`gather.cpp:469-509`）。**之后已按 §2.21 的账拆掉两块**：
   `size ≤ 2048` 免第一趟（§2.21.1），跨度 ≤64KB 连串行建表也免（§2.21.3）——
   剩下的串行段只在 `size > 2048` 或大跨度的形态里存在。通用路径（linearize +
   `bucket_gather_pure`）仍是 4 趟 fork-join（`op.cpp` T15 注释）。
@@ -1015,7 +1015,7 @@ RESULTS §2.11.5 的序列（88% K=512 + 8% K=13824 + 3%+1% rowcopy）实测：
 
 | 反馈说法 | 本仓库结论 | 依据 |
 |---|---|---|
-| bucket 多线程走 `parallel_for` fork-join + **原子 CAS 归约**，固定 5-8µs | **不成立**。桶化路径无原子：`bucket_gather_pure_raw` 是两趟 `parallel_for` 夹**串行** min/max 归约 + 串行建表（`gather.cpp:431-471`）；gather.cpp 里只有两个 relaxed 计数器（`gather.cpp:18-19`），不参与归约 | 代码；RESULTS §2.11 无 5-8µs 的 TH 台阶 |
+| bucket 多线程走 `parallel_for` fork-join + **原子 CAS 归约**，固定 5-8µs | **不成立**。桶化路径无原子：`bucket_gather_pure_raw` 是两趟 `parallel_for` 夹**串行** min/max 归约 + 串行建表（`gather.cpp:469-509`）；gather.cpp 里只有两个 relaxed 计数器（`gather.cpp:18-19`），不参与归约 | 代码；RESULTS §2.11 无 5-8µs 的 TH 台阶 |
 | TH≥6 时 K512/K528 反转为 1.33-1.34x | **不成立**（本仓库：1.59-1.64x 全档平坦）。**且 K<1024 根本不进桶化**：`op.cpp:73` 先判 `K<1024 → gather_direct` | RESULTS §2.11.6 九档细扫；`op.cpp:73` |
 | 线程池 fork-join 固定开销 ~5-8µs 不随线程下降 | **成立（但只在池冷时）**：热循环里 K=512 从 1t 到 19t 是 9.60→9.51µs（≈0）；调用间隔 200µs 后 +5.7µs，aten 也 +7.2µs | RESULTS §2.11.1 |
 | normalize 20.6µs、empty 4.8µs，每次全额发生 | **empty 成立**（4.3µs）；**normalize 20.6µs 不成立**：本仓库整条链（含 normalize）K=1 只有 6.5µs | RESULTS §2.11.2 |

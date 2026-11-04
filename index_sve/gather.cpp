@@ -45,6 +45,18 @@ int64_t rowcopy_pf_dist(int64_t row_bytes) {
   return 16;
 }
 
+// H6：预取记账的批量化。每行都要付「/K 与 %K 的运行时整除 + 读 idx[k+D] + 越界
+// 判断 + 算地址 + prfm」这笔账，原本设想整段改成增量 (r,k) 走、每 4 行凑一批
+// 背靠背发射，把这两块摊掉。**实测无效，默认关闭（RESULTS §2.21.4）**：
+// 指令数反而 +12-13%（进位分支 + 第二份下标算术 > 省下的那次 sdiv），而周期不变
+// ——1t 周期 48→46、IPC 2.17→2.57，说明这条循环不是发射受限，加指令被访存等待
+// 吸收了。旋钮保留只为复现那组 A/B 与让不变量测试能扫到批量化分支。
+// `HPC_PF_BATCH=0`（默认）= 逐行旧写法；其它值 = 批大小。
+int64_t rowcopy_pf_batch() {
+  if (const char* e = getenv("HPC_PF_BATCH")) return atoll(e);
+  return 0;
+}
+
 bool sve_512_ok() {
   // 仅当运行时 VL 恰为 512-bit 才启用 SVE 路径（编译按 -msve-vector-bits=512）
   static const bool ok = []() { return svcntb() == 64; }();
@@ -398,10 +410,36 @@ template <typename T, typename IdxT, bool NT>
 void rowcopy_sve(const T* src, const IdxT* idx, T* dst,
                  const int64_t* row_off, int64_t B, int64_t K, int64_t A) {
   const int64_t D = rowcopy_pf_dist(A * static_cast<int64_t>(sizeof(T)));
+  const int64_t BATCH = rowcopy_pf_batch();
   at::parallel_for(0, B * K, adaptive_grain(B * K), [&](int64_t lo, int64_t hi) {
+    if (BATCH > 1) {
+      // H6：记账批量化。整段用增量 (r,k) 走——每行一次的 `/K` 与 `%K` 是运行时整除
+      // （十几拍、且卡在预取地址的前面），换成「k++ 到 K 就进位」后只剩一次。
+      // 再把 BATCH 个预取凑成一组背靠背发射（4 条下标读互相独立，延迟重叠）。
+      // idx 已由 linearize 校验/归一过，这里只需算出第 k+D 行的地址。
+      int64_t r = lo / K, k = lo % K, p = lo;
+      for (; p + BATCH <= hi; p += BATCH) {
+        if (D > 0) {
+          int64_t rr = r, kk = k;
+          for (int64_t j = 0; j < BATCH; ++j) {
+            if (kk + D < K) prefetch_lines(src + row_off[rr] + idx[kk + D], 1);
+            if (++kk == K) { kk = 0; ++rr; }
+          }
+        }
+        for (int64_t j = 0; j < BATCH; ++j) {
+          copy_contig_sve<T, NT>(src + row_off[r] + idx[k], dst + (p + j) * A, A);
+          if (++k == K) { k = 0; ++r; }
+        }
+      }
+      for (; p < hi; ++p) {
+        if (D > 0 && k + D < K) prefetch_lines(src + row_off[r] + idx[k + D], 1);
+        copy_contig_sve<T, NT>(src + row_off[r] + idx[k], dst + p * A, A);
+        if (++k == K) { k = 0; ++r; }
+      }
+      return;
+    }
     for (int64_t p = lo; p < hi; ++p) {
       const int64_t r = p / K, k = p % K;
-      // idx 已由 linearize 校验/归一过，这里只需把第 k+D 行的地址提前算出来
       if (D > 0 && k + D < K) {
         prefetch_lines(src + row_off[r] + idx[k + D], 1);
       }
@@ -963,9 +1001,17 @@ void rowcopy_raw_single(const IndexSpec& spec, const IdxT* raw, T* dst, const T*
     if (v < 0) v += size;
     prefetch_lines(src + row_off[r] + v * stride, 1);
   };
+  const int64_t BATCH = rowcopy_pf_batch();
   if (B == 1) {
     at::parallel_for(0, K, adaptive_grain(K), [&](int64_t lo, int64_t hi) {
-      for (int64_t k = lo; k < hi; ++k) {
+      int64_t k = lo;
+      if (BATCH > 1 && D > 0) {
+        for (; k + BATCH <= hi; k += BATCH) {
+          for (int64_t j = 0; j < BATCH; ++j) pf(0, k + j);
+          for (int64_t j = 0; j < BATCH; ++j) row(k + j, 0, k + j);
+        }
+      }
+      for (; k < hi; ++k) {
         pf(0, k);
         row(k, 0, k);
       }
@@ -973,6 +1019,29 @@ void rowcopy_raw_single(const IndexSpec& spec, const IdxT* raw, T* dst, const T*
     return;
   }
   at::parallel_for(0, B * K, adaptive_grain(B * K), [&](int64_t lo, int64_t hi) {
+    if (BATCH > 1) {
+      // H6：同 rowcopy_sve——增量 (r,k) 走，免掉每行的运行时整除。
+      int64_t r = lo / K, k = lo % K, p = lo;
+      for (; p + BATCH <= hi; p += BATCH) {
+        if (D > 0) {
+          int64_t rr = r, kk = k;
+          for (int64_t j = 0; j < BATCH; ++j) {
+            pf(rr, kk);
+            if (++kk == K) { kk = 0; ++rr; }
+          }
+        }
+        for (int64_t j = 0; j < BATCH; ++j) {
+          row(p + j, r, k);
+          if (++k == K) { k = 0; ++r; }
+        }
+      }
+      for (; p < hi; ++p) {
+        pf(r, k);
+        row(p, r, k);
+        if (++k == K) { k = 0; ++r; }
+      }
+      return;
+    }
     for (int64_t p = lo; p < hi; ++p) {
       const int64_t r = p / K, k = p % K;
       pf(r, k);
