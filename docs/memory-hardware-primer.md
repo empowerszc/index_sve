@@ -538,7 +538,7 @@ $ cat /sys/devices/system/node/node5/distance
 - `40` = 跨 socket（node8-15）
 - `61-91` = 那 16 个 4GB 的封装内内存 node（§6.5）。注意**它不是一个数**：
   从 node5 看，node21 是 61、node20/22/23 是 71、node16-19 是 81、node24-31 是 91
-  ——固件按物理位置把 8 个 4GB 段排成了一串"由近到远"的等级。
+  ——看起来是固件按物理位置排的一串"由近到远"的等级，**但排序规则没有证实**（§10）。
 - `255` = 不可直达。**node16-31 彼此之间全是 255**（除了自己），它们只能通过
   带 CPU 的 node 中转。
 
@@ -775,6 +775,13 @@ sudo bash tools/collect-hw-info.sh --redact   # 顺便去掉序列号/UUID
 6. **BIOS 的型号名有点可疑**：`lscpu` 报 `Kunpeng 920 72F8`，但同时是 2×304 核 +
    16 条 DDR5 通道 + 32 个 NUMA node——这不是常见 Kunpeng 920 的形态。以
    `dmidecode` / SRAT 的实际结构为准，型号名只当参考。
+7. **HMAT/SLIT 只用了皮毛**：SRAT 给了地址区间（§6.5 那张表），SLIT 给了距离矩阵
+   （§5/§6.2），但 **HMAT 里固件声明的带宽/延迟等级表没有解析**（本机 HMAT 存在，
+   3848 字节）。想补的话：`sudo cp /sys/firmware/acpi/tables/HMAT /tmp/ && sudo chmod a+r /tmp/HMAT`，
+   再按 ACPI 6.x 的表结构（Memory Subsystem Address Range / Latency / Bandwidth）
+   解——注意它给的是"相对值"，通常只能用来确认层级，不能直接当 ns/GB/s 用。
+8. **SLIT 里 16-23 那串 `61/71/71/71/81/81/81/81` 的分级规律没搞清**：只知道从
+   node5 看是这个顺序（node21 最近），不知道固件按什么规则排的。
 
 ---
 
