@@ -359,8 +359,9 @@ ACT+PRE**（row buffer miss）。另外电容会漏电，所以要定期 **refre
   node 0-15 带 CPU（各 38 核），node 16-31 是 **CPU 封装内内存**（`dmidecode` 里
   `Form Factor: Die` / `CPU1MemoryOnChip`，每颗 CPU 32GB、10000 MT/s，被切成 8 个
   4GB 的纯内存 node）。它**不是**一条 80 GB/s 的共享链路：每个 CPU node 与一个
-  窗口 1:1 配对，配对窗口 141ns（本地 130 的 1.1 倍）、单窗口 129-364 GB/s，
-  十四个窗口一起压 1668 GB/s。绑核必须
+  窗口 1:1 配对，配对窗口 141ns（本地 130 的 1.1 倍）、单窗口 355-411 GB/s，
+  十四个窗口一起压 5238 GB/s；但跨 SCCL 只剩 137-195、跨 socket 只有 18 GB/s。
+  绑核必须
   `--physcpubind=190-227 --membind=5` 成对写：否则线程在 node 5、内存却来自别的
   node，延迟会翻 1.4-2.7 倍，本文所有数字都会失真。
 - **每 4 个 node 共用 4 条内存通道**（16 条 DDR5-5600 通道，每 socket 8 条、
