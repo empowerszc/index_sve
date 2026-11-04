@@ -128,6 +128,27 @@ A-br 映射 / 加权外推，2026-10-31）**；
 - 模型场景矩阵：25 iters 中位数，固定 node 5。
 - 早期 608 线程数据只作历史参考，不应作为验收依据。
 
+### 1.5 正确性验收的当前口径（2026-11-04 收尾复核）
+
+性能数字会随机器态漂移，**正确性口径不漂**——它是一组可复跑的命令，全绿才算数：
+
+| 检查 | 当前结果 | 命令 |
+|---|---|---|
+| 功能测试 | **16 套件 186/186** | `for t in tests/test_*.py; do python $t; done` |
+| kernel 两进程对拍 | **44/44** | `python tests/verify_against_aten.py --mode both` |
+| 桶化快路径对拍 | **59/59** | `python tests/verify_bucket_fast.py gen` 后再 `check` |
+| E2E 全链路差分 | **124/124** + 线程矩阵 ALL OK | `python tests/verify_e2e.py --mode both --threads` |
+
+环境：`torch210_env`（Python 3.12、`torch 2.10.0+cpu`）+ BiSheng clang 19.1.7 的
+libomp；扩展本身按 `setup.py` 构建，运行时把 clang 的
+`lib/aarch64-unknown-linux-gnu` 加进 `LD_LIBRARY_PATH` 即可（`docs/debugging-playbook.md`
+§9 有完整命令）。
+
+16 个套件与逐套件用例数见 `docs/status.md` §4。历史上"15 套件 174/174"是 R10
+时点的数；`178/178`（§2.15.4）是 T16 时点的数；H1/H6 加了 `test_rowcopy_pf`
+8 项后才是现在的 186。**引用旧轮次的验收数时请连轮次一起写**，否则会像本轮
+收尾时那样，被"文档说 175、实际跑出 186"绊一下。
+
 ---
 
 ## 2. 全量矩阵（按轮次）
@@ -1437,7 +1458,7 @@ A=64 的 int32 也在同一条守卫里，但之前从没有用例覆盖过：
   int32 下标实例化）、`test_half_data_excluded_from_raw_route`（2B 仍留 `fused`，
   防白名单越界）。写测试时先跑出 RED（两条 dtype 断言失败、f16 对照已经通过），
   再改代码。
-- 全量 **178/178**（15 个套件；原 175 + 本节新增 3）。
+- 全量 **178/178**（15 个套件；原 175 + 本节新增 3；H1/H6 之后为 16 套件 186，见 §1.5）。
 - `bench_path_matrix.py --ab` 98 个点 **0 处 EXPECT MISMATCH**（`r10_i32_a3` 的
   期望路由已从 `R10 gather_fused` 改为 `R2 rowcopy_raw`）。
 

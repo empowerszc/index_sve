@@ -134,18 +134,20 @@ RESULTS §2.14。该文 §3 的表就是"改哪条路由 → 跑哪些 case"的�
 
 ## 4. 测试
 
-- **175/175 通过**：test_correctness 25、test_errors 6、test_model 9、
-  test_normalize 9、test_smoke 2、test_sve 25、test_index_out 7、test_mask_fused 9、
-  test_smallk 7、test_compile_optin 3、test_strided_rows 6、test_rowcopy_routes 15
-  （R10 增至 14：cl 直写路由 2 例含 1t/8t 双档 + 排除形态 3 例 +
-  cl3d linearize 臂 1 例；+1 为源大小门边界）、test_small_multi 11、
-  test_autograd 16、test_output_layout 25（输出布局专项，期望 stride 为无覆盖
-  进程实测真值钉入）。
-- 复跑：`for t in tests/test_smoke.py tests/test_normalize.py tests/test_correctness.py tests/test_errors.py tests/test_sve.py tests/test_model.py tests/test_index_out.py tests/test_mask_fused.py tests/test_smallk.py tests/test_compile_optin.py tests/test_strided_rows.py tests/test_rowcopy_routes.py tests/test_small_multi.py tests/test_autograd.py tests/test_output_layout.py; do python $t; done`
+- **186/186 通过，16 个套件**（2026-11-04 收尾复核）：test_correctness 25、
+  test_errors 6、test_model 9、test_normalize 9、test_smoke 2、test_sve 25、
+  test_index_out 7、test_mask_fused 9、test_smallk 7、test_compile_optin 3、
+  test_strided_rows 6、test_rowcopy_routes 18（R10 的 14 例 + 源大小门边界 1 例 +
+  T16 的 int32/int64 进 raw 3 例）、test_small_multi 11、test_autograd 16、
+  test_output_layout 25（输出布局专项，期望 stride 为无覆盖进程实测真值钉入）、
+  test_rowcopy_pf 8（H1/H6 预取正确性，`HPC_PF_DIST` × `HPC_PF_BATCH` 逐位比对）。
+- 复跑：`for t in tests/test_*.py; do python $t; done`（自动覆盖全部套件，等价于逐个列
+  `tests/test_smoke.py` … `tests/test_rowcopy_pf.py` 这 16 个；新加套件不会再漏）。
 - 注意：测试同一进程串行跑，1 线程用例必须 `try/finally` 恢复
   `torch.get_num_threads()`（test_sve.py 内已如此）。
 - **true-aten 值级对拍**（覆盖下测试自洽，须两进程法）：
-  `python tests/verify_against_aten.py --mode both`（44/44）；E2E 全链路
+  `python tests/verify_against_aten.py --mode both`（44/44）；桶化快路径
+  `python tests/verify_bucket_fast.py gen` 再 `check`（59/59）；E2E 全链路
   `python tests/verify_e2e.py --mode both --threads`（124/124，真实
   `x[...]` 语法 × 布局 × autograd × 模型 workload，比对含 stride；
   参考写 `agent_space/`）。详见 semantics.md §6.2 与 output-layout.md §3。
@@ -374,6 +376,11 @@ T4 桶化在小值域规避行放大，大值域靠预取/行 gather 等待未�
 快态机器窗口，当前环境（反复抢核、慢态三起）不适合继续。**
 
 **已收口的**
+- **测试与文档收尾（2026-11-04 复核）**：16 套件 **186/186**、true-aten 对拍
+  **44/44**、E2E **124/124** + 线程矩阵 ALL OK、`verify_bucket_fast.py` **59/59**，
+  全部在本机 `torch210_env`（3.12）+ BiSheng libomp 下复跑通过。文档里原先的
+  175/175 是 H6 之前的旧口径（漏了 routes 的 3 项与 `test_rowcopy_pf` 的 8 项），
+  已同步。
 - **H6（预取记账批量化）已做并关闭**：负结果，`HPC_PF_BATCH` 默认 0。价值不在
   提速，而在**推翻两条归因**（"26 条/行记账占 12 拍"、"8t 已贴 4 宽发射上限"），
   并把 A=16 形态的墙从"指令墙"改成"在飞条数墙"（RESULTS §2.21.4）。
@@ -436,7 +443,8 @@ for t in tests/test_smoke.py tests/test_normalize.py tests/test_correctness.py \
          tests/test_index_out.py tests/test_mask_fused.py tests/test_smallk.py \
          tests/test_compile_optin.py tests/test_strided_rows.py \
          tests/test_rowcopy_routes.py tests/test_small_multi.py \
-         tests/test_autograd.py tests/test_output_layout.py; do python $t; done
+         tests/test_autograd.py tests/test_output_layout.py \
+         tests/test_rowcopy_pf.py; do python $t; done
 
 # true-aten 值级对拍（正确性，非性能）
 python tests/verify_against_aten.py --mode both

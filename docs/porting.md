@@ -72,9 +72,11 @@
 12. `tests/test_rowcopy_routes.py`（raw 路由 / 大 K 回退 / f32+i64 路由 / 阈值缩放，T15）；
 13. `tests/test_small_multi.py`（多索引小 K 快路径，T13）；
 14. `tests/test_autograd.py`（autograd 专项回归 16 项，24cd8b3）；
-15. 两进程 true-aten 对拍（semantics.md §6，含 K>=1024 与非连续 stride 用例）。
+15. `tests/test_output_layout.py`（输出布局专项 25 项，期望 stride 为无覆盖进程实测真值）；
+16. `tests/test_rowcopy_pf.py`（H1/H6 预取正确性 8 项，`HPC_PF_DIST` × `HPC_PF_BATCH` 逐位比对）；
+17. 两进程 true-aten 对拍（semantics.md §6，含 K>=1024 与非连续 stride 用例）。
 
-全部通过 = 175/175（覆盖激活态）；对拍 44/44、E2E 差分 124/124。
+全部通过 = 16 套件 186/186（覆盖激活态）；对拍 44/44、E2E 差分 124/124。
 
 ## 6. 已知可优化项（后续工作）
 

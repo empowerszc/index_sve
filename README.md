@@ -95,7 +95,7 @@ index_sve/
 │   ├── linearize.{h,cpp} # 线性化 + 越界检查，int32 保持（直接写 int32）
 │   ├── grain.h           # 自适应并行粒度（T0）
 │   ├── gather.{h,cpp}    # SVE gather/rowcopy/scalar + gather_direct + M1 raw / T3 fused / T4 桶化
-├── tests/                # 15 套件 175 测试（smoke/normalize/correctness/errors/sve/model/index_out/mask_fused/smallk/compile_optin/strided_rows/rowcopy_routes/small_multi/autograd/output_layout）
+├── tests/                # 16 套件 186 测试（smoke/normalize/correctness/errors/sve/model/index_out/mask_fused/smallk/compile_optin/strided_rows/rowcopy_routes/small_multi/autograd/output_layout/rowcopy_pf）
 ├── benchmarks/           # bench_index.py（原始矩阵）、bench_pinned.py/bench_gate.py（定点核复测）
 │   │                     # bench_t1.py/bench_t2.py/bench_ai4s.py（优化轮专项）、bench_regression.py（回归扫描）
 │   │                     # bench_threads.py（全线程矩阵 1-38t）
@@ -227,16 +227,18 @@ for t in tests/test_smoke.py tests/test_normalize.py tests/test_correctness.py \
          tests/test_index_out.py tests/test_mask_fused.py tests/test_smallk.py \
          tests/test_compile_optin.py tests/test_strided_rows.py \
          tests/test_rowcopy_routes.py tests/test_small_multi.py tests/test_autograd.py \
-         tests/test_output_layout.py; do python $t; done
+         tests/test_output_layout.py tests/test_rowcopy_pf.py; do python $t; done
+# 或者更省事（自动覆盖全部套件，新加文件不会再漏）：
+for t in tests/test_*.py; do python $t; done
 ```
 
-全部通过 = 175/175（覆盖激活态；test_correctness 25、test_errors 6、test_model 9、
-test_normalize 9、test_smoke 2、test_sve 25、test_index_out 7、test_mask_fused 9、
-test_smallk 7、test_compile_optin 3、test_strided_rows 6、test_rowcopy_routes 15
-（R10 增至 14：cl 直写路由 2 例含 1t/8t 双档 + 排除形态 3 例 +
-cl3d linearize 臂 1 例；+1 为 §5.9.1 成本交叉点导出的源大小门边界）、
-test_small_multi 11、
-test_autograd 16、test_output_layout 25）。
+全部通过 = 16 套件 186/186（覆盖激活态；test_correctness 25、test_errors 6、
+test_model 9、test_normalize 9、test_smoke 2、test_sve 25、test_index_out 7、
+test_mask_fused 9、test_smallk 7、test_compile_optin 3、test_strided_rows 6、
+test_rowcopy_routes 18（R10 的 14 例 + §5.9.1 成本交叉点导出的源大小门边界 1 例 +
+T16 的 int32/int64 进 raw 3 例）、test_small_multi 11、test_autograd 16、
+test_output_layout 25、test_rowcopy_pf 8（H1/H6 预取正确性，
+`HPC_PF_DIST` × `HPC_PF_BATCH` 扫矩阵逐位比对））。
 覆盖下测试是自洽的（`x[i]` 也走
 本算子），值级真对拍用两进程法（无覆盖进程生成 true-aten 参考，覆盖进程比对）：
 
@@ -249,6 +251,8 @@ test_autograd 16、test_output_layout 25）。
 
 ```bash
 python tests/verify_against_aten.py --mode both    # 44/44，kernel 语义矩阵
+python tests/verify_bucket_fast.py gen \
+  && python tests/verify_bucket_fast.py check      # 59/59，桶化快路径（源≤2048 / 跨度≤64KB）
 python tests/verify_e2e.py --mode both --threads   # 124/124，E2E 全链路（真实语法×布局×
                                                    # autograd×模型 workload，比对含 stride；
                                                    # --threads 追加线程一致性矩阵 46 例）

@@ -23,10 +23,10 @@ for t in tests/test_smoke.py tests/test_normalize.py tests/test_correctness.py \
          tests/test_index_out.py tests/test_mask_fused.py tests/test_smallk.py \
          tests/test_compile_optin.py tests/test_strided_rows.py \
          tests/test_rowcopy_routes.py tests/test_small_multi.py tests/test_autograd.py \
-         tests/test_output_layout.py; do python $t; done
+         tests/test_output_layout.py tests/test_rowcopy_pf.py; do python $t; done
 ```
 
-> **数据轮次：2026-10-31（n20，node 5）｜当前。** 15 套件 **175/175**。此后所有
+> **数据轮次：2026-11-04（复核）｜当前。** 16 套件 **186/186**。此后所有
 > "复现不了"的判断都以这一行为参照。
 
 本仓库没有 pytest（`ModuleNotFoundError: No module named 'pytest'`），每个文件自带
@@ -343,7 +343,7 @@ assert C.dispatch_count() == before_d + 1, "kernel did not run"   # 内核确实
 | 场景 | 结果 |
 |---|---|
 | 修前（只有守卫） | 12/14：2 fail + **4 假通过** |
-| 修后（守卫 + 正向控制） | **8/14**：6 项全挂，假通过归零（当轮该文件 14 项，现 15 项 → 9/15） |
+| 修后（守卫 + 正向控制） | **8/14**：6 项全挂，假通过归零（当轮 14 项；T16 后 15 项 → 9/15；现 18 项 → **12/18**，2026-11-04 复跑仍 0 假通过） |
 
 挂掉的正好是 6 个走 `x[...]` 的用例：`test_cl4d_row_index_routes_rowcopy_raw`、
 `test_cl4d_mask_routes_rowcopy_raw`、`test_cl3d_perm_row_index_direct_values`、
@@ -419,11 +419,12 @@ override/index 等当前态声明（历史轮次里的 174 保留）。
 
 | 检查 | 期望 | 实际 |
 |---|---|---|
-| 默认两个套件 | 绿 | `25/25`、`15/15`，rc=0 |
+| 默认两个套件 | 绿 | `25/25`、`18/18`，rc=0 |
 | `NO_OVERRIDE=1` 两个套件 | **rc=1 + 中文提示** | 符合 |
-| 骗过守卫 + 实际关覆盖 | 6 项挂、0 假通过 | `8/14`，失败的正好 6 个 `x[...]` 用例 |
-| 全 15 套件 | 175/175 | 175/175 |
+| 骗过守卫 + 实际关覆盖 | 6 项挂、0 假通过 | `12/18`（2026-11-04 复跑），失败的正好 6 个 `x[...]` 用例 |
+| 全 16 套件 | 186/186 | 186/186 |
 | `verify_against_aten.py --mode both` | 44/44 | 44/44 |
+| `verify_bucket_fast.py gen` + `check` | 59/59 | 59/59 |
 | `verify_e2e.py --mode both --threads` | 124/124 + 矩阵 OK | 符合 |
 | `tools/check_doc_anchors.py` | 全过 | 改动前 361/361；§5.5 后 367/367；收紧规则后 377/377，死链 0 |
 
@@ -452,7 +453,7 @@ Python 隐式拼接后是 `覆盖关闭时2 项必挂`。**教训：写中文长
 
 ## 7. 给下一个 agent 的检查表（14 步）
 
-1. 先跑默认基线，记下总数（本例 175/175），后面一切都以它为参照。
+1. 先跑默认基线，记下总数（本例 186/186），后面一切都以它为参照。
 2. **读断言**，按 §2.1 四型分类。找出"负向计数"型——它们是假通过的高危区。
 3. 列变量表（§2.2），逐个标注"是否影响 + 判据来源"。**判据要读源码，不要猜。**
 4. 对"影响"的变量做穷举矩阵；对"不影响"的变量，**写清是什么证据排除的**。
@@ -495,17 +496,19 @@ source ~/.bashrc; conda activate torch210_env
 source /home/envs/HPCKit_26.1.RC1/HPCKit/latest/setvars.sh
 export LD_LIBRARY_PATH=<torch_lib>:<bisheng_lib>:$LD_LIBRARY_PATH
 
-# 基线：全 15 套件
+# 基线：全 16 套件
 for t in tests/test_smoke.py tests/test_normalize.py tests/test_correctness.py \
          tests/test_errors.py tests/test_sve.py tests/test_model.py \
          tests/test_index_out.py tests/test_mask_fused.py tests/test_smallk.py \
          tests/test_compile_optin.py tests/test_strided_rows.py \
          tests/test_rowcopy_routes.py tests/test_small_multi.py tests/test_autograd.py \
-         tests/test_output_layout.py; do python $t; done
+         tests/test_output_layout.py tests/test_rowcopy_pf.py; do python $t; done
 
-# 负向对照（关键一步）
-HPC_INDEX_NO_OVERRIDE=1 python tests/test_rowcopy_routes.py    # 12/14
-HPC_INDEX_NO_OVERRIDE=1 python tests/test_output_layout.py     # 25/25
+# 负向对照（关键一步）：两个套件都在 import 时检查覆盖，直接 rc=1
+HPC_INDEX_NO_OVERRIDE=1 python tests/test_rowcopy_routes.py    # rc=1 + 中文提示
+HPC_INDEX_NO_OVERRIDE=1 python tests/test_output_layout.py     # rc=1 + 中文提示
+# 再骗过守卫、真把覆盖关掉：routes 18 项里 6 个 x[...] 用例必挂（12/18，0 假通过）
+#   见 §6 的"骗过守卫"一行；output_layout 会 25/25 全绿——这正是它必须靠守卫的原因
 
 # 排除核数/线程数
 taskset -c 190-193 python tests/test_rowcopy_routes.py
