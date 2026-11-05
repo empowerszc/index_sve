@@ -1,0 +1,1146 @@
+<!DOCTYPE html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>RESULTS 可视化 · index_sve 基准结果</title><style>
+  :root{--bg:#f6f8fa;--panel:#fff;--ink:#1f2933;--ink-2:#52606d;--ink-3:#7b8794;--accent:#0e7490;--accent-soft:#e0f2f1;--good:#15803d;--warn:#b45309;--bad:#b91c1c;--line:#d9e2ec;--chip:#eef2f7}
+  *{box-sizing:border-box}html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.75 -apple-system,BlinkMacSystemFont,"PingFang SC","Hiragino Sans GB","Microsoft YaHei","Segoe UI",Roboto,sans-serif}
+  a{color:var(--accent);text-decoration:none}a:hover{text-decoration:underline}
+  .topnav{position:sticky;top:0;z-index:50;background:rgba(255,255,255,.95);backdrop-filter:blur(6px);border-bottom:1px solid var(--line)}
+  .topnav .wrap{max-width:1180px;margin:0 auto;padding:10px 20px;display:flex;gap:14px;align-items:center;flex-wrap:wrap}
+  .topnav b{font-size:14px}.topnav nav{display:flex;gap:2px;flex-wrap:wrap}
+  .topnav nav a{font-size:13px;color:var(--ink-2);padding:4px 9px;border-radius:6px}.topnav nav a:hover{background:var(--chip);text-decoration:none;color:var(--ink)}
+  .wrap{max-width:1180px;margin:0 auto;padding:0 20px}
+  main section{padding:44px 0 8px;border-top:1px solid var(--line)}
+  h1{font-size:30px;line-height:1.35;margin:0 0 10px}h2{font-size:22px;margin:0 0 6px}h2 .secno{color:var(--accent);margin-right:8px}
+  h3{font-size:17px;margin:24px 0 8px}p{margin:8px 0}.lede{color:var(--ink-2);max-width:48em}.num{font-variant-numeric:tabular-nums}
+  .hero{background:linear-gradient(160deg,#083344,#0e7490 62%,#0891b2);color:#fff;padding:52px 0 40px}
+  .hero .kicker{opacity:.85;font-size:13px;letter-spacing:.12em}.hero h1{color:#fff}.hero .meta{margin-top:16px;font-size:12.5px;opacity:.8}
+  .grid{display:grid;gap:14px;margin:18px 0}.grid.c2{grid-template-columns:repeat(auto-fit,minmax(320px,1fr))}.grid.c3{grid-template-columns:repeat(auto-fit,minmax(240px,1fr))}.grid.c4{grid-template-columns:repeat(auto-fit,minmax(210px,1fr))}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:16px 18px}.card h4{margin:0 0 6px;font-size:15px}.card .big{font-size:26px;font-weight:700;color:var(--accent)}.card .sub{font-size:13px;color:var(--ink-2)}
+  .callout{border-left:4px solid var(--accent);background:var(--accent-soft);border-radius:0 10px 10px 0;padding:12px 16px;margin:16px 0}
+  .callout.warn{border-color:var(--warn);background:#fef3c7}.callout.bad{border-color:var(--bad);background:#fee2e2}.callout.good{border-color:var(--good);background:#dcfce7}.callout p{margin:4px 0}
+  table.tb{width:100%;border-collapse:collapse;margin:14px 0;font-size:13.5px;background:var(--panel)}
+  .tb th,.tb td{border:1px solid var(--line);padding:7px 10px;text-align:left;vertical-align:top}.tb th{background:#f1f5f9}
+  .tb td.num{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
+  .badge{display:inline-block;font-size:12px;font-weight:600;padding:1px 9px;border-radius:999px;white-space:nowrap}
+  .b-done{background:#dcfce7;color:var(--good)}.b-part{background:#fef3c7;color:var(--warn)}.b-todo{background:#e0e7ff;color:#3730a3}.b-no{background:#fee2e2;color:var(--bad)}.b-info{background:var(--chip);color:var(--ink-2)}
+  figure{margin:22px 0;background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:18px;overflow-x:auto}
+  figcaption{font-size:13px;color:var(--ink-2);margin-top:10px}figcaption b{color:var(--ink)}
+  svg{max-width:100%;height:auto;display:block}.src{font-size:12px;color:var(--ink-3)}
+  code{background:#eef2f7;border-radius:4px;padding:1px 5px;font-size:12.5px;font-family:ui-monospace,Menlo,Consolas,monospace}
+  pre{background:#0f172a;color:#e2e8f0;border-radius:10px;padding:14px 16px;overflow:auto;font-size:12.5px}pre code{background:none;color:inherit;padding:0}
+  ul.tight li{margin:5px 0}.footer{padding:36px 0 60px;color:var(--ink-3);font-size:12.5px}
+  @media print{.topnav{display:none}body{background:#fff}main section{border-top:none;padding:14px 0}figure,.card{break-inside:avoid}}
+</style></head><body>
+<div class="topnav"><div class="wrap"><b>RESULTS 可视化</b><nav><a href="#read">怎么读</a><a href="#matrix">31 场景矩阵</a><a href="#cl">cl 家族</a><a href="#real">真实对拍</a><a href="#prod">生产形态</a><a href="#route">路由探针</a><a href="#path">路径矩阵</a><a href="#pf">H1 预取</a><a href="#cuts">桶化两刀</a><a href="#sve">SVE 形状</a><a href="#hw">硬件探针</a><span style="margin-left:auto"></span><a href="headroom.html">headroom</a><a href="kernels.html">kernels</a><a href="architecture.html">architecture</a><a href="degradation.html">degradation</a></nav></div></div>
+<header class="hero"><div class="wrap">
+<div class="kicker">INDEX_SVE · BENCHMARKS/RESULTS.MD 的插图版</div>
+<h1>基准结果全图：31 场景矩阵、生产形态、路径收益</h1>
+<p style="max-width:46em;opacity:.92">本文把 <a href="../benchmarks/RESULTS.md" style="color:#a5f3fc;text-decoration:underline">benchmarks/RESULTS.md</a> 的核心表格画成图。
+“当前值”= §2.9（R10 轮，2026-10-29）与 §2.10–§2.23（2026-10-31 至 11-05）；
+权威数字永远以 RESULTS.md 为准。</p>
+<div class="meta">机器：鲲鹏 920F，node 5（38 核），torch 2.10.0+cpu ｜ 比值口径：aten ÷ 本算子，&gt;1 更快</div>
+</div></header>
+<main class="wrap">
+
+<section id="read"><h2><span class="secno">01</span>先读：三个口径约定</h2>
+<div class="grid c3">
+<div class="card"><h4>比值 = aten ÷ 本算子</h4><p class="sub">1.26x = 快 26%，0.87x = 慢 13%。两进程交替、取中位数；
+比值只在<b>同一轮</b>的两个数之间用。</p></div>
+<div class="card"><h4>线程数已修正（双 ICV）</h4><p class="sub">T11 起入口同步 libomp，<code>torch.set_num_threads(t)</code> 对扩展生效；
+旧矩阵的 2-36t 标签已作废（RESULTS §1.3）。</p></div>
+<div class="card"><h4>共享箱噪声</h4><p class="sub">以 node 5 定点为准，608 线程档只作参考；
+噪声级单格（≥0.88x）单独归类，不算家族。</p></div>
+</div></section>
+
+<section id="matrix"><h2><span class="secno">02</span>31 场景矩阵（当前值，§2.9.1）</h2>
+<p class="lede">R10 轮全量复测：31 个场景 × 8 个线程档，248 格逐格可复算。<b>31 格 &lt;1.00x（12.5%）</b>，
+全部落入 5 个既有家族 + 噪声级单格，无新退化家族。</p>
+<figure><svg viewBox="0 0 714 749" role="img" aria-label="31 场景 × 8 线程 比值矩阵">
+<title>31 场景 × 8 线程 比值矩阵</title>
+<text x="241.0" y="16" text-anchor="middle" font-size="11" fill="#52606d" font-weight="600">1t</text>
+<text x="303.0" y="16" text-anchor="middle" font-size="11" fill="#52606d" font-weight="600">2t</text>
+<text x="365.0" y="16" text-anchor="middle" font-size="11" fill="#52606d" font-weight="600">4t</text>
+<text x="427.0" y="16" text-anchor="middle" font-size="11" fill="#52606d" font-weight="600">8t</text>
+<text x="489.0" y="16" text-anchor="middle" font-size="11" fill="#52606d" font-weight="600">16t</text>
+<text x="551.0" y="16" text-anchor="middle" font-size="11" fill="#52606d" font-weight="600">32t</text>
+<text x="613.0" y="16" text-anchor="middle" font-size="11" fill="#52606d" font-weight="600">36t</text>
+<text x="675.0" y="16" text-anchor="middle" font-size="11" fill="#52606d" font-weight="600">38t</text>
+<text x="204" y="39.5" text-anchor="end" font-size="11.5" fill="#1f2933">S1 features[inp_idx] C=64 E=1M</text>
+<rect x="210" y="24" width="60" height="21" rx="3" fill="#155e75"/>
+<text x="240.0" y="39.0" text-anchor="middle" font-size="10.5" fill="#ffffff" font-weight="600">2.98</text>
+<rect x="272" y="24" width="60" height="21" rx="3" fill="#155e75"/>
+<text x="302.0" y="39.0" text-anchor="middle" font-size="10.5" fill="#ffffff" font-weight="600">3.33</text>
+<rect x="334" y="24" width="60" height="21" rx="3" fill="#155e75"/>
+<text x="364.0" y="39.0" text-anchor="middle" font-size="10.5" fill="#ffffff" font-weight="600">3.24</text>
+<rect x="396" y="24" width="60" height="21" rx="3" fill="#155e75"/>
+<text x="426.0" y="39.0" text-anchor="middle" font-size="10.5" fill="#ffffff" font-weight="600">3.03</text>
+<rect x="458" y="24" width="60" height="21" rx="3" fill="#155e75"/>
+<text x="488.0" y="39.0" text-anchor="middle" font-size="10.5" fill="#ffffff" font-weight="600">2.57</text>
+<rect x="520" y="24" width="60" height="21" rx="3" fill="#082f49"/>
+<text x="550.0" y="39.0" text-anchor="middle" font-size="10.5" fill="#ffffff" font-weight="600">6.62</text>
+<rect x="582" y="24" width="60" height="21" rx="3" fill="#082f49"/>
+<text x="612.0" y="39.0" text-anchor="middle" font-size="10.5" fill="#ffffff" font-weight="600">8.47</text>
+<rect x="644" y="24" width="60" height="21" rx="3" fill="#082f49"/>
+<text x="674.0" y="39.0" text-anchor="middle" font-size="10.5" fill="#ffffff" font-weight="600">4.48</text>
+<text x="204" y="62.5" text-anchor="end" font-size="11.5" fill="#1f2933">P1 h[src] i64 C=64 E=1M</text>
+<rect x="210" y="47" width="60" height="21" rx="3" fill="#155e75"/>
+<text x="240.0" y="62.0" text-anchor="middle" font-size="10.5" fill="#ffffff" font-weight="600">2.89</text>
+<rect x="272" y="47" width="60" height="21" rx="3" fill="#155e75"/>
+<text x="302.0" y="62.0" text-anchor="middle" font-size="10.5" fill="#ffffff" font-weight="600">3.48</text>
+<rect x="334" y="47" width="60" height="21" rx="3" fill="#155e75"/>
+<text x="364.0" y="62.0" text-anchor="middle" font-size="10.5" fill="#ffffff" font-weight="600">3.23</text>
+<rect x="396" y="47" width="60" height="21" rx="3" fill="#155e75"/>
+<text x="426.0" y="62.0" text-anchor="middle" font-size="10.5" fill="#ffffff" font-weight="600">3.26</text>
+<rect x="458" y="47" width="60" height="21" rx="3" fill="#155e75"/>
+<text x="488.0" y="62.0" text-anchor="middle" font-size="10.5" fill="#ffffff" font-weight="600">2.96</text>
+<rect x="520" y="47" width="60" height="21" rx="3" fill="#082f49"/>
+<text x="550.0" y="62.0" text-anchor="middle" font-size="10.5" fill="#ffffff" font-weight="600">5.98</text>
+<rect x="582" y="47" width="60" height="21" rx="3" fill="#082f49"/>
+<text x="612.0" y="62.0" text-anchor="middle" font-size="10.5" fill="#ffffff" font-weight="600">5.21</text>
+<rect x="644" y="47" width="60" height="21" rx="3" fill="#082f49"/>
+<text x="674.0" y="62.0" text-anchor="middle" font-size="10.5" fill="#ffffff" font-weight="600">4.02</text>
+<text x="204" y="85.5" text-anchor="end" font-size="11.5" fill="#1f2933">P2 pos[src] A=3 E=2M</text>
+<rect x="210" y="70" width="60" height="21" rx="3" fill="#0e7490"/>
+<text x="240.0" y="85.0" text-anchor="middle" font-size="10.5" fill="#ffffff" font-weight="600">1.77</text>
+<rect x="272" y="70" width="60" height="21" rx="3" fill="#0e7490"/>
+<text x="302.0" y="85.0" text-anchor="middle" font-size="10.5" fill="#ffffff" font-weight="600">1.79</text>
+<rect x="334" y="70" width="60" height="21" rx="3" fill="#0e7490"/>
+<text x="364.0" y="85.0" text-anchor="middle" font-size="10.5" fill="#ffffff" font-weight="600">1.68</text>
+<rect x="396" y="70" width="60" height="21" rx="3" fill="#0e7490"/>
+<text x="426.0" y="85.0" text-anchor="middle" font-size="10.5" fill="#ffffff" font-weight="600">1.65</text>
+<rect x="458" y="70" width="60" height="21" rx="3" fill="#0e7490"/>
+<text x="488.0" y="85.0" text-anchor="middle" font-size="10.5" fill="#ffffff" font-weight="600">1.71</text>
+<rect x="520" y="70" width="60" height="21" rx="3" fill="#082f49"/>
+<text x="550.0" y="85.0" text-anchor="middle" font-size="10.5" fill="#ffffff" font-weight="600">4.56</text>
+<rect x="582" y="70" width="60" height="21" rx="3" fill="#082f49"/>
+<text x="612.0" y="85.0" text-anchor="middle" font-size="10.5" fill="#ffffff" font-weight="600">6.99</text>
+<rect x="644" y="70" width="60" height="21" rx="3" fill="#082f49"/>
+<text x="674.0" y="85.0" text-anchor="middle" font-size="10.5" fill="#ffffff" font-weight="600">4.47</text>
+<text x="204" y="108.5" text-anchor="end" font-size="11.5" fill="#1f2933">P3 x[mask] nnz=60042 C=16</text>
+<rect x="210" y="93" width="60" height="21" rx="3" fill="#0e7490"/>
+<text x="240.0" y="108.0" text-anchor="middle" font-size="10.5" fill="#ffffff" font-weight="600">1.77</text>
+<rect x="272" y="93" width="60" height="21" rx="3" fill="#0e7490"/>
+<text x="302.0" y="108.0" text-anchor="middle" font-size="10.5" fill="#ffffff" font-weight="600">1.57</text>
+<rect x="334" y="93" width="60" height="21" rx="3" fill="#5eead4"/>
+<text x="364.0" y="108.0" text-anchor="middle" font-size="10.5" fill="#134e4a" font-weight="600">1.38</text>
+<rect x="396" y="93" width="60" height="21" rx="3" fill="#5eead4"/>
+<text x="426.0" y="108.0" text-anchor="middle" font-size="10.5" fill="#134e4a" font-weight="600">1.23</text>
+<rect x="458" y="93" width="60" height="21" rx="3" fill="#5eead4"/>
+<text x="488.0" y="108.0" text-anchor="middle" font-size="10.5" fill="#134e4a" font-weight="600">1.26</text>
+<rect x="520" y="93" width="60" height="21" rx="3" fill="#155e75"/>
+<text x="550.0" y="108.0" text-anchor="middle" font-size="10.5" fill="#ffffff" font-weight="600">3.86</text>
+<rect x="582" y="93" width="60" height="21" rx="3" fill="#082f49"/>
+<text x="612.0" y="108.0" text-anchor="middle" font-size="10.5" fill="#ffffff" font-weight="600">6.08</text>
+<rect x="644" y="93" width="60" height="21" rx="3" fill="#082f49"/>
+<text x="674.0" y="108.0" text-anchor="middle" font-size="10.5" fill="#ffffff" font-weight="600">8.62</text>
+<text x="204" y="131.5" text-anchor="end" font-size="11.5" fill="#1f2933">S4 x[perm] f64 N=200k</text>
+<rect x="210" y="116" width="60" height="21" rx="3" fill="#5eead4"/>
+<text x="240.0" y="131.0" text-anchor="middle" font-size="10.5" fill="#134e4a" font-weight="600">1.26</text>
+<rect x="272" y="116" width="60" height="21" rx="3" fill="#5eead4"/>
+<text x="302.0" y="131.0" text-anchor="middle" font-size="10.5" fill="#134e4a" font-weight="600">1.30</text>
+<rect x="334" y="116" width="60" height="21" rx="3" fill="#5eead4"/>
+<text x="364.0" y="131.0" text-anchor="middle" font-size="10.5" fill="#134e4a" font-weight="600">1.05</text>
+<rect x="396" y="116" width="60" height="21" rx="3" fill="#b91c1c"/>
+<text x="426.0" y="131.0" text-anchor="middle" font-size="10.5" fill="#ffffff" font-weight="600">0.86</text>
+<rect x="458" y="116" width="60" height="21" rx="3" fill="#b91c1c"/>
+<text x="488.0" y="131.0" text-anchor="middle" font-size="10.5" fill="#ffffff" font-weight="600">0.77</text>
+<rect x="520" y="116" width="60" height="21" rx="3" fill="#5eead4"/>
+<text x="550.0" y="131.0" text-anchor="middle" font-size="10.5" fill="#134e4a" font-weight="600">1.41</text>
+<rect x="582" y="116" width="60" height="21" rx="3" fill="#5eead4"/>
+<text x="612.0" y="131.0" text-anchor="middle" font-size="10.5" fill="#134e4a" font-weight="600">1.06</text>
+<rect x="644" y="116" width="60" height="21" rx="3" fill="#d97706"/>
+<text x="674.0" y="131.0" text-anchor="middle" font-size="10.5" fill="#ffffff" font-weight="600">0.92</text>
+<text x="204" y="154.5" text-anchor="end" font-size="11.5" fill="#1f2933">1D f64 K=2M</text>
+<rect x="210" y="139" width="60" height="21" rx="3" fill="#5eead4"/>
+<text x="240.0" y="154.0" text-anchor="middle" font-size="10.5" fill="#134e4a" font-weight="600">1.34</text>
+<rect x="272" y="139" width="60" height="21" rx="3" fill="#0e7490"/>
+<text x="302.0" y="154.0" text-anchor="middle" font-size="10.5" fill="#ffffff" font-weight="600">1.93</text>
+<rect x="334" y="139" width="60" height="21" rx="3" fill="#0e7490"/>
+<text x="364.0" y="154.0" text-anchor="middle" font-size="10.5" fill="#ffffff" font-weight="600">1.87</text>
+<rect x="396" y="139" width="60" height="21" rx="3" fill="#0e7490"/>
+<text x="426.0" y="154.0" text-anchor="middle" font-size="10.5" fill="#ffffff" font-weight="600">1.60</text>
+<rect x="458" y="139" width="60" height="21" rx="3" fill="#5eead4"/>
+<text x="488.0" y="154.0" text-anchor="middle" font-size="10.5" fill="#134e4a" font-weight="600">1.33</text>
+<rect x="520" y="139" width="60" height="21" rx="3" fill="#5eead4"/>
+<text x="550.0" y="154.0" text-anchor="middle" font-size="10.5" fill="#134e4a" font-weight="600">1.40</text>
+<rect x="582" y="139" width="60" height="21" rx="3" fill="#155e75"/>
+<text x="612.0" y="154.0" text-anchor="middle" font-size="10.5" fill="#ffffff" font-weight="600">2.89</text>
+<rect x="644" y="139" width="60" height="21" rx="3" fill="#155e75"/>
+<text x="674.0" y="154.0" text-anchor="middle" font-size="10.5" fill="#ffffff" font-weight="600">2.73</text>
+<text x="204" y="177.5" text-anchor="end" font-size="11.5" fill="#1f2933">1D f64 K=10M</text>
+<rect x="210" y="162" width="60" height="21" rx="3" fill="#5eead4"/>
+<text x="240.0" y="177.0" text-anchor="middle" font-size="10.5" fill="#134e4a" font-weight="600">1.36</text>
+<rect x="272" y="162" width="60" height="21" rx="3" fill="#0e7490"/>
+<text x="302.0" y="177.0" text-anchor="middle" font-size="10.5" fill="#ffffff" font-weight="600">2.03</text>
+<rect x="334" y="162" width="60" height="21" rx="3" fill="#0e7490"/>
+<text x="364.0" y="177.0" text-anchor="middle" font-size="10.5" fill="#ffffff" font-weight="600">1.91</text>
+<rect x="396" y="162" width="60" height="21" rx="3" fill="#0e7490"/>
+<text x="426.0" y="177.0" text-anchor="middle" font-size="10.5" fill="#ffffff" font-weight="600">1.65</text>
+<rect x="458" y="162" width="60" height="21" rx="3" fill="#5eead4"/>
+<text x="488.0" y="177.0" text-anchor="middle" font-size="10.5" fill="#134e4a" font-weight="600">1.27</text>
+<rect x="520" y="162" width="60" height="21" rx="3" fill="#5eead4"/>
+<text x="550.0" y="177.0" text-anchor="middle" font-size="10.5" fill="#134e4a" font-weight="600">1.48</text>
+<rect x="582" y="162" width="60" height="21" rx="3" fill="#0e7490"/>
+<text x="612.0" y="177.0" text-anchor="middle" font-size="10.5" fill="#ffffff" font-weight="600">2.05</text>
+<rect x="644" y="162" width="60" height="21" rx="3" fill="#5eead4"/>
+<text x="674.0" y="177.0" text-anchor="middle" font-size="10.5" fill="#134e4a" font-weight="600">1.28</text>
+<text x="204" y="200.5" text-anchor="end" font-size="11.5" fill="#1f2933">1D f32 K=2M</text>
+<rect x="210" y="185" width="60" height="21" rx="3" fill="#5eead4"/>
+<text x="240.0" y="200.0" text-anchor="middle" font-size="10.5" fill="#134e4a" font-weight="600">1.07</text>
+<rect x="272" y="185" width="60" height="21" rx="3" fill="#0e7490"/>
+<text x="302.0" y="200.0" text-anchor="middle" font-size="10.5" fill="#ffffff" font-weight="600">1.75</text>
+<rect x="334" y="185" width="60" height="21" rx="3" fill="#0e7490"/>
+<text x="364.0" y="200.0" text-anchor="middle" font-size="10.5" fill="#ffffff" font-weight="600">1.67</text>
+<rect x="396" y="185" width="60" height="21" rx="3" fill="#0e7490"/>
+<text x="426.0" y="200.0" text-anchor="middle" font-size="10.5" fill="#ffffff" font-weight="600">1.58</text>
+<rect x="458" y="185" width="60" height="21" rx="3" fill="#5eead4"/>
+<text x="488.0" y="200.0" text-anchor="middle" font-size="10.5" fill="#134e4a" font-weight="600">1.36</text>
+<rect x="520" y="185" width="60" height="21" rx="3" fill="#155e75"/>
+<text x="550.0" y="200.0" text-anchor="middle" font-size="10.5" fill="#ffffff" font-weight="600">2.50</text>
+<rect x="582" y="185" width="60" height="21" rx="3" fill="#155e75"/>
+<text x="612.0" y="200.0" text-anchor="middle" font-size="10.5" fill="#ffffff" font-weight="600">2.72</text>
+<rect x="644" y="185" width="60" height="21" rx="3" fill="#082f49"/>
+<text x="674.0" y="200.0" text-anchor="middle" font-size="10.5" fill="#ffffff" font-weight="600">4.74</text>
+<text x="204" y="223.5" text-anchor="end" font-size="11.5" fill="#1f2933">1D f32 K=10M</text>
+<rect x="210" y="208" width="60" height="21" rx="3" fill="#5eead4"/>
+<text x="240.0" y="223.0" text-anchor="middle" font-size="10.5" fill="#134e4a" font-weight="600">1.08</text>
+<rect x="272" y="208" width="60" height="21" rx="3" fill="#0e7490"/>
+<text x="302.0" y="223.0" text-anchor="middle" font-size="10.5" fill="#ffffff" font-weight="600">1.87</text>
+<rect x="334" y="208" width="60" height="21" rx="3" fill="#0e7490"/>
+<text x="364.0" y="223.0" text-anchor="middle" font-size="10.5" fill="#ffffff" font-weight="600">1.79</text>
+<rect x="396" y="208" width="60" height="21" rx="3" fill="#0e7490"/>
+<text x="426.0" y="223.0" text-anchor="middle" font-size="10.5" fill="#ffffff" font-weight="600">1.67</text>
+<rect x="458" y="208" width="60" height="21" rx="3" fill="#5eead4"/>
+<text x="488.0" y="223.0" text-anchor="middle" font-size="10.5" fill="#134e4a" font-weight="600">1.47</text>
+<rect x="520" y="208" width="60" height="21" rx="3" fill="#155e75"/>
+<text x="550.0" y="223.0" text-anchor="middle" font-size="10.5" fill="#ffffff" font-weight="600">2.69</text>
+<rect x="582" y="208" width="60" height="21" rx="3" fill="#155e75"/>
+<text x="612.0" y="223.0" text-anchor="middle" font-size="10.5" fill="#ffffff" font-weight="600">3.04</text>
+<rect x="644" y="208" width="60" height="21" rx="3" fill="#155e75"/>
+<text x="674.0" y="223.0" text-anchor="middle" font-size="10.5" fill="#ffffff" font-weight="600">3.00</text>
+<text x="204" y="246.5" text-anchor="end" font-size="11.5" fill="#1f2933">multi x[i,j] f32 100k</text>
+<rect x="210" y="231" width="60" height="21" rx="3" fill="#0e7490"/>
+<text x="240.0" y="246.0" text-anchor="middle" font-size="10.5" fill="#ffffff" font-weight="600">2.21</text>
+<rect x="272" y="231" width="60" height="21" rx="3" fill="#0e7490"/>
+<text x="302.0" y="246.0" text-anchor="middle" font-size="10.5" fill="#ffffff" font-weight="600">1.74</text>
+<rect x="334" y="231" width="60" height="21" rx="3" fill="#5eead4"/>
+<text x="364.0" y="246.0" text-anchor="middle" font-size="10.5" fill="#134e4a" font-weight="600">1.38</text>
+<rect x="396" y="231" width="60" height="21" rx="3" fill="#5eead4"/>
+<text x="426.0" y="246.0" text-anchor="middle" font-size="10.5" fill="#134e4a" font-weight="600">1.09</text>
+<rect x="458" y="231" width="60" height="21" rx="3" fill="#d97706"/>
+<text x="488.0" y="246.0" text-anchor="middle" font-size="10.5" fill="#ffffff" font-weight="600">0.94</text>
+<rect x="520" y="231" width="60" height="21" rx="3" fill="#5eead4"/>
+<text x="550.0" y="246.0" text-anchor="middle" font-size="10.5" fill="#134e4a" font-weight="600">1.09</text>
+<rect x="582" y="231" width="60" height="21" rx="3" fill="#5eead4"/>
+<text x="612.0" y="246.0" text-anchor="middle" font-size="10.5" fill="#134e4a" font-weight="600">1.07</text>
+<rect x="644" y="231" width="60" height="21" rx="3" fill="#0e7490"/>
+<text x="674.0" y="246.0" text-anchor="middle" font-size="10.5" fill="#ffffff" font-weight="600">1.53</text>
+<text x="204" y="269.5" text-anchor="end" font-size="11.5" fill="#1f2933">rowcopy A=4 f32 K=200k</text>
+<rect x="210" y="254" width="60" height="21" rx="3" fill="#0e7490"/>
+<text x="240.0" y="269.0" text-anchor="middle" font-size="10.5" fill="#ffffff" font-weight="600">1.53</text>
+<rect x="272" y="254" width="60" height="21" rx="3" fill="#5eead4"/>
+<text x="302.0" y="269.0" text-anchor="middle" font-size="10.5" fill="#134e4a" font-weight="600">1.40</text>
+<rect x="334" y="254" width="60" height="21" rx="3" fill="#5eead4"/>
+<text x="364.0" y="269.0" text-anchor="middle" font-size="10.5" fill="#134e4a" font-weight="600">1.27</text>
+<rect x="396" y="254" width="60" height="21" rx="3" fill="#5eead4"/>
+<text x="426.0" y="269.0" text-anchor="middle" font-size="10.5" fill="#134e4a" font-weight="600">1.14</text>
+<rect x="458" y="254" width="60" height="21" rx="3" fill="#d97706"/>
+<text x="488.0" y="269.0" text-anchor="middle" font-size="10.5" fill="#ffffff" font-weight="600">0.92</text>
+<rect x="520" y="254" width="60" height="21" rx="3" fill="#155e75"/>
+<text x="550.0" y="269.0" text-anchor="middle" font-size="10.5" fill="#ffffff" font-weight="600">2.98</text>
+<rect x="582" y="254" width="60" height="21" rx="3" fill="#155e75"/>
+<text x="612.0" y="269.0" text-anchor="middle" font-size="10.5" fill="#ffffff" font-weight="600">2.79</text>
+<rect x="644" y="254" width="60" height="21" rx="3" fill="#082f49"/>
+<text x="674.0" y="269.0" text-anchor="middle" font-size="10.5" fill="#ffffff" font-weight="600">8.65</text>
+<text x="204" y="292.5" text-anchor="end" font-size="11.5" fill="#1f2933">1D pure f32 K=2M (T5)</text>
+<rect x="210" y="277" width="60" height="21" rx="3" fill="#5eead4"/>
+<text x="240.0" y="292.0" text-anchor="middle" font-size="10.5" fill="#134e4a" font-weight="600">1.35</text>
+<rect x="272" y="277" width="60" height="21" rx="3" fill="#0e7490"/>
+<text x="302.0" y="292.0" text-anchor="middle" font-size="10.5" fill="#ffffff" font-weight="600">2.36</text>
+<rect x="334" y="277" width="60" height="21" rx="3" fill="#0e7490"/>
+<text x="364.0" y="292.0" text-anchor="middle" font-size="10.5" fill="#ffffff" font-weight="600">1.96</text>
+<rect x="396" y="277" width="60" height="21" rx="3" fill="#0e7490"/>
+<text x="426.0" y="292.0" text-anchor="middle" font-size="10.5" fill="#ffffff" font-weight="600">1.75</text>
+<rect x="458" y="277" width="60" height="21" rx="3" fill="#0e7490"/>
+<text x="488.0" y="292.0" text-anchor="middle" font-size="10.5" fill="#ffffff" font-weight="600">1.55</text>
+<rect x="520" y="277" width="60" height="21" rx="3" fill="#0e7490"/>
+<text x="550.0" y="292.0" text-anchor="middle" font-size="10.5" fill="#ffffff" font-weight="600">1.75</text>
+<rect x="582" y="277" width="60" height="21" rx="3" fill="#0e7490"/>
+<text x="612.0" y="292.0" text-anchor="middle" font-size="10.5" fill="#ffffff" font-weight="600">2.46</text>
+<rect x="644" y="277" width="60" height="21" rx="3" fill="#155e75"/>
+<text x="674.0" y="292.0" text-anchor="middle" font-size="10.5" fill="#ffffff" font-weight="600">3.78</text>
+<text x="204" y="315.5" text-anchor="end" font-size="11.5" fill="#1f2933">1D f32 K=10M idx64</text>
+<rect x="210" y="300" width="60" height="21" rx="3" fill="#5eead4"/>
+<text x="240.0" y="315.0" text-anchor="middle" font-size="10.5" fill="#134e4a" font-weight="600">1.36</text>
+<rect x="272" y="300" width="60" height="21" rx="3" fill="#155e75"/>
+<text x="302.0" y="315.0" text-anchor="middle" font-size="10.5" fill="#ffffff" font-weight="600">2.50</text>
+<rect x="334" y="300" width="60" height="21" rx="3" fill="#0e7490"/>
+<text x="364.0" y="315.0" text-anchor="middle" font-size="10.5" fill="#ffffff" font-weight="600">2.15</text>
+<rect x="396" y="300" width="60" height="21" rx="3" fill="#0e7490"/>
+<text x="426.0" y="315.0" text-anchor="middle" font-size="10.5" fill="#ffffff" font-weight="600">1.93</text>
+<rect x="458" y="300" width="60" height="21" rx="3" fill="#0e7490"/>
+<text x="488.0" y="315.0" text-anchor="middle" font-size="10.5" fill="#ffffff" font-weight="600">1.54</text>
+<rect x="520" y="300" width="60" height="21" rx="3" fill="#155e75"/>
+<text x="550.0" y="315.0" text-anchor="middle" font-size="10.5" fill="#ffffff" font-weight="600">3.31</text>
+<rect x="582" y="300" width="60" height="21" rx="3" fill="#155e75"/>
+<text x="612.0" y="315.0" text-anchor="middle" font-size="10.5" fill="#ffffff" font-weight="600">3.31</text>
+<rect x="644" y="300" width="60" height="21" rx="3" fill="#155e75"/>
+<text x="674.0" y="315.0" text-anchor="middle" font-size="10.5" fill="#ffffff" font-weight="600">3.44</text>
+<text x="204" y="338.5" text-anchor="end" font-size="11.5" fill="#1f2933">1D f64 K=10M idx32</text>
+<rect x="210" y="323" width="60" height="21" rx="3" fill="#5eead4"/>
+<text x="240.0" y="338.0" text-anchor="middle" font-size="10.5" fill="#134e4a" font-weight="600">1.08</text>
+<rect x="272" y="323" width="60" height="21" rx="3" fill="#5eead4"/>
+<text x="302.0" y="338.0" text-anchor="middle" font-size="10.5" fill="#134e4a" font-weight="600">1.08</text>
+<rect x="334" y="323" width="60" height="21" rx="3" fill="#5eead4"/>
+<text x="364.0" y="338.0" text-anchor="middle" font-size="10.5" fill="#134e4a" font-weight="600">1.08</text>
+<rect x="396" y="323" width="60" height="21" rx="3" fill="#5eead4"/>
+<text x="426.0" y="338.0" text-anchor="middle" font-size="10.5" fill="#134e4a" font-weight="600">1.08</text>
+<rect x="458" y="323" width="60" height="21" rx="3" fill="#5eead4"/>
+<text x="488.0" y="338.0" text-anchor="middle" font-size="10.5" fill="#134e4a" font-weight="600">1.10</text>
+<rect x="520" y="323" width="60" height="21" rx="3" fill="#155e75"/>
+<text x="550.0" y="338.0" text-anchor="middle" font-size="10.5" fill="#ffffff" font-weight="600">2.67</text>
+<rect x="582" y="323" width="60" height="21" rx="3" fill="#155e75"/>
+<text x="612.0" y="338.0" text-anchor="middle" font-size="10.5" fill="#ffffff" font-weight="600">3.30</text>
+<rect x="644" y="323" width="60" height="21" rx="3" fill="#155e75"/>
+<text x="674.0" y="338.0" text-anchor="middle" font-size="10.5" fill="#ffffff" font-weight="600">2.57</text>
+<text x="204" y="361.5" text-anchor="end" font-size="11.5" fill="#1f2933">1D float16 K=2M</text>
+<rect x="210" y="346" width="60" height="21" rx="3" fill="#5eead4"/>
+<text x="240.0" y="361.0" text-anchor="middle" font-size="10.5" fill="#134e4a" font-weight="600">1.49</text>
+<rect x="272" y="346" width="60" height="21" rx="3" fill="#0e7490"/>
+<text x="302.0" y="361.0" text-anchor="middle" font-size="10.5" fill="#ffffff" font-weight="600">1.55</text>
+<rect x="334" y="346" width="60" height="21" rx="3" fill="#5eead4"/>
+<text x="364.0" y="361.0" text-anchor="middle" font-size="10.5" fill="#134e4a" font-weight="600">1.31</text>
+<rect x="396" y="346" width="60" height="21" rx="3" fill="#5eead4"/>
+<text x="426.0" y="361.0" text-anchor="middle" font-size="10.5" fill="#134e4a" font-weight="600">1.34</text>
+<rect x="458" y="346" width="60" height="21" rx="3" fill="#5eead4"/>
+<text x="488.0" y="361.0" text-anchor="middle" font-size="10.5" fill="#134e4a" font-weight="600">1.21</text>
+<rect x="520" y="346" width="60" height="21" rx="3" fill="#5eead4"/>
+<text x="550.0" y="361.0" text-anchor="middle" font-size="10.5" fill="#134e4a" font-weight="600">1.39</text>
+<rect x="582" y="346" width="60" height="21" rx="3" fill="#082f49"/>
+<text x="612.0" y="361.0" text-anchor="middle" font-size="10.5" fill="#ffffff" font-weight="600">4.09</text>
+<rect x="644" y="346" width="60" height="21" rx="3" fill="#155e75"/>
+<text x="674.0" y="361.0" text-anchor="middle" font-size="10.5" fill="#ffffff" font-weight="600">3.09</text>
+<text x="204" y="384.5" text-anchor="end" font-size="11.5" fill="#1f2933">1D bfloat16 K=2M</text>
+<rect x="210" y="369" width="60" height="21" rx="3" fill="#5eead4"/>
+<text x="240.0" y="384.0" text-anchor="middle" font-size="10.5" fill="#134e4a" font-weight="600">1.43</text>
+<rect x="272" y="369" width="60" height="21" rx="3" fill="#5eead4"/>
+<text x="302.0" y="384.0" text-anchor="middle" font-size="10.5" fill="#134e4a" font-weight="600">1.43</text>
+<rect x="334" y="369" width="60" height="21" rx="3" fill="#5eead4"/>
+<text x="364.0" y="384.0" text-anchor="middle" font-size="10.5" fill="#134e4a" font-weight="600">1.35</text>
+<rect x="396" y="369" width="60" height="21" rx="3" fill="#5eead4"/>
+<text x="426.0" y="384.0" text-anchor="middle" font-size="10.5" fill="#134e4a" font-weight="600">1.36</text>
+<rect x="458" y="369" width="60" height="21" rx="3" fill="#5eead4"/>
+<text x="488.0" y="384.0" text-anchor="middle" font-size="10.5" fill="#134e4a" font-weight="600">1.21</text>
+<rect x="520" y="369" width="60" height="21" rx="3" fill="#5eead4"/>
+<text x="550.0" y="384.0" text-anchor="middle" font-size="10.5" fill="#134e4a" font-weight="600">1.36</text>
+<rect x="582" y="369" width="60" height="21" rx="3" fill="#082f49"/>
+<text x="612.0" y="384.0" text-anchor="middle" font-size="10.5" fill="#ffffff" font-weight="600">4.81</text>
+<rect x="644" y="369" width="60" height="21" rx="3" fill="#082f49"/>
+<text x="674.0" y="384.0" text-anchor="middle" font-size="10.5" fill="#ffffff" font-weight="600">5.18</text>
+<text x="204" y="407.5" text-anchor="end" font-size="11.5" fill="#1f2933">1D int8 K=2M</text>
+<rect x="210" y="392" width="60" height="21" rx="3" fill="#5eead4"/>
+<text x="240.0" y="407.0" text-anchor="middle" font-size="10.5" fill="#134e4a" font-weight="600">1.01</text>
+<rect x="272" y="392" width="60" height="21" rx="3" fill="#5eead4"/>
+<text x="302.0" y="407.0" text-anchor="middle" font-size="10.5" fill="#134e4a" font-weight="600">1.00</text>
+<rect x="334" y="392" width="60" height="21" rx="3" fill="#d97706"/>
+<text x="364.0" y="407.0" text-anchor="middle" font-size="10.5" fill="#ffffff" font-weight="600">0.98</text>
+<rect x="396" y="392" width="60" height="21" rx="3" fill="#d97706"/>
+<text x="426.0" y="407.0" text-anchor="middle" font-size="10.5" fill="#ffffff" font-weight="600">0.98</text>
+<rect x="458" y="392" width="60" height="21" rx="3" fill="#d97706"/>
+<text x="488.0" y="407.0" text-anchor="middle" font-size="10.5" fill="#ffffff" font-weight="600">0.92</text>
+<rect x="520" y="392" width="60" height="21" rx="3" fill="#5eead4"/>
+<text x="550.0" y="407.0" text-anchor="middle" font-size="10.5" fill="#134e4a" font-weight="600">1.00</text>
+<rect x="582" y="392" width="60" height="21" rx="3" fill="#155e75"/>
+<text x="612.0" y="407.0" text-anchor="middle" font-size="10.5" fill="#ffffff" font-weight="600">2.92</text>
+<rect x="644" y="392" width="60" height="21" rx="3" fill="#0e7490"/>
+<text x="674.0" y="407.0" text-anchor="middle" font-size="10.5" fill="#ffffff" font-weight="600">2.37</text>
+<text x="204" y="430.5" text-anchor="end" font-size="11.5" fill="#1f2933">1D uint8 K=2M</text>
+<rect x="210" y="415" width="60" height="21" rx="3" fill="#5eead4"/>
+<text x="240.0" y="430.0" text-anchor="middle" font-size="10.5" fill="#134e4a" font-weight="600">1.07</text>
+<rect x="272" y="415" width="60" height="21" rx="3" fill="#5eead4"/>
+<text x="302.0" y="430.0" text-anchor="middle" font-size="10.5" fill="#134e4a" font-weight="600">1.06</text>
+<rect x="334" y="415" width="60" height="21" rx="3" fill="#d97706"/>
+<text x="364.0" y="430.0" text-anchor="middle" font-size="10.5" fill="#ffffff" font-weight="600">0.99</text>
+<rect x="396" y="415" width="60" height="21" rx="3" fill="#d97706"/>
+<text x="426.0" y="430.0" text-anchor="middle" font-size="10.5" fill="#ffffff" font-weight="600">0.96</text>
+<rect x="458" y="415" width="60" height="21" rx="3" fill="#d97706"/>
+<text x="488.0" y="430.0" text-anchor="middle" font-size="10.5" fill="#ffffff" font-weight="600">0.91</text>
+<rect x="520" y="415" width="60" height="21" rx="3" fill="#0e7490"/>
+<text x="550.0" y="430.0" text-anchor="middle" font-size="10.5" fill="#ffffff" font-weight="600">1.86</text>
+<rect x="582" y="415" width="60" height="21" rx="3" fill="#155e75"/>
+<text x="612.0" y="430.0" text-anchor="middle" font-size="10.5" fill="#ffffff" font-weight="600">3.05</text>
+<rect x="644" y="415" width="60" height="21" rx="3" fill="#155e75"/>
+<text x="674.0" y="430.0" text-anchor="middle" font-size="10.5" fill="#ffffff" font-weight="600">3.18</text>
+<text x="204" y="453.5" text-anchor="end" font-size="11.5" fill="#1f2933">1D complex64 K=2M</text>
+<rect x="210" y="438" width="60" height="21" rx="3" fill="#d97706"/>
+<text x="240.0" y="453.0" text-anchor="middle" font-size="10.5" fill="#ffffff" font-weight="600">0.95</text>
+<rect x="272" y="438" width="60" height="21" rx="3" fill="#d97706"/>
+<text x="302.0" y="453.0" text-anchor="middle" font-size="10.5" fill="#ffffff" font-weight="600">0.94</text>
+<rect x="334" y="438" width="60" height="21" rx="3" fill="#d97706"/>
+<text x="364.0" y="453.0" text-anchor="middle" font-size="10.5" fill="#ffffff" font-weight="600">0.93</text>
+<rect x="396" y="438" width="60" height="21" rx="3" fill="#d97706"/>
+<text x="426.0" y="453.0" text-anchor="middle" font-size="10.5" fill="#ffffff" font-weight="600">0.92</text>
+<rect x="458" y="438" width="60" height="21" rx="3" fill="#d97706"/>
+<text x="488.0" y="453.0" text-anchor="middle" font-size="10.5" fill="#ffffff" font-weight="600">0.92</text>
+<rect x="520" y="438" width="60" height="21" rx="3" fill="#5eead4"/>
+<text x="550.0" y="453.0" text-anchor="middle" font-size="10.5" fill="#134e4a" font-weight="600">1.03</text>
+<rect x="582" y="438" width="60" height="21" rx="3" fill="#155e75"/>
+<text x="612.0" y="453.0" text-anchor="middle" font-size="10.5" fill="#ffffff" font-weight="600">2.68</text>
+<rect x="644" y="438" width="60" height="21" rx="3" fill="#0e7490"/>
+<text x="674.0" y="453.0" text-anchor="middle" font-size="10.5" fill="#ffffff" font-weight="600">2.28</text>
+<text x="204" y="476.5" text-anchor="end" font-size="11.5" fill="#1f2933">1D int32 K=2M</text>
+<rect x="210" y="461" width="60" height="21" rx="3" fill="#5eead4"/>
+<text x="240.0" y="476.0" text-anchor="middle" font-size="10.5" fill="#134e4a" font-weight="600">1.43</text>
+<rect x="272" y="461" width="60" height="21" rx="3" fill="#0e7490"/>
+<text x="302.0" y="476.0" text-anchor="middle" font-size="10.5" fill="#ffffff" font-weight="600">1.74</text>
+<rect x="334" y="461" width="60" height="21" rx="3" fill="#0e7490"/>
+<text x="364.0" y="476.0" text-anchor="middle" font-size="10.5" fill="#ffffff" font-weight="600">1.60</text>
+<rect x="396" y="461" width="60" height="21" rx="3" fill="#0e7490"/>
+<text x="426.0" y="476.0" text-anchor="middle" font-size="10.5" fill="#ffffff" font-weight="600">1.71</text>
+<rect x="458" y="461" width="60" height="21" rx="3" fill="#0e7490"/>
+<text x="488.0" y="476.0" text-anchor="middle" font-size="10.5" fill="#ffffff" font-weight="600">1.64</text>
+<rect x="520" y="461" width="60" height="21" rx="3" fill="#155e75"/>
+<text x="550.0" y="476.0" text-anchor="middle" font-size="10.5" fill="#ffffff" font-weight="600">2.68</text>
+<rect x="582" y="461" width="60" height="21" rx="3" fill="#155e75"/>
+<text x="612.0" y="476.0" text-anchor="middle" font-size="10.5" fill="#ffffff" font-weight="600">3.65</text>
+<rect x="644" y="461" width="60" height="21" rx="3" fill="#155e75"/>
+<text x="674.0" y="476.0" text-anchor="middle" font-size="10.5" fill="#ffffff" font-weight="600">3.81</text>
+<text x="204" y="499.5" text-anchor="end" font-size="11.5" fill="#1f2933">1D int64 K=2M</text>
+<rect x="210" y="484" width="60" height="21" rx="3" fill="#5eead4"/>
+<text x="240.0" y="499.0" text-anchor="middle" font-size="10.5" fill="#134e4a" font-weight="600">1.47</text>
+<rect x="272" y="484" width="60" height="21" rx="3" fill="#0e7490"/>
+<text x="302.0" y="499.0" text-anchor="middle" font-size="10.5" fill="#ffffff" font-weight="600">2.21</text>
+<rect x="334" y="484" width="60" height="21" rx="3" fill="#0e7490"/>
+<text x="364.0" y="499.0" text-anchor="middle" font-size="10.5" fill="#ffffff" font-weight="600">1.76</text>
+<rect x="396" y="484" width="60" height="21" rx="3" fill="#0e7490"/>
+<text x="426.0" y="499.0" text-anchor="middle" font-size="10.5" fill="#ffffff" font-weight="600">1.81</text>
+<rect x="458" y="484" width="60" height="21" rx="3" fill="#5eead4"/>
+<text x="488.0" y="499.0" text-anchor="middle" font-size="10.5" fill="#134e4a" font-weight="600">1.45</text>
+<rect x="520" y="484" width="60" height="21" rx="3" fill="#0e7490"/>
+<text x="550.0" y="499.0" text-anchor="middle" font-size="10.5" fill="#ffffff" font-weight="600">1.51</text>
+<rect x="582" y="484" width="60" height="21" rx="3" fill="#0e7490"/>
+<text x="612.0" y="499.0" text-anchor="middle" font-size="10.5" fill="#ffffff" font-weight="600">2.20</text>
+<rect x="644" y="484" width="60" height="21" rx="3" fill="#155e75"/>
+<text x="674.0" y="499.0" text-anchor="middle" font-size="10.5" fill="#ffffff" font-weight="600">3.92</text>
+<text x="204" y="522.5" text-anchor="end" font-size="11.5" fill="#1f2933">rowcopy A=2 f32 K=200k</text>
+<rect x="210" y="507" width="60" height="21" rx="3" fill="#0e7490"/>
+<text x="240.0" y="522.0" text-anchor="middle" font-size="10.5" fill="#ffffff" font-weight="600">1.62</text>
+<rect x="272" y="507" width="60" height="21" rx="3" fill="#0e7490"/>
+<text x="302.0" y="522.0" text-anchor="middle" font-size="10.5" fill="#ffffff" font-weight="600">1.59</text>
+<rect x="334" y="507" width="60" height="21" rx="3" fill="#5eead4"/>
+<text x="364.0" y="522.0" text-anchor="middle" font-size="10.5" fill="#134e4a" font-weight="600">1.41</text>
+<rect x="396" y="507" width="60" height="21" rx="3" fill="#5eead4"/>
+<text x="426.0" y="522.0" text-anchor="middle" font-size="10.5" fill="#134e4a" font-weight="600">1.27</text>
+<rect x="458" y="507" width="60" height="21" rx="3" fill="#5eead4"/>
+<text x="488.0" y="522.0" text-anchor="middle" font-size="10.5" fill="#134e4a" font-weight="600">1.18</text>
+<rect x="520" y="507" width="60" height="21" rx="3" fill="#0e7490"/>
+<text x="550.0" y="522.0" text-anchor="middle" font-size="10.5" fill="#ffffff" font-weight="600">2.42</text>
+<rect x="582" y="507" width="60" height="21" rx="3" fill="#082f49"/>
+<text x="612.0" y="522.0" text-anchor="middle" font-size="10.5" fill="#ffffff" font-weight="600">4.06</text>
+<rect x="644" y="507" width="60" height="21" rx="3" fill="#155e75"/>
+<text x="674.0" y="522.0" text-anchor="middle" font-size="10.5" fill="#ffffff" font-weight="600">3.00</text>
+<text x="204" y="545.5" text-anchor="end" font-size="11.5" fill="#1f2933">rowcopy A=3 f32 K=200k</text>
+<rect x="210" y="530" width="60" height="21" rx="3" fill="#0e7490"/>
+<text x="240.0" y="545.0" text-anchor="middle" font-size="10.5" fill="#ffffff" font-weight="600">1.62</text>
+<rect x="272" y="530" width="60" height="21" rx="3" fill="#0e7490"/>
+<text x="302.0" y="545.0" text-anchor="middle" font-size="10.5" fill="#ffffff" font-weight="600">1.78</text>
+<rect x="334" y="530" width="60" height="21" rx="3" fill="#0e7490"/>
+<text x="364.0" y="545.0" text-anchor="middle" font-size="10.5" fill="#ffffff" font-weight="600">1.61</text>
+<rect x="396" y="530" width="60" height="21" rx="3" fill="#5eead4"/>
+<text x="426.0" y="545.0" text-anchor="middle" font-size="10.5" fill="#134e4a" font-weight="600">1.35</text>
+<rect x="458" y="530" width="60" height="21" rx="3" fill="#5eead4"/>
+<text x="488.0" y="545.0" text-anchor="middle" font-size="10.5" fill="#134e4a" font-weight="600">1.26</text>
+<rect x="520" y="530" width="60" height="21" rx="3" fill="#155e75"/>
+<text x="550.0" y="545.0" text-anchor="middle" font-size="10.5" fill="#ffffff" font-weight="600">2.66</text>
+<rect x="582" y="530" width="60" height="21" rx="3" fill="#155e75"/>
+<text x="612.0" y="545.0" text-anchor="middle" font-size="10.5" fill="#ffffff" font-weight="600">3.35</text>
+<rect x="644" y="530" width="60" height="21" rx="3" fill="#155e75"/>
+<text x="674.0" y="545.0" text-anchor="middle" font-size="10.5" fill="#ffffff" font-weight="600">3.49</text>
+<text x="204" y="568.5" text-anchor="end" font-size="11.5" fill="#1f2933">rowcopy A=16 f32 K=200k</text>
+<rect x="210" y="553" width="60" height="21" rx="3" fill="#0e7490"/>
+<text x="240.0" y="568.0" text-anchor="middle" font-size="10.5" fill="#ffffff" font-weight="600">2.07</text>
+<rect x="272" y="553" width="60" height="21" rx="3" fill="#0e7490"/>
+<text x="302.0" y="568.0" text-anchor="middle" font-size="10.5" fill="#ffffff" font-weight="600">2.29</text>
+<rect x="334" y="553" width="60" height="21" rx="3" fill="#0e7490"/>
+<text x="364.0" y="568.0" text-anchor="middle" font-size="10.5" fill="#ffffff" font-weight="600">2.10</text>
+<rect x="396" y="553" width="60" height="21" rx="3" fill="#0e7490"/>
+<text x="426.0" y="568.0" text-anchor="middle" font-size="10.5" fill="#ffffff" font-weight="600">1.81</text>
+<rect x="458" y="553" width="60" height="21" rx="3" fill="#5eead4"/>
+<text x="488.0" y="568.0" text-anchor="middle" font-size="10.5" fill="#134e4a" font-weight="600">1.48</text>
+<rect x="520" y="553" width="60" height="21" rx="3" fill="#0e7490"/>
+<text x="550.0" y="568.0" text-anchor="middle" font-size="10.5" fill="#ffffff" font-weight="600">2.10</text>
+<rect x="582" y="553" width="60" height="21" rx="3" fill="#155e75"/>
+<text x="612.0" y="568.0" text-anchor="middle" font-size="10.5" fill="#ffffff" font-weight="600">3.81</text>
+<rect x="644" y="553" width="60" height="21" rx="3" fill="#155e75"/>
+<text x="674.0" y="568.0" text-anchor="middle" font-size="10.5" fill="#ffffff" font-weight="600">3.00</text>
+<text x="204" y="591.5" text-anchor="end" font-size="11.5" fill="#1f2933">noncontig self A=16 stride2</text>
+<rect x="210" y="576" width="60" height="21" rx="3" fill="#0e7490"/>
+<text x="240.0" y="591.0" text-anchor="middle" font-size="10.5" fill="#ffffff" font-weight="600">1.72</text>
+<rect x="272" y="576" width="60" height="21" rx="3" fill="#5eead4"/>
+<text x="302.0" y="591.0" text-anchor="middle" font-size="10.5" fill="#134e4a" font-weight="600">1.49</text>
+<rect x="334" y="576" width="60" height="21" rx="3" fill="#5eead4"/>
+<text x="364.0" y="591.0" text-anchor="middle" font-size="10.5" fill="#134e4a" font-weight="600">1.44</text>
+<rect x="396" y="576" width="60" height="21" rx="3" fill="#5eead4"/>
+<text x="426.0" y="591.0" text-anchor="middle" font-size="10.5" fill="#134e4a" font-weight="600">1.33</text>
+<rect x="458" y="576" width="60" height="21" rx="3" fill="#5eead4"/>
+<text x="488.0" y="591.0" text-anchor="middle" font-size="10.5" fill="#134e4a" font-weight="600">1.21</text>
+<rect x="520" y="576" width="60" height="21" rx="3" fill="#0e7490"/>
+<text x="550.0" y="591.0" text-anchor="middle" font-size="10.5" fill="#ffffff" font-weight="600">1.59</text>
+<rect x="582" y="576" width="60" height="21" rx="3" fill="#155e75"/>
+<text x="612.0" y="591.0" text-anchor="middle" font-size="10.5" fill="#ffffff" font-weight="600">2.51</text>
+<rect x="644" y="576" width="60" height="21" rx="3" fill="#082f49"/>
+<text x="674.0" y="591.0" text-anchor="middle" font-size="10.5" fill="#ffffff" font-weight="600">5.39</text>
+<text x="204" y="614.5" text-anchor="end" font-size="11.5" fill="#1f2933">noncontig idx K=1M</text>
+<rect x="210" y="599" width="60" height="21" rx="3" fill="#0e7490"/>
+<text x="240.0" y="614.0" text-anchor="middle" font-size="10.5" fill="#ffffff" font-weight="600">1.58</text>
+<rect x="272" y="599" width="60" height="21" rx="3" fill="#5eead4"/>
+<text x="302.0" y="614.0" text-anchor="middle" font-size="10.5" fill="#134e4a" font-weight="600">1.10</text>
+<rect x="334" y="599" width="60" height="21" rx="3" fill="#5eead4"/>
+<text x="364.0" y="614.0" text-anchor="middle" font-size="10.5" fill="#134e4a" font-weight="600">1.31</text>
+<rect x="396" y="599" width="60" height="21" rx="3" fill="#5eead4"/>
+<text x="426.0" y="614.0" text-anchor="middle" font-size="10.5" fill="#134e4a" font-weight="600">1.26</text>
+<rect x="458" y="599" width="60" height="21" rx="3" fill="#5eead4"/>
+<text x="488.0" y="614.0" text-anchor="middle" font-size="10.5" fill="#134e4a" font-weight="600">1.06</text>
+<rect x="520" y="599" width="60" height="21" rx="3" fill="#5eead4"/>
+<text x="550.0" y="614.0" text-anchor="middle" font-size="10.5" fill="#134e4a" font-weight="600">1.18</text>
+<rect x="582" y="599" width="60" height="21" rx="3" fill="#0e7490"/>
+<text x="612.0" y="614.0" text-anchor="middle" font-size="10.5" fill="#ffffff" font-weight="600">2.24</text>
+<rect x="644" y="599" width="60" height="21" rx="3" fill="#0e7490"/>
+<text x="674.0" y="614.0" text-anchor="middle" font-size="10.5" fill="#ffffff" font-weight="600">2.42</text>
+<text x="204" y="637.5" text-anchor="end" font-size="11.5" fill="#1f2933">mask 1D nnz=1199436</text>
+<rect x="210" y="622" width="60" height="21" rx="3" fill="#5eead4"/>
+<text x="240.0" y="637.0" text-anchor="middle" font-size="10.5" fill="#134e4a" font-weight="600">1.06</text>
+<rect x="272" y="622" width="60" height="21" rx="3" fill="#5eead4"/>
+<text x="302.0" y="637.0" text-anchor="middle" font-size="10.5" fill="#134e4a" font-weight="600">1.07</text>
+<rect x="334" y="622" width="60" height="21" rx="3" fill="#d97706"/>
+<text x="364.0" y="637.0" text-anchor="middle" font-size="10.5" fill="#ffffff" font-weight="600">0.96</text>
+<rect x="396" y="622" width="60" height="21" rx="3" fill="#5eead4"/>
+<text x="426.0" y="637.0" text-anchor="middle" font-size="10.5" fill="#134e4a" font-weight="600">1.01</text>
+<rect x="458" y="622" width="60" height="21" rx="3" fill="#5eead4"/>
+<text x="488.0" y="637.0" text-anchor="middle" font-size="10.5" fill="#134e4a" font-weight="600">1.05</text>
+<rect x="520" y="622" width="60" height="21" rx="3" fill="#0e7490"/>
+<text x="550.0" y="637.0" text-anchor="middle" font-size="10.5" fill="#ffffff" font-weight="600">1.50</text>
+<rect x="582" y="622" width="60" height="21" rx="3" fill="#082f49"/>
+<text x="612.0" y="637.0" text-anchor="middle" font-size="10.5" fill="#ffffff" font-weight="600">5.34</text>
+<rect x="644" y="622" width="60" height="21" rx="3" fill="#082f49"/>
+<text x="674.0" y="637.0" text-anchor="middle" font-size="10.5" fill="#ffffff" font-weight="600">5.96</text>
+<text x="204" y="660.5" text-anchor="end" font-size="11.5" fill="#1f2933">mask empty N=1M</text>
+<rect x="210" y="645" width="60" height="21" rx="3" fill="#0e7490"/>
+<text x="240.0" y="660.0" text-anchor="middle" font-size="10.5" fill="#ffffff" font-weight="600">1.55</text>
+<rect x="272" y="645" width="60" height="21" rx="3" fill="#d97706"/>
+<text x="302.0" y="660.0" text-anchor="middle" font-size="10.5" fill="#ffffff" font-weight="600">0.97</text>
+<rect x="334" y="645" width="60" height="21" rx="3" fill="#b91c1c"/>
+<text x="364.0" y="660.0" text-anchor="middle" font-size="10.5" fill="#ffffff" font-weight="600">0.66</text>
+<rect x="396" y="645" width="60" height="21" rx="3" fill="#b91c1c"/>
+<text x="426.0" y="660.0" text-anchor="middle" font-size="10.5" fill="#ffffff" font-weight="600">0.50</text>
+<rect x="458" y="645" width="60" height="21" rx="3" fill="#b91c1c"/>
+<text x="488.0" y="660.0" text-anchor="middle" font-size="10.5" fill="#ffffff" font-weight="600">0.42</text>
+<rect x="520" y="645" width="60" height="21" rx="3" fill="#b91c1c"/>
+<text x="550.0" y="660.0" text-anchor="middle" font-size="10.5" fill="#ffffff" font-weight="600">0.43</text>
+<rect x="582" y="645" width="60" height="21" rx="3" fill="#b91c1c"/>
+<text x="612.0" y="660.0" text-anchor="middle" font-size="10.5" fill="#ffffff" font-weight="600">0.49</text>
+<rect x="644" y="645" width="60" height="21" rx="3" fill="#b91c1c"/>
+<text x="674.0" y="660.0" text-anchor="middle" font-size="10.5" fill="#ffffff" font-weight="600">0.50</text>
+<text x="204" y="683.5" text-anchor="end" font-size="11.5" fill="#1f2933">mask noncontig nnz=600108</text>
+<rect x="210" y="668" width="60" height="21" rx="3" fill="#d97706"/>
+<text x="240.0" y="683.0" text-anchor="middle" font-size="10.5" fill="#ffffff" font-weight="600">0.98</text>
+<rect x="272" y="668" width="60" height="21" rx="3" fill="#b91c1c"/>
+<text x="302.0" y="683.0" text-anchor="middle" font-size="10.5" fill="#ffffff" font-weight="600">0.88</text>
+<rect x="334" y="668" width="60" height="21" rx="3" fill="#b91c1c"/>
+<text x="364.0" y="683.0" text-anchor="middle" font-size="10.5" fill="#ffffff" font-weight="600">0.86</text>
+<rect x="396" y="668" width="60" height="21" rx="3" fill="#b91c1c"/>
+<text x="426.0" y="683.0" text-anchor="middle" font-size="10.5" fill="#ffffff" font-weight="600">0.83</text>
+<rect x="458" y="668" width="60" height="21" rx="3" fill="#b91c1c"/>
+<text x="488.0" y="683.0" text-anchor="middle" font-size="10.5" fill="#ffffff" font-weight="600">0.79</text>
+<rect x="520" y="668" width="60" height="21" rx="3" fill="#d97706"/>
+<text x="550.0" y="683.0" text-anchor="middle" font-size="10.5" fill="#ffffff" font-weight="600">0.92</text>
+<rect x="582" y="668" width="60" height="21" rx="3" fill="#5eead4"/>
+<text x="612.0" y="683.0" text-anchor="middle" font-size="10.5" fill="#134e4a" font-weight="600">1.01</text>
+<rect x="644" y="668" width="60" height="21" rx="3" fill="#5eead4"/>
+<text x="674.0" y="683.0" text-anchor="middle" font-size="10.5" fill="#134e4a" font-weight="600">1.00</text>
+<text x="204" y="706.5" text-anchor="end" font-size="11.5" fill="#1f2933">col x[:,i] C=64 K=64</text>
+<rect x="210" y="691" width="60" height="21" rx="3" fill="#0e7490"/>
+<text x="240.0" y="706.0" text-anchor="middle" font-size="10.5" fill="#ffffff" font-weight="600">2.00</text>
+<rect x="272" y="691" width="60" height="21" rx="3" fill="#0e7490"/>
+<text x="302.0" y="706.0" text-anchor="middle" font-size="10.5" fill="#ffffff" font-weight="600">1.88</text>
+<rect x="334" y="691" width="60" height="21" rx="3" fill="#0e7490"/>
+<text x="364.0" y="706.0" text-anchor="middle" font-size="10.5" fill="#ffffff" font-weight="600">1.68</text>
+<rect x="396" y="691" width="60" height="21" rx="3" fill="#5eead4"/>
+<text x="426.0" y="706.0" text-anchor="middle" font-size="10.5" fill="#134e4a" font-weight="600">1.41</text>
+<rect x="458" y="691" width="60" height="21" rx="3" fill="#5eead4"/>
+<text x="488.0" y="706.0" text-anchor="middle" font-size="10.5" fill="#134e4a" font-weight="600">1.10</text>
+<rect x="520" y="691" width="60" height="21" rx="3" fill="#5eead4"/>
+<text x="550.0" y="706.0" text-anchor="middle" font-size="10.5" fill="#134e4a" font-weight="600">1.17</text>
+<rect x="582" y="691" width="60" height="21" rx="3" fill="#0e7490"/>
+<text x="612.0" y="706.0" text-anchor="middle" font-size="10.5" fill="#ffffff" font-weight="600">1.71</text>
+<rect x="644" y="691" width="60" height="21" rx="3" fill="#155e75"/>
+<text x="674.0" y="706.0" text-anchor="middle" font-size="10.5" fill="#ffffff" font-weight="600">2.85</text>
+<text x="204" y="729.5" text-anchor="end" font-size="11.5" fill="#1f2933">1D f32 K=2M range2048</text>
+<rect x="210" y="714" width="60" height="21" rx="3" fill="#5eead4"/>
+<text x="240.0" y="729.0" text-anchor="middle" font-size="10.5" fill="#134e4a" font-weight="600">1.23</text>
+<rect x="272" y="714" width="60" height="21" rx="3" fill="#5eead4"/>
+<text x="302.0" y="729.0" text-anchor="middle" font-size="10.5" fill="#134e4a" font-weight="600">1.15</text>
+<rect x="334" y="714" width="60" height="21" rx="3" fill="#5eead4"/>
+<text x="364.0" y="729.0" text-anchor="middle" font-size="10.5" fill="#134e4a" font-weight="600">1.09</text>
+<rect x="396" y="714" width="60" height="21" rx="3" fill="#5eead4"/>
+<text x="426.0" y="729.0" text-anchor="middle" font-size="10.5" fill="#134e4a" font-weight="600">1.01</text>
+<rect x="458" y="714" width="60" height="21" rx="3" fill="#b91c1c"/>
+<text x="488.0" y="729.0" text-anchor="middle" font-size="10.5" fill="#ffffff" font-weight="600">0.88</text>
+<rect x="520" y="714" width="60" height="21" rx="3" fill="#5eead4"/>
+<text x="550.0" y="729.0" text-anchor="middle" font-size="10.5" fill="#134e4a" font-weight="600">1.49</text>
+<rect x="582" y="714" width="60" height="21" rx="3" fill="#0e7490"/>
+<text x="612.0" y="729.0" text-anchor="middle" font-size="10.5" fill="#ffffff" font-weight="600">1.52</text>
+<rect x="644" y="714" width="60" height="21" rx="3" fill="#0e7490"/>
+<text x="674.0" y="729.0" text-anchor="middle" font-size="10.5" fill="#ffffff" font-weight="600">2.18</text>
+</svg>
+<figcaption><b>图 1 · 31 场景 × 8 线程比值热力图</b>（§2.9.1，HPC_ITERS=40，pin node5）。</figcaption></figure>
+<figure><svg viewBox="0 0 560 34">
+<text x="8" y="21" font-size="11" fill="#52606d">比值</text>
+<rect x="44" y="6" width="58" height="20" rx="4" fill="#b91c1c"/>
+<text x="73" y="20" text-anchor="middle" font-size="10.5" fill="#fff"><0.9</text>
+<rect x="110" y="6" width="58" height="20" rx="4" fill="#d97706"/>
+<text x="139" y="20" text-anchor="middle" font-size="10.5" fill="#fff">0.9–1.0</text>
+<rect x="176" y="6" width="58" height="20" rx="4" fill="#5eead4"/>
+<text x="205" y="20" text-anchor="middle" font-size="10.5" fill="#134e4a">1.0–1.5</text>
+<rect x="242" y="6" width="58" height="20" rx="4" fill="#0e7490"/>
+<text x="271" y="20" text-anchor="middle" font-size="10.5" fill="#fff">1.5–2.5</text>
+<rect x="308" y="6" width="58" height="20" rx="4" fill="#155e75"/>
+<text x="337" y="20" text-anchor="middle" font-size="10.5" fill="#fff">2.5–4.0</text>
+<rect x="374" y="6" width="58" height="20" rx="4" fill="#082f49"/>
+<text x="403" y="20" text-anchor="middle" font-size="10.5" fill="#fff">≥4.0</text>
+<text x="444" y="21" font-size="11" fill="#52606d">= aten ÷ 本算子，&gt;1 本算子更快</text>
+</svg></figure>
+<div class="grid c4">
+<div class="card"><h4>空 mask（全 False N=1M）</h4><p class="big num">7 格</p><p class="sub">4-38t 0.42–0.66x：aten 并行早退恒 1.44ms，本算子 2.9–3.5ms。观察项，未修。</p></div>
+<div class="card"><h4>1B（int8/uint8）</h4><p class="big num">6 格</p><p class="sub">4-16t 0.91–0.99x：64B 行只用 1B，行放大硬墙。</p></div>
+<div class="card"><h4>complex64</h4><p class="big num">5 格</p><p class="sub">1-16t 0.92–0.95x：无 SVE 内核，标量单遍。</p></div>
+<div class="card"><h4>非连续 mask / S4 / 噪声</h4><p class="big num">6+3+4</p><p class="sub">非连续 mask 回退 nonzero（R2 待做）；S4 小工作量；噪声 4 格均 ≥0.88x。</p></div>
+</div>
+<div class="callout"><p><b>最强行</b>：S1/P1 整行 RowCopy 1t 2.98x/2.89x（run 间 2.9–3.5x）；
+高线程段的“高倍数”（如 S1 36t 8.47x）一部分来自 aten 侧退化，别当收益宣传（§1.2）。</p></div>
+</section>
+
+<section id="cl"><h2><span class="secno">03</span>cl/置换家族：从 0.36x 到反超（§2.9.2）</h2>
+<p class="lede">channels_last/置换布局的输出曾恒分配为 NCHW 连续，E2E 静默打断格式传播链。
+布局修复（tmp+copy_）先止血，R10 直写（消掉那一趟拷贝）完成反超。</p>
+<figure>
+<svg viewBox="0 0 760 156">
+<text x="182" y="31" text-anchor="end" font-size="11.5" fill="#1f2933">cl4d 行索引（修复轮）</text>
+<rect x="190" y="18" width="60" height="16" fill="#b91c1c" rx="2"/>
+<text x="256" y="31" font-size="11" fill="#52606d">0.36x　0.30–0.42x</text>
+<text x="182" y="57" text-anchor="end" font-size="11.5" fill="#1f2933">cl4d 行索引（R10 直写）</text>
+<rect x="190" y="44" width="333" height="16" fill="#0e7490" rx="2"/>
+<text x="529" y="57" font-size="11" fill="#52606d">2.00x　1.45–2.54x</text>
+<text x="182" y="83" text-anchor="end" font-size="11.5" fill="#1f2933">cl4d mask（R10）</text>
+<rect x="190" y="70" width="290" height="16" fill="#0e7490" rx="2"/>
+<text x="486" y="83" font-size="11" fill="#52606d">1.74x　1.40–2.08x</text>
+<text x="182" y="109" text-anchor="end" font-size="11.5" fill="#1f2933">cl3d 置换行索引（R10）</text>
+<rect x="190" y="96" width="332" height="16" fill="#0e7490" rx="2"/>
+<text x="528" y="109" font-size="11" fill="#52606d">1.99x　1.35–2.63x</text>
+<text x="182" y="135" text-anchor="end" font-size="11.5" fill="#1f2933">contig4d 对照（R10 未触碰）</text>
+<rect x="190" y="122" width="358" height="16" fill="#0e7490" rx="2"/>
+<text x="554" y="135" font-size="11" fill="#52606d">2.15x　1.57–2.73x</text>
+</svg>
+<figcaption><b>图 2 · 直写前后比值</b>（§2.9.2，8t，两进程 3 rep × 3 轮交替）。本算子 cl4d 行索引自身
+耗时降 4–6 倍（消掉 ~51MB×2 的一趟输出带宽）；cl 行索引与连续行索引拉平（1.30 vs 1.21ms）。
+第二轮 hpc 侧整体劣化 3 倍时，未改动的 contig4d 对照组同倍劣化 → 判共享箱噪声。</figcaption></figure>
+</section>
+
+<section id="real"><h2><span class="secno">04</span>真实 workload 对拍（§2.9.4）</h2>
+<p class="lede">两进程 <code>x[idx]</code> 全链路（含 dispatcher/输出分配/normalize），这才是集成收益口径。</p>
+<figure><svg viewBox="0 0 760 130">
+<text x="182" y="31" text-anchor="end" font-size="11.5" fill="#1f2933">M1 权重块（E=20k，i32/i64）</text>
+<rect x="190" y="18" width="376" height="16" fill="#0e7490" rx="2"/>
+<text x="572" y="31" font-size="11" fill="#52606d">13.15x　1t；8t 5.0–5.9x</text>
+<text x="182" y="57" text-anchor="end" font-size="11.5" fill="#1f2933">shortq A=2-4 K=64-512</text>
+<rect x="190" y="44" width="94" height="16" fill="#0e7490" rx="2"/>
+<text x="290" y="57" font-size="11" fill="#52606d">3.30x　1t 2.55–4.06x，µs 级</text>
+<text x="182" y="83" text-anchor="end" font-size="11.5" fill="#1f2933">M5 标量 / A1 单元素高频</text>
+<rect x="190" y="70" width="83" height="16" fill="#0e7490" rx="2"/>
+<text x="279" y="83" font-size="11" fill="#52606d">2.90x　1t 2.41–3.35x</text>
+<text x="182" y="109" text-anchor="end" font-size="11.5" fill="#1f2933">M2 (20000,8/64/256)</text>
+<rect x="190" y="96" width="66" height="16" fill="#0e7490" rx="2"/>
+<text x="262" y="109" font-size="11" fill="#52606d">2.30x　1t 1.19–3.40x，全档 ≥1.06x</text>
+</svg>
+<figcaption><b>图 3 · 1 线程对拍比值</b>（区间中值绘图，§2.9.4）。M1 权重块是集成收益主体；
+shortq 的 K=1023×A≥3 高线程格 aten 有 fork-join 病理（612–627µs vs 邻格 ~20µs），
+按惯例不作收益宣传。</figcaption></figure>
+</section>
+
+<section id="prod"><h2><span class="secno">05</span>生产形态：小 K + 6–19 线程（§2.10）</h2>
+<p class="lede">与 §2.9 正交的一条轴：K=512–55296、线程 1/6/12/19，全部走真实 <code>x[idx]</code>。
+旧基准的 K=2M/10M 与 1/608t 是两个端点，从没测过这一段。</p>
+<figure><svg viewBox="0 0 502 266" role="img" aria-label="生产形态 A=1：K × 线程">
+<title>生产形态 A=1：K × 线程</title>
+<text x="193.0" y="16" text-anchor="middle" font-size="11" fill="#52606d" font-weight="600">1t</text>
+<text x="279.0" y="16" text-anchor="middle" font-size="11" fill="#52606d" font-weight="600">6t</text>
+<text x="365.0" y="16" text-anchor="middle" font-size="11" fill="#52606d" font-weight="600">12t</text>
+<text x="451.0" y="16" text-anchor="middle" font-size="11" fill="#52606d" font-weight="600">19t</text>
+<text x="144" y="39.5" text-anchor="end" font-size="11.5" fill="#1f2933">512 / dom2048</text>
+<rect x="150" y="24" width="84" height="21" rx="3" fill="#0e7490"/>
+<text x="192.0" y="39.0" text-anchor="middle" font-size="10.5" fill="#ffffff" font-weight="600">1.61</text>
+<rect x="236" y="24" width="84" height="21" rx="3" fill="#0e7490"/>
+<text x="278.0" y="39.0" text-anchor="middle" font-size="10.5" fill="#ffffff" font-weight="600">1.61</text>
+<rect x="322" y="24" width="84" height="21" rx="3" fill="#0e7490"/>
+<text x="364.0" y="39.0" text-anchor="middle" font-size="10.5" fill="#ffffff" font-weight="600">1.61</text>
+<rect x="408" y="24" width="84" height="21" rx="3" fill="#0e7490"/>
+<text x="450.0" y="39.0" text-anchor="middle" font-size="10.5" fill="#ffffff" font-weight="600">1.60</text>
+<text x="144" y="62.5" text-anchor="end" font-size="11.5" fill="#1f2933">1024 / dom2048</text>
+<rect x="150" y="47" width="84" height="21" rx="3" fill="#5eead4"/>
+<text x="192.0" y="62.0" text-anchor="middle" font-size="10.5" fill="#134e4a" font-weight="600">1.45</text>
+<rect x="236" y="47" width="84" height="21" rx="3" fill="#5eead4"/>
+<text x="278.0" y="62.0" text-anchor="middle" font-size="10.5" fill="#134e4a" font-weight="600">1.45</text>
+<rect x="322" y="47" width="84" height="21" rx="3" fill="#5eead4"/>
+<text x="364.0" y="62.0" text-anchor="middle" font-size="10.5" fill="#134e4a" font-weight="600">1.46</text>
+<rect x="408" y="47" width="84" height="21" rx="3" fill="#5eead4"/>
+<text x="450.0" y="62.0" text-anchor="middle" font-size="10.5" fill="#134e4a" font-weight="600">1.45</text>
+<text x="144" y="85.5" text-anchor="end" font-size="11.5" fill="#1f2933">2048 / dom2048</text>
+<rect x="150" y="70" width="84" height="21" rx="3" fill="#5eead4"/>
+<text x="192.0" y="85.0" text-anchor="middle" font-size="10.5" fill="#134e4a" font-weight="600">1.27</text>
+<rect x="236" y="70" width="84" height="21" rx="3" fill="#5eead4"/>
+<text x="278.0" y="85.0" text-anchor="middle" font-size="10.5" fill="#134e4a" font-weight="600">1.27</text>
+<rect x="322" y="70" width="84" height="21" rx="3" fill="#5eead4"/>
+<text x="364.0" y="85.0" text-anchor="middle" font-size="10.5" fill="#134e4a" font-weight="600">1.27</text>
+<rect x="408" y="70" width="84" height="21" rx="3" fill="#5eead4"/>
+<text x="450.0" y="85.0" text-anchor="middle" font-size="10.5" fill="#134e4a" font-weight="600">1.27</text>
+<text x="144" y="108.5" text-anchor="end" font-size="11.5" fill="#1f2933">4096 / dom2048</text>
+<rect x="150" y="93" width="84" height="21" rx="3" fill="#5eead4"/>
+<text x="192.0" y="108.0" text-anchor="middle" font-size="10.5" fill="#134e4a" font-weight="600">1.11</text>
+<rect x="236" y="93" width="84" height="21" rx="3" fill="#d97706"/>
+<text x="278.0" y="108.0" text-anchor="middle" font-size="10.5" fill="#ffffff" font-weight="600">0.93</text>
+<rect x="322" y="93" width="84" height="21" rx="3" fill="#d97706"/>
+<text x="364.0" y="108.0" text-anchor="middle" font-size="10.5" fill="#ffffff" font-weight="600">0.95</text>
+<rect x="408" y="93" width="84" height="21" rx="3" fill="#d97706"/>
+<text x="450.0" y="108.0" text-anchor="middle" font-size="10.5" fill="#ffffff" font-weight="600">0.96</text>
+<text x="144" y="131.5" text-anchor="end" font-size="11.5" fill="#1f2933">8192 / dom2048</text>
+<rect x="150" y="116" width="84" height="21" rx="3" fill="#5eead4"/>
+<text x="192.0" y="131.0" text-anchor="middle" font-size="10.5" fill="#134e4a" font-weight="600">1.27</text>
+<rect x="236" y="116" width="84" height="21" rx="3" fill="#5eead4"/>
+<text x="278.0" y="131.0" text-anchor="middle" font-size="10.5" fill="#134e4a" font-weight="600">1.05</text>
+<rect x="322" y="116" width="84" height="21" rx="3" fill="#5eead4"/>
+<text x="364.0" y="131.0" text-anchor="middle" font-size="10.5" fill="#134e4a" font-weight="600">1.05</text>
+<rect x="408" y="116" width="84" height="21" rx="3" fill="#d97706"/>
+<text x="450.0" y="131.0" text-anchor="middle" font-size="10.5" fill="#ffffff" font-weight="600">0.98</text>
+<text x="144" y="154.5" text-anchor="end" font-size="11.5" fill="#1f2933">16384 / dom2048</text>
+<rect x="150" y="139" width="84" height="21" rx="3" fill="#5eead4"/>
+<text x="192.0" y="154.0" text-anchor="middle" font-size="10.5" fill="#134e4a" font-weight="600">1.27</text>
+<rect x="236" y="139" width="84" height="21" rx="3" fill="#d97706"/>
+<text x="278.0" y="154.0" text-anchor="middle" font-size="10.5" fill="#ffffff" font-weight="600">0.90</text>
+<rect x="322" y="139" width="84" height="21" rx="3" fill="#d97706"/>
+<text x="364.0" y="154.0" text-anchor="middle" font-size="10.5" fill="#ffffff" font-weight="600">0.97</text>
+<rect x="408" y="139" width="84" height="21" rx="3" fill="#d97706"/>
+<text x="450.0" y="154.0" text-anchor="middle" font-size="10.5" fill="#ffffff" font-weight="600">0.92</text>
+<text x="144" y="177.5" text-anchor="end" font-size="11.5" fill="#1f2933">24576 / dom2048</text>
+<rect x="150" y="162" width="84" height="21" rx="3" fill="#5eead4"/>
+<text x="192.0" y="177.0" text-anchor="middle" font-size="10.5" fill="#134e4a" font-weight="600">1.26</text>
+<rect x="236" y="162" width="84" height="21" rx="3" fill="#d97706"/>
+<text x="278.0" y="177.0" text-anchor="middle" font-size="10.5" fill="#ffffff" font-weight="600">0.94</text>
+<rect x="322" y="162" width="84" height="21" rx="3" fill="#d97706"/>
+<text x="364.0" y="177.0" text-anchor="middle" font-size="10.5" fill="#ffffff" font-weight="600">0.93</text>
+<rect x="408" y="162" width="84" height="21" rx="3" fill="#d97706"/>
+<text x="450.0" y="177.0" text-anchor="middle" font-size="10.5" fill="#ffffff" font-weight="600">0.90</text>
+<text x="144" y="200.5" text-anchor="end" font-size="11.5" fill="#1f2933">55296 / dom2048</text>
+<rect x="150" y="185" width="84" height="21" rx="3" fill="#0e7490"/>
+<text x="192.0" y="200.0" text-anchor="middle" font-size="10.5" fill="#ffffff" font-weight="600">1.50</text>
+<rect x="236" y="185" width="84" height="21" rx="3" fill="#5eead4"/>
+<text x="278.0" y="200.0" text-anchor="middle" font-size="10.5" fill="#134e4a" font-weight="600">1.04</text>
+<rect x="322" y="185" width="84" height="21" rx="3" fill="#d97706"/>
+<text x="364.0" y="200.0" text-anchor="middle" font-size="10.5" fill="#ffffff" font-weight="600">0.91</text>
+<rect x="408" y="185" width="84" height="21" rx="3" fill="#b91c1c"/>
+<text x="450.0" y="200.0" text-anchor="middle" font-size="10.5" fill="#ffffff" font-weight="600">0.83</text>
+<text x="144" y="223.5" text-anchor="end" font-size="11.5" fill="#1f2933">13824 / dom1M</text>
+<rect x="150" y="208" width="84" height="21" rx="3" fill="#5eead4"/>
+<text x="192.0" y="223.0" text-anchor="middle" font-size="10.5" fill="#134e4a" font-weight="600">1.26</text>
+<rect x="236" y="208" width="84" height="21" rx="3" fill="#b91c1c"/>
+<text x="278.0" y="223.0" text-anchor="middle" font-size="10.5" fill="#ffffff" font-weight="600">0.84</text>
+<rect x="322" y="208" width="84" height="21" rx="3" fill="#5eead4"/>
+<text x="364.0" y="223.0" text-anchor="middle" font-size="10.5" fill="#134e4a" font-weight="600">1.09</text>
+<rect x="408" y="208" width="84" height="21" rx="3" fill="#b91c1c"/>
+<text x="450.0" y="223.0" text-anchor="middle" font-size="10.5" fill="#ffffff" font-weight="600">0.88</text>
+<text x="144" y="246.5" text-anchor="end" font-size="11.5" fill="#1f2933">55296 / dom1M</text>
+<rect x="150" y="231" width="84" height="21" rx="3" fill="#5eead4"/>
+<text x="192.0" y="246.0" text-anchor="middle" font-size="10.5" fill="#134e4a" font-weight="600">1.31</text>
+<rect x="236" y="231" width="84" height="21" rx="3" fill="#5eead4"/>
+<text x="278.0" y="246.0" text-anchor="middle" font-size="10.5" fill="#134e4a" font-weight="600">1.10</text>
+<rect x="322" y="231" width="84" height="21" rx="3" fill="#d97706"/>
+<text x="364.0" y="246.0" text-anchor="middle" font-size="10.5" fill="#ffffff" font-weight="600">0.91</text>
+<rect x="408" y="231" width="84" height="21" rx="3" fill="#b91c1c"/>
+<text x="450.0" y="246.0" text-anchor="middle" font-size="10.5" fill="#ffffff" font-weight="600">0.66</text>
+</svg>
+<figcaption><b>图 4 · A=1 家族比值</b>（§2.10，3 次独立运行中位数）。劣化族 =
+A=1 + K≥4096 + 线程≥6：K=4096 起 6t 就 0.93x，最深 dom=1M K=55296 19t <b>0.66x</b>。
+rowcopy A=64 全档 2.2–4.2x、K≤2048 桶化 1.24–1.62x 不受影响。</figcaption></figure>
+<div class="callout warn"><p><b>为什么掉</b>：桶化路径 26% 的每元素成本不随线程缩小（两趟 parallel_for 夹串行建表，
+2026-11-03 起已拆两块）；4B gather 每线程每元素 19.9ns，停在 SVE gather 微码下限，aten 13.1ns
+（4MB 源落进 19 核的 L2 聚合）。机理全文见 degradation-analysis.md §6.5。</p></div>
+</section>
+
+<section id="route"><h2><span class="secno">06</span>路由成本分层探针（§2.13）</h2>
+<p class="lede">回答“路由条数会不会抬高每次调用的固定开销”——不会：K≤4096 且下标连续的形态
+全被入口快路径吃掉，根本走不到路由链。</p>
+<div class="grid c2">
+<div class="card"><h4>短调用（chain，K≤4）</h4>
+<p class="sub">连续下标 6.90µs（走 <code>small_single</code>）；非连续 9.75µs（+2.85µs = normalize + 通用路由）；
+Python int 下标参照 5.32µs。if 链本身量级&lt;2.85µs，Python/绑定侧差 1.58µs 反而更大。</p></div>
+<div class="card"><h4>语料路由分布（census，26 形态）</h4>
+<p class="sub"><code>small_single</code> 15 · 无专属计数器 6 · <code>rowcopy_raw</code> 3 · <code>single_1d_sve</code> 2。
+实际只用 4–5 条路，其余是退化兜底——<b>“删路”要看 trace 覆盖，不能只看条数</b>。</p></div>
+</div>
+<figure><svg viewBox="0 0 760 130">
+<text x="182" y="31" text-anchor="end" font-size="11.5" fill="#1f2933">值域门内：dom=512（桶化）</text>
+<rect x="190" y="18" width="178" height="16" fill="#0e7490" rx="2"/>
+<text x="374" y="31" font-size="11" fill="#52606d">55.75µs</text>
+<text x="182" y="57" text-anchor="end" font-size="11.5" fill="#1f2933">值域门内：dom=2048（桶化）</text>
+<rect x="190" y="44" width="181" height="16" fill="#0e7490" rx="2"/>
+<text x="377" y="57" font-size="11" fill="#52606d">56.69µs　1.00x 参照</text>
+<text x="182" y="83" text-anchor="end" font-size="11.5" fill="#1f2933">值域门外：dom=2049（四遍路）</text>
+<rect x="190" y="70" width="372" height="16" fill="#b91c1c" rx="2"/>
+<text x="568" y="83" font-size="11" fill="#52606d">116.25µs　2.05x</text>
+<text x="182" y="109" text-anchor="end" font-size="11.5" fill="#1f2933">值域门外：dom=4096（四遍路）</text>
+<rect x="190" y="96" width="372" height="16" fill="#b91c1c" rx="2"/>
+<text x="568" y="109" font-size="11" fill="#52606d">116.18µs　2.05x</text>
+</svg>
+<figcaption><b>图 5 · 值域门两侧是 2.05x 台阶</b>（§2.13.2，同局部性隔离设计：两侧都只摸前 16KB）。
+门内 512 与 2048 同带（≤2%），门外 2049 与 4096 同带（≤0.1%）——差的是“过门就整条换路”，
+不是“值域变大查表变慢”。</figcaption></figure>
+<figure><svg viewBox="0 0 760 130">
+<text x="182" y="31" text-anchor="end" font-size="11.5" fill="#1f2933">debug_spec（仅 normalize + 构造）</text>
+<rect x="190" y="18" width="27" height="16" fill="#0e7490" rx="2"/>
+<text x="223" y="31" font-size="11" fill="#52606d">4.72µs</text>
+<text x="182" y="57" text-anchor="end" font-size="11.5" fill="#1f2933">torch.aminmax i32（K=64k）</text>
+<rect x="190" y="44" width="114" height="16" fill="#0e7490" rx="2"/>
+<text x="310" y="57" font-size="11" fill="#52606d">19.90µs</text>
+<text x="182" y="83" text-anchor="end" font-size="11.5" fill="#1f2933">torch.aminmax i64（K=64k）</text>
+<rect x="190" y="70" width="255" height="16" fill="#0e7490" rx="2"/>
+<text x="451" y="83" font-size="11" fill="#52606d">44.69µs　i64 ≈ 2.2× i32</text>
+<text x="182" y="109" text-anchor="end" font-size="11.5" fill="#1f2933">linearize_spec（含分配/归一）</text>
+<rect x="190" y="96" width="365" height="16" fill="#0e7490" rx="2"/>
+<text x="561" y="109" font-size="11" fill="#52606d">63.80µs</text>
+</svg>
+<figcaption><b>图 6 · 一遍 O(K) 扫描的裸价</b>（§2.13.3）。扫描成本首先是<b>下标宽度</b>的函数，
+再看 K。</figcaption></figure>
+</section>
+
+<section id="path"><h2><span class="secno">07</span>路径矩阵：每条路值多少（§2.14）</h2>
+<p class="lede">按“路径 × 规模 × 线程”组织（产品口径 = vs aten），另有“同工作量只差一个谓词”的兄弟对照。
+101 个测量点全部与路由计数器一致（0 处 EXPECT MISMATCH）。</p>
+<figure><svg viewBox="0 0 760 276">
+<text x="182" y="36" text-anchor="end" font-size="11.5" fill="#1f2933">R0 rowcopy_direct K1024</text>
+<rect x="190" y="16" width="347" height="13" fill="#94a3b8" rx="2"/>
+<rect x="190" y="31" width="110" height="13" fill="#0e7490" rx="2"/>
+<text x="543" y="27" font-size="10.5" fill="#7b8794">11.41</text>
+<text x="306" y="51" font-size="10.5" fill="#0e7490" font-weight="600">3.63</text>
+<text x="752" y="40" text-anchor="end" font-size="10.5" fill="#52606d">16t 2.07</text>
+<text x="182" y="78" text-anchor="end" font-size="11.5" fill="#1f2933">R2 rowcopy_raw K65536</text>
+<rect x="190" y="58" width="192" height="13" fill="#94a3b8" rx="2"/>
+<rect x="190" y="73" width="82" height="13" fill="#0e7490" rx="2"/>
+<text x="388" y="69" font-size="10.5" fill="#7b8794">6.31</text>
+<text x="278" y="93" font-size="10.5" fill="#0e7490" font-weight="600">2.71</text>
+<text x="752" y="82" text-anchor="end" font-size="10.5" fill="#52606d">16t 2.03</text>
+<text x="182" y="120" text-anchor="end" font-size="11.5" fill="#1f2933">R9 两遍模型 K131072</text>
+<rect x="190" y="100" width="206" height="13" fill="#94a3b8" rx="2"/>
+<rect x="190" y="115" width="90" height="13" fill="#0e7490" rx="2"/>
+<text x="402" y="111" font-size="10.5" fill="#7b8794">6.77</text>
+<text x="286" y="135" font-size="10.5" fill="#0e7490" font-weight="600">2.96</text>
+<text x="752" y="124" text-anchor="end" font-size="10.5" fill="#52606d">16t 1.99</text>
+<text x="182" y="162" text-anchor="end" font-size="11.5" fill="#1f2933">R10 gather_fused run2</text>
+<rect x="190" y="142" width="208" height="13" fill="#94a3b8" rx="2"/>
+<rect x="190" y="157" width="143" height="13" fill="#0e7490" rx="2"/>
+<text x="404" y="153" font-size="10.5" fill="#7b8794">6.85</text>
+<text x="339" y="177" font-size="10.5" fill="#0e7490" font-weight="600">4.7</text>
+<text x="752" y="166" text-anchor="end" font-size="10.5" fill="#52606d">16t 3.75</text>
+<text x="182" y="204" text-anchor="end" font-size="11.5" fill="#1f2933">R5 桶化 K65536</text>
+<rect x="190" y="184" width="60" height="13" fill="#94a3b8" rx="2"/>
+<rect x="190" y="199" width="60" height="13" fill="#0e7490" rx="2"/>
+<text x="256" y="195" font-size="10.5" fill="#7b8794">1.97</text>
+<text x="256" y="219" font-size="10.5" fill="#0e7490" font-weight="600">1.98</text>
+<text x="752" y="208" text-anchor="end" font-size="10.5" fill="#52606d">16t 2.09</text>
+<text x="182" y="246" text-anchor="end" font-size="11.5" fill="#1f2933">R6 single_1d_sve K65536</text>
+<rect x="190" y="226" width="41" height="13" fill="#94a3b8" rx="2"/>
+<rect x="190" y="241" width="32" height="13" fill="#0e7490" rx="2"/>
+<text x="237" y="237" font-size="10.5" fill="#7b8794">1.36</text>
+<text x="228" y="261" font-size="10.5" fill="#0e7490" font-weight="600">1.06</text>
+<text x="752" y="250" text-anchor="end" font-size="10.5" fill="#52606d">16t 0.94</text>
+<rect x="190" y="262" width="11" height="11" fill="#94a3b8"/><text x="205" y="271" font-size="10.5" fill="#52606d">D=0（无预取）</text>
+<rect x="360" y="262" width="11" height="11" fill="#0e7490"/><text x="375" y="271" font-size="10.5" fill="#52606d">默认 D（H1）</text>
+</svg>
+<figcaption><b>图 7 · 代表路径 1t/8t 比值</b>（§2.14.1）。raw 行拷贝与直写是大 K 收益主体；
+R6 SVE 单遍在 16t 掉到 0.94（µs 列 217µs，宽行高线程见 H3）。</figcaption></figure>
+<figure><svg viewBox="0 0 760 156">
+<text x="182" y="31" text-anchor="end" font-size="11.5" fill="#1f2933">保住直写资格（r0_bypass→r0_direct）</text>
+<rect x="190" y="18" width="380" height="16" fill="#0e7490" rx="2"/>
+<text x="576" y="31" font-size="11" fill="#52606d">22.81x　1t；8t 8.28x / 16t 7.96x</text>
+<text x="182" y="57" text-anchor="end" font-size="11.5" fill="#1f2933">下标连续进 small_single</text>
+<rect x="190" y="44" width="93" height="16" fill="#0e7490" rx="2"/>
+<text x="289" y="57" font-size="11" fill="#52606d">5.56x　1t；8t 2.29x / 16t 2.50x</text>
+<text x="182" y="83" text-anchor="end" font-size="11.5" fill="#1f2933">桶化接管（dom 2049→2048）</text>
+<rect x="190" y="70" width="24" height="16" fill="#0891b2" rx="2"/>
+<text x="220" y="83" font-size="11" fill="#52606d">1.46x　1t</text>
+<text x="182" y="109" text-anchor="end" font-size="11.5" fill="#1f2933">交给 strided_rows（run≥4）</text>
+<rect x="190" y="96" width="26" height="16" fill="#0891b2" rx="2"/>
+<text x="222" y="109" font-size="11" fill="#52606d">1.55x　1t；8t 1.24x / 16t 1.10x</text>
+<text x="182" y="135" text-anchor="end" font-size="11.5" fill="#1f2933">同内核 dtype 互换（i32↔f32）</text>
+<rect x="190" y="122" width="17" height="16" fill="#0891b2" rx="2"/>
+<text x="213" y="135" font-size="11" fill="#52606d">1.03x　1t；8t/16t ≈1.00x</text>
+</svg>
+<figcaption><b>图 8 · 兄弟对照（翻面 ÷ 参考，>1 = 丢这个谓词多花几倍）</b>（§2.14.2）。
+连续性与直写资格是最值钱的谓词；dtype 在同内核内近乎免费。</figcaption></figure>
+</section>
+
+<section id="pf"><h2><span class="secno">08</span>H1 行拷贝软件预取（§2.18）</h2>
+<p class="lede">唯一的大杠杆：提前 D 行发 <code>prfm</code>，把“依赖链等延迟”改成“多条在飞”。</p>
+<figure><svg viewBox="0 0 760 276">
+<text x="182" y="36" text-anchor="end" font-size="11.5" fill="#1f2933">A=3（12B）</text>
+<rect x="190" y="16" width="104" height="13" fill="#94a3b8" rx="2"/>
+<rect x="190" y="31" width="259" height="13" fill="#0e7490" rx="2"/>
+<text x="300" y="27" font-size="10.5" fill="#7b8794">1.81x</text>
+<text x="455" y="51" font-size="10.5" fill="#0e7490" font-weight="600">4.49x</text>
+<text x="182" y="78" text-anchor="end" font-size="11.5" fill="#1f2933">A=16（64B）</text>
+<rect x="190" y="58" width="119" height="13" fill="#94a3b8" rx="2"/>
+<rect x="190" y="73" width="345" height="13" fill="#0e7490" rx="2"/>
+<text x="315" y="69" font-size="10.5" fill="#7b8794">2.07x</text>
+<text x="541" y="93" font-size="10.5" fill="#0e7490" font-weight="600">6x</text>
+<text x="182" y="120" text-anchor="end" font-size="11.5" fill="#1f2933">A=32（128B）</text>
+<rect x="190" y="100" width="140" height="13" fill="#94a3b8" rx="2"/>
+<rect x="190" y="115" width="360" height="13" fill="#0e7490" rx="2"/>
+<text x="336" y="111" font-size="10.5" fill="#7b8794">2.43x</text>
+<text x="556" y="135" font-size="10.5" fill="#0e7490" font-weight="600">6.26x</text>
+<text x="182" y="162" text-anchor="end" font-size="11.5" fill="#1f2933">A=64（256B）</text>
+<rect x="190" y="142" width="150" height="13" fill="#94a3b8" rx="2"/>
+<rect x="190" y="157" width="338" height="13" fill="#0e7490" rx="2"/>
+<text x="346" y="153" font-size="10.5" fill="#7b8794">2.6x</text>
+<text x="534" y="177" font-size="10.5" fill="#0e7490" font-weight="600">5.87x</text>
+<text x="182" y="204" text-anchor="end" font-size="11.5" fill="#1f2933">A=128（512B）</text>
+<rect x="190" y="184" width="156" height="13" fill="#94a3b8" rx="2"/>
+<rect x="190" y="199" width="188" height="13" fill="#0e7490" rx="2"/>
+<text x="352" y="195" font-size="10.5" fill="#7b8794">2.71x</text>
+<text x="384" y="219" font-size="10.5" fill="#0e7490" font-weight="600">3.27x</text>
+<text x="182" y="246" text-anchor="end" font-size="11.5" fill="#1f2933">A=256（1KB）</text>
+<rect x="190" y="226" width="150" height="13" fill="#94a3b8" rx="2"/>
+<rect x="190" y="241" width="150" height="13" fill="#0e7490" rx="2"/>
+<text x="346" y="237" font-size="10.5" fill="#7b8794">2.6x</text>
+<text x="346" y="261" font-size="10.5" fill="#0e7490" font-weight="600">2.6x</text>
+<text x="752" y="250" text-anchor="end" font-size="10.5" fill="#52606d">行内已满窗口，预取关闭</text>
+<rect x="190" y="262" width="11" height="11" fill="#94a3b8"/><text x="205" y="271" font-size="10.5" fill="#52606d">D=0（无预取）</text>
+<rect x="360" y="262" width="11" height="11" fill="#0e7490"/><text x="375" y="271" font-size="10.5" fill="#52606d">默认 D（H1）</text>
+</svg>
+<figcaption><b>图 9 · 对 aten 比值：D=0 → 默认 D</b>（§2.18.4，1t）。A≤64 从 1.6–2.6x 抬到
+2.1–6.0x；A=256 行内 16 条 line 已占满在飞窗口，预取关闭（§1.6 的硬边界）。</figcaption></figure>
+<div class="callout"><p><b>稳态与固定成本</b>（§2.18.5，1t A=16 K 扫描拟合 <code>t = F + c·K</code>）：
+每行稳态 <b class="num">80.0 → 19.4 ns（4.1x）</b>（探针纯拷贝下界 11.4，差 1.7x = 检查/地址计算/预取记账）；
+每调用固定成本 <b class="num">F ≈ 0.54ms</b> 与预取无关——K≲32768 时把 ns/行 抬 2–3 倍，<b>小 K 的账不在行循环里</b>。</p></div>
+</section>
+
+<section id="cuts"><h2><span class="secno">09</span>桶化输出段：批量化证伪，两刀结构改动证真（§2.21）</h2>
+<p class="lede">前提验证：隔离探针 <code>bucketprobe</code> 专门测“批量化能不能到探针下界”。</p>
+<figure><svg viewBox="0 0 760 104">
+<text x="182" y="31" text-anchor="end" font-size="11.5" fill="#1f2933">批量化 b16（vs 当前循环）</text>
+<rect x="190" y="18" width="293" height="16" fill="#b91c1c" rx="2"/>
+<text x="489" y="31" font-size="11" fill="#52606d">1.10x　1.02–1.15x，证伪</text>
+<text x="182" y="57" text-anchor="end" font-size="11.5" fill="#1f2933">免 pass 1（源 ≤2048，上午轮）</text>
+<rect x="190" y="44" width="363" height="16" fill="#0e7490" rx="2"/>
+<text x="559" y="57" font-size="11" fill="#52606d">1.36x　内核 A/B 1.31/1.33/1.45x</text>
+<text x="182" y="83" text-anchor="end" font-size="11.5" fill="#1f2933">免表直查（跨度 ≤64KB，补丁 3b）</text>
+<rect x="190" y="70" width="317" height="16" fill="#0e7490" rx="2"/>
+<text x="513" y="83" font-size="11" fill="#52606d">1.19x　A/B 1.28–1.30 / 1.27–1.28x</text>
+</svg>
+<figcaption><b>图 10 · 三种写法实验的隔离对比</b>（§2.21.1–2.21.2，SGI 口径）。
+结论：真兑现的是<b>整趟删掉 pass 1</b>（1.46–1.85x），批量化只值 1.02–1.15x；
+“地板可达”被探针证实数值、手段被证伪。</figcaption></figure>
+<figure><svg viewBox="0 0 760 260">
+<text x="182" y="31" text-anchor="end" font-size="11.5" fill="#1f2933">SGI 8KB 跨度</text>
+<rect x="190" y="18" width="360" height="16" fill="#0e7490" rx="2"/>
+<text x="556" y="31" font-size="11" fill="#52606d">2.25x　6.06 vs 13.62µs</text>
+<text x="182" y="57" text-anchor="end" font-size="11.5" fill="#1f2933">SGI 64KB 跨度</text>
+<rect x="190" y="44" width="347" height="16" fill="#0e7490" rx="2"/>
+<text x="543" y="57" font-size="11" fill="#52606d">2.17x</text>
+<text x="182" y="83" text-anchor="end" font-size="11.5" fill="#1f2933">SGI 256KB 跨度</text>
+<rect x="190" y="70" width="346" height="16" fill="#0e7490" rx="2"/>
+<text x="542" y="83" font-size="11" fill="#52606d">2.16x</text>
+<text x="182" y="109" text-anchor="end" font-size="11.5" fill="#1f2933">SGI 32MB 跨度</text>
+<rect x="190" y="96" width="376" height="16" fill="#0e7490" rx="2"/>
+<text x="572" y="109" font-size="11" fill="#52606d">2.35x</text>
+<text x="182" y="135" text-anchor="end" font-size="11.5" fill="#1f2933">PPT 512KB 跨度</text>
+<rect x="190" y="122" width="246" height="16" fill="#0e7490" rx="2"/>
+<text x="442" y="135" font-size="11" fill="#52606d">1.54x</text>
+<text x="182" y="161" text-anchor="end" font-size="11.5" fill="#1f2933">PPT 32MB 跨度</text>
+<rect x="190" y="148" width="294" height="16" fill="#0e7490" rx="2"/>
+<text x="490" y="161" font-size="11" fill="#52606d">1.84x</text>
+<text x="182" y="187" text-anchor="end" font-size="11.5" fill="#1f2933">Sonata 8KB 跨度</text>
+<rect x="190" y="174" width="168" height="16" fill="#0e7490" rx="2"/>
+<text x="364" y="187" font-size="11" fill="#52606d">1.05x</text>
+<text x="182" y="213" text-anchor="end" font-size="11.5" fill="#1f2933">Sonata 512KB 跨度</text>
+<rect x="190" y="200" width="96" height="16" fill="#b91c1c" rx="2"/>
+<text x="292" y="213" font-size="11" fill="#52606d">0.60x　表赢 1.65x——直查循环乘法账暴露</text>
+<text x="182" y="239" text-anchor="end" font-size="11.5" fill="#1f2933">Sonata 32MB 跨度</text>
+<rect x="190" y="226" width="157" height="16" fill="#b91c1c" rx="2"/>
+<text x="353" y="239" font-size="11" fill="#52606d">0.98x　表小赢</text>
+</svg>
+<figcaption><b>图 11 · 直查源 vs 建表（notab/nop1）</b>（§2.21.3，best of 7）。跨度 ≤64KB 时连表都不建
+（直查快 ~2.2x）；Sonata 在 512KB 跨度反转（0.60x）——直查循环的 <code>v*stride0</code> 乘法在
+K/size=125 的最长循环里完全暴露 → 补丁 3b 用 <code>stride0==1</code> 特化 + <code>K/size≤32</code> 门绕开。</figcaption></figure>
+</section>
+
+<section id="sve"><h2><span class="secno">10</span>SVE 的形状实验（§2.23，2026-11-05）</h2>
+<p class="lede">用真发指令 + 逐 lane 校验的方式回答“一条 gather 到底取几个元素、每次访问多贵”。</p>
+<div class="grid c2">
+<div class="card"><h4>一条 gather 取几个</h4>
+<p class="sub">1B/2B/4B 各 <b>16</b> 个元素、碰 <b>16</b> 条 line（搬进 1024B）；8B 是 <b>8</b> 个、8 条 line。
+关键：子字 gather 只能用 32 位下标——“64 lane”只存在于字节视角。</p></div>
+<div class="card"><h4>每次访问多贵（256MB 源）</h4>
+<p class="sub">1B 7.68ns / 2B 8.09ns / 4B 8.68ns / 8B 5.67ns——<b>与元素宽度几乎无关</b>，
+有用带宽正比于宽度（0.13/0.25/0.46/1.41 GB/s）。这就是 1B/2B 干脆不写 SVE 内核的理由。</p></div>
+</div>
+<figure><svg viewBox="0 0 760 130">
+<text x="182" y="31" text-anchor="end" font-size="11.5" fill="#1f2933">1B：16 元素 / 16 line</text>
+<rect x="190" y="18" width="35" height="16" fill="#0e7490" rx="2"/>
+<text x="231" y="31" font-size="11" fill="#52606d">0.130 GB/s　7.68ns/次</text>
+<text x="182" y="57" text-anchor="end" font-size="11.5" fill="#1f2933">2B：16 元素 / 16 line</text>
+<rect x="190" y="44" width="66" height="16" fill="#0e7490" rx="2"/>
+<text x="262" y="57" font-size="11" fill="#52606d">0.247 GB/s　8.09ns/次</text>
+<text x="182" y="83" text-anchor="end" font-size="11.5" fill="#1f2933">4B：16 元素 / 16 line</text>
+<rect x="190" y="70" width="123" height="16" fill="#0e7490" rx="2"/>
+<text x="319" y="83" font-size="11" fill="#52606d">0.462 GB/s　8.68ns/次</text>
+<text x="182" y="109" text-anchor="end" font-size="11.5" fill="#1f2933">8B：8 元素 / 8 line</text>
+<rect x="190" y="96" width="376" height="16" fill="#0e7490" rx="2"/>
+<text x="572" y="109" font-size="11" fill="#52606d">1.411 GB/s　5.67ns/次</text>
+</svg>
+<figcaption><b>图 12 · 有用带宽 ∝ 元素宽度</b>（§2.23.1/2.23.2）。行流量决定下限：
+4B 随机 gather 每次访问拖整条 64B line，有用字节只有 1/16。</figcaption></figure>
+</section>
+
+<section id="hw"><h2><span class="secno">11</span>硬件探针速览（§2.16）</h2>
+<p class="lede">只测“硬件与实现的距离”，不测收益；推导与判读见
+<a href="headroom.html">headroom.html</a>。</p>
+<figure><svg viewBox="0 0 760 300">
+<line x1="60" y1="250" x2="740" y2="250" stroke="#7b8794"/>
+<line x1="60" y1="250" x2="60" y2="30" stroke="#7b8794"/>
+<text x="52" y="254.0" text-anchor="end" font-size="10" fill="#7b8794">0</text>
+<text x="52" y="203.03703703703704" text-anchor="end" font-size="10" fill="#7b8794">32</text>
+<text x="52" y="152.07407407407408" text-anchor="end" font-size="10" fill="#7b8794">64</text>
+<text x="52" y="101.11111111111111" text-anchor="end" font-size="10" fill="#7b8794">96</text>
+<text x="52" y="50.14814814814815" text-anchor="end" font-size="10" fill="#7b8794">128</text>
+<text x="66.0" y="266" text-anchor="middle" font-size="10" fill="#7b8794">8K</text>
+<text x="161.3846153846154" y="266" text-anchor="middle" font-size="10" fill="#7b8794">32K</text>
+<text x="256.7692307692308" y="266" text-anchor="middle" font-size="10" fill="#7b8794">128K</text>
+<text x="352.1538461538462" y="266" text-anchor="middle" font-size="10" fill="#7b8794">512K</text>
+<text x="447.53846153846155" y="266" text-anchor="middle" font-size="10" fill="#7b8794">2M</text>
+<text x="542.9230769230769" y="266" text-anchor="middle" font-size="10" fill="#7b8794">8M</text>
+<text x="638.3076923076924" y="266" text-anchor="middle" font-size="10" fill="#7b8794">32M</text>
+<line x1="161.3846153846154" y1="34" x2="161.3846153846154" y2="250" stroke="#d9e2ec"/>
+<line x1="352.1538461538462" y1="34" x2="352.1538461538462" y2="250" stroke="#d9e2ec"/>
+<line x1="380.0520577267013" y1="34" x2="380.0520577267013" y2="250" stroke="#d9e2ec"/>
+<line x1="447.53846153846155" y1="34" x2="447.53846153846155" y2="250" stroke="#d9e2ec"/>
+<line x1="686.0" y1="34" x2="686.0" y2="250" stroke="#d9e2ec"/>
+<polyline points="66,247 114,247 161,247 189,244 209,243 257,242 304,238 332,237 352,236 360,234 368,231 374,223 380,216 391,198 400,178 428,141 448,129 495,114 543,99 591,74 638,55 686,46" fill="none" stroke="#0e7490" stroke-width="2.4"/>
+<circle cx="66" cy="247" r="2.6" fill="#0e7490"/>
+<circle cx="114" cy="247" r="2.6" fill="#0e7490"/>
+<circle cx="161" cy="247" r="2.6" fill="#0e7490"/>
+<circle cx="189" cy="244" r="2.6" fill="#0e7490"/>
+<circle cx="209" cy="243" r="2.6" fill="#0e7490"/>
+<circle cx="257" cy="242" r="2.6" fill="#0e7490"/>
+<circle cx="304" cy="238" r="2.6" fill="#0e7490"/>
+<circle cx="332" cy="237" r="2.6" fill="#0e7490"/>
+<circle cx="352" cy="236" r="2.6" fill="#0e7490"/>
+<circle cx="360" cy="234" r="2.6" fill="#0e7490"/>
+<circle cx="368" cy="231" r="2.6" fill="#0e7490"/>
+<circle cx="374" cy="223" r="2.6" fill="#0e7490"/>
+<circle cx="380" cy="216" r="2.6" fill="#0e7490"/>
+<circle cx="391" cy="198" r="2.6" fill="#0e7490"/>
+<circle cx="400" cy="178" r="2.6" fill="#0e7490"/>
+<circle cx="428" cy="141" r="2.6" fill="#0e7490"/>
+<circle cx="448" cy="129" r="2.6" fill="#0e7490"/>
+<circle cx="495" cy="114" r="2.6" fill="#0e7490"/>
+<circle cx="543" cy="99" r="2.6" fill="#0e7490"/>
+<circle cx="591" cy="74" r="2.6" fill="#0e7490"/>
+<circle cx="638" cy="55" r="2.6" fill="#0e7490"/>
+<circle cx="686" cy="46" r="2.6" fill="#0e7490"/>
+<text x="161" y="234.79888888888888" text-anchor="middle" font-size="10.5" fill="#52606d" font-weight="600">L1 命中 2.0ns</text>
+<text x="352" y="224.31962962962962" text-anchor="middle" font-size="10.5" fill="#52606d" font-weight="600">L2 命中 8.6ns</text>
+<text x="686" y="33.9411111111111" text-anchor="middle" font-size="10.5" fill="#52606d" font-weight="600">DRAM ≈128ns（137 含替换残差）</text>
+<text x="400" y="290" text-anchor="middle" font-size="10.5" fill="#7b8794">工作集（KB，对数轴）｜ chase 探针，延迟不含 ~2.6ns 的 volatile 开销（RESULTS §2.16.1）</text>
+</svg>
+<figcaption><b>图 13 · 依赖链延迟 vs 工作集</b>（§2.16.1，chase 探针）。L1 拐点正好在 32KB；
+L2 有效容量 512KB（768KB 是物理容量）；≥4MB 是 DRAM row buffer 命中率的缓坡。</figcaption></figure>
+<figure><svg viewBox="0 0 760 300">
+<line x1="60" y1="260" x2="740" y2="260" stroke="#7b8794"/>
+<line x1="60" y1="260" x2="60" y2="30" stroke="#7b8794"/>
+<text x="52" y="264.0" text-anchor="end" font-size="10" fill="#7b8794">0</text>
+<text x="52" y="207.75" text-anchor="end" font-size="10" fill="#7b8794">35</text>
+<text x="52" y="151.5" text-anchor="end" font-size="10" fill="#7b8794">70</text>
+<text x="52" y="95.25" text-anchor="end" font-size="10" fill="#7b8794">105</text>
+<text x="52" y="39.0" text-anchor="end" font-size="10" fill="#7b8794">140</text>
+<text x="100" y="276" text-anchor="middle" font-size="11" fill="#52606d">S=1</text>
+<text x="208" y="276" text-anchor="middle" font-size="11" fill="#52606d">S=2</text>
+<text x="316" y="276" text-anchor="middle" font-size="11" fill="#52606d">S=4</text>
+<text x="424" y="276" text-anchor="middle" font-size="11" fill="#52606d">S=8</text>
+<text x="532" y="276" text-anchor="middle" font-size="11" fill="#52606d">S=16</text>
+<text x="640" y="276" text-anchor="middle" font-size="11" fill="#52606d">S=32</text>
+<polyline points="100,40 208,147 316,202 424,230 532,244 640,246" fill="none" stroke="#0e7490" stroke-width="2.4"/>
+<polyline points="100,77 208,168 316,212 424,235 532,245 640,247" fill="none" stroke="#0891b2" stroke-width="2" opacity="0.7"/>
+<circle cx="100" cy="40" r="3.4" fill="#0e7490"/>
+<circle cx="208" cy="147" r="3.4" fill="#0e7490"/>
+<circle cx="316" cy="202" r="3.4" fill="#0e7490"/>
+<circle cx="424" cy="230" r="3.4" fill="#0e7490"/>
+<circle cx="532" cy="244" r="3.4" fill="#0e7490"/>
+<circle cx="640" cy="246" r="3.4" fill="#0e7490"/>
+<rect x="505" y="240" width="150" height="20" fill="#0e7490" opacity="0.12"/>
+<text x="580" y="234" text-anchor="middle" font-size="11" fill="#0e7490" font-weight="600">饱和下界 8.6–8.9 ns/line</text>
+<text x="586" y="34" text-anchor="middle" font-size="12" fill="#b91c1c" font-weight="700">每核在飞窗口 16–20 条</text>
+<path d="M 532 40 L 532 66 M 640 40 L 640 66" stroke="#b91c1c" stroke-width="1.4"/>
+<text x="646" y="150" font-size="10.5" fill="#0e7490">256MB 源</text>
+<text x="646" y="166" font-size="10.5" fill="#0891b2">16MB 源</text>
+<text x="400" y="296" text-anchor="middle" font-size="10.5" fill="#7b8794">同时在飞的独立访问数 S（memprobe mlp）</text>
+</svg>
+<figcaption><b>图 14 · 在飞窗口曲线</b>（§2.16.3）。成本精确按 137/S 下降，16 条后饱和——
+每核窗口 16–20 条，这就是“延迟 ÷ 在飞条数”的分母上限。</figcaption></figure>
+<figure><svg viewBox="0 0 760 290">
+<line x1="50" y1="250" x2="740" y2="250" stroke="#7b8794"/>
+<text x="44" y="254.0" text-anchor="end" font-size="10" fill="#7b8794">0</text>
+<text x="44" y="182.33333333333334" text-anchor="end" font-size="10" fill="#7b8794">60</text>
+<line x1="50" y1="178.33333333333334" x2="740" y2="178.33333333333334" stroke="#d9e2ec"/>
+<text x="44" y="110.66666666666669" text-anchor="end" font-size="10" fill="#7b8794">120</text>
+<line x1="50" y1="106.66666666666669" x2="740" y2="106.66666666666669" stroke="#d9e2ec"/>
+<text x="44" y="39.0" text-anchor="end" font-size="10" fill="#7b8794">180</text>
+<line x1="50" y1="35.0" x2="740" y2="35.0" stroke="#d9e2ec"/>
+<rect x="110" y="226.82777777777778" width="38" height="23" fill="#0e7490" rx="2"/>
+<text x="129" y="222.82777777777778" text-anchor="middle" font-size="10" fill="#52606d">19.4</text>
+<rect x="154" y="215.48055555555555" width="38" height="35" fill="#155e75" rx="2"/>
+<text x="173" y="211.48055555555555" text-anchor="middle" font-size="10" fill="#52606d">28.9</text>
+<rect x="198" y="225.39444444444445" width="38" height="25" fill="#94a3b8" rx="2"/>
+<text x="217" y="221.39444444444445" text-anchor="middle" font-size="10" fill="#52606d">20.6</text>
+<text x="170" y="266" text-anchor="middle" font-size="11" fill="#52606d" font-weight="600">1t</text>
+<rect x="280" y="97.82777777777775" width="38" height="152" fill="#0e7490" rx="2"/>
+<text x="299" y="93.82777777777775" text-anchor="middle" font-size="10" fill="#52606d">127.4</text>
+<rect x="324" y="91.97499999999997" width="38" height="158" fill="#155e75" rx="2"/>
+<text x="343" y="87.97499999999997" text-anchor="middle" font-size="10" fill="#52606d">132.3</text>
+<rect x="368" y="186.45555555555555" width="38" height="64" fill="#94a3b8" rx="2"/>
+<text x="387" y="182.45555555555555" text-anchor="middle" font-size="10" fill="#52606d">53.2</text>
+<text x="340" y="266" text-anchor="middle" font-size="11" fill="#52606d" font-weight="600">8t</text>
+<rect x="450" y="47.900000000000006" width="38" height="202" fill="#0e7490" rx="2"/>
+<text x="469" y="43.900000000000006" text-anchor="middle" font-size="10" fill="#52606d">169.2</text>
+<rect x="494" y="76.80555555555554" width="38" height="173" fill="#155e75" rx="2"/>
+<text x="513" y="72.80555555555554" text-anchor="middle" font-size="10" fill="#52606d">145.0</text>
+<rect x="538" y="164.4777777777778" width="38" height="86" fill="#94a3b8" rx="2"/>
+<text x="557" y="160.4777777777778" text-anchor="middle" font-size="10" fill="#52606d">71.6</text>
+<text x="510" y="266" text-anchor="middle" font-size="11" fill="#52606d" font-weight="600">16t</text>
+<rect x="620" y="49.33333333333334" width="38" height="201" fill="#0e7490" rx="2"/>
+<text x="639" y="45.33333333333334" text-anchor="middle" font-size="10" fill="#52606d">168.0</text>
+<rect x="664" y="111.08611111111111" width="38" height="139" fill="#155e75" rx="2"/>
+<text x="683" y="107.08611111111111" text-anchor="middle" font-size="10" fill="#52606d">116.3</text>
+<rect x="708" y="37.627777777777766" width="38" height="212" fill="#94a3b8" rx="2"/>
+<text x="727" y="33.627777777777766" text-anchor="middle" font-size="10" fill="#52606d">177.8</text>
+<text x="680" y="266" text-anchor="middle" font-size="11" fill="#52606d" font-weight="600">38t</text>
+<rect x="110" y="276" width="11" height="11" fill="#0e7490"/><text x="125" y="285" font-size="10.5" fill="#52606d">流式读（2048MB）</text>
+<rect x="310" y="276" width="11" height="11" fill="#155e75"/><text x="325" y="285" font-size="10.5" fill="#52606d">流式拷贝（2048MB）</text>
+<rect x="510" y="276" width="11" height="11" fill="#94a3b8"/><text x="525" y="285" font-size="10.5" fill="#52606d">x.clone() 读+写（8MB）</text>
+</svg>
+<figcaption><b>图 15 · 带宽与线程</b>（§2.16.2）。单 node 读 168GB/s 硬顶（4 条 DDR5 通道）；
+小副本（8MB clone）被固定开销拖住，不能按 145GB/s 建模。</figcaption></figure>
+</section>
+
+<div class="footer"><p>本文是 benchmarks/RESULTS.md 的可视化导读，生成于 2026-11-05。
+所有数字的权威出处为 RESULTS.md 各小节；区间值取文中范围，图中标注“中值/区间”处只为排版。
+历史轮次（§2.1–§2.8、§3.x）未在本文展开，需要追溯时点数据请直接读 RESULTS.md。</p></div>
+</main></body></html>

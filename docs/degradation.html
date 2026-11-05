@@ -1,0 +1,367 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>性能退化分析可视化导读 · index_sve</title>
+<style>
+  :root{
+    --bg:#f6f8fa; --panel:#ffffff; --ink:#1f2933; --ink-2:#52606d; --ink-3:#7b8794;
+    --accent:#0e7490; --accent-soft:#e0f2f1; --good:#15803d; --warn:#b45309; --bad:#b91c1c;
+    --line:#d9e2ec; --chip:#eef2f7;
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--ink);
+       font:15px/1.75 -apple-system,BlinkMacSystemFont,"PingFang SC","Hiragino Sans GB","Microsoft YaHei","Segoe UI",Roboto,sans-serif;}
+  a{color:var(--accent);text-decoration:none}
+  a:hover{text-decoration:underline}
+  .topnav{position:sticky;top:0;z-index:50;background:rgba(255,255,255,.95);backdrop-filter:blur(6px);
+          border-bottom:1px solid var(--line)}
+  .topnav .wrap{max-width:1120px;margin:0 auto;padding:10px 20px;display:flex;gap:14px;align-items:center;flex-wrap:wrap}
+  .topnav b{font-size:14px;color:var(--ink)}
+  .topnav nav{display:flex;gap:2px;flex-wrap:wrap}
+  .topnav nav a{font-size:13px;color:var(--ink-2);padding:4px 9px;border-radius:6px}
+  .topnav nav a:hover{background:var(--chip);text-decoration:none;color:var(--ink)}
+  .wrap{max-width:1120px;margin:0 auto;padding:0 20px}
+  main section{padding:44px 0 8px;border-top:1px solid var(--line)}
+  main section:first-of-type{border-top:none}
+  h1{font-size:30px;line-height:1.35;margin:0 0 10px}
+  h2{font-size:22px;margin:0 0 6px}
+  h2 .secno{color:var(--accent);font-weight:700;margin-right:8px}
+  h3{font-size:17px;margin:26px 0 8px}
+  p{margin:8px 0}
+  .lede{color:var(--ink-2);max-width:46em}
+  .num{font-variant-numeric:tabular-nums}
+  .hero{background:linear-gradient(160deg,#083344,#0e7490 62%,#0891b2);color:#fff;padding:56px 0 44px}
+  .hero .kicker{opacity:.85;font-size:13px;letter-spacing:.12em}
+  .hero h1{color:#fff}
+  .hero .meta{margin-top:18px;font-size:12.5px;opacity:.8}
+  .grid{display:grid;gap:14px;margin:18px 0}
+  .grid.c2{grid-template-columns:repeat(auto-fit,minmax(320px,1fr))}
+  .grid.c3{grid-template-columns:repeat(auto-fit,minmax(240px,1fr))}
+  .grid.c4{grid-template-columns:repeat(auto-fit,minmax(210px,1fr))}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:16px 18px}
+  .card h4{margin:0 0 6px;font-size:15px}
+  .card .big{font-size:26px;font-weight:700;color:var(--accent)}
+  .card .sub{font-size:13px;color:var(--ink-2)}
+  .callout{border-left:4px solid var(--accent);background:var(--accent-soft);
+           border-radius:0 10px 10px 0;padding:12px 16px;margin:16px 0}
+  .callout.warn{border-color:var(--warn);background:#fef3c7}
+  .callout.bad{border-color:var(--bad);background:#fee2e2}
+  .callout.good{border-color:var(--good);background:#dcfce7}
+  .callout p{margin:4px 0}
+  table.tb{width:100%;border-collapse:collapse;margin:14px 0;font-size:13.5px;background:var(--panel)}
+  .tb th,.tb td{border:1px solid var(--line);padding:7px 10px;text-align:left;vertical-align:top}
+  .tb th{background:#f1f5f9;font-weight:600}
+  .tb td.num,.tb th.num{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
+  .badge{display:inline-block;font-size:12px;font-weight:600;padding:1px 9px;border-radius:999px;white-space:nowrap}
+  .b-done{background:#dcfce7;color:var(--good)}
+  .b-part{background:#fef3c7;color:var(--warn)}
+  .b-todo{background:#e0e7ff;color:#3730a3}
+  .b-no{background:#fee2e2;color:var(--bad)}
+  .b-info{background:var(--chip);color:var(--ink-2)}
+  figure{margin:22px 0;background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:18px;overflow-x:auto}
+  figcaption{font-size:13px;color:var(--ink-2);margin-top:10px}
+  figcaption b{color:var(--ink)}
+  svg{max-width:100%;height:auto;display:block}
+  .src{font-size:12px;color:var(--ink-3)}
+  code{background:#eef2f7;border-radius:4px;padding:1px 5px;font-size:12.5px;font-family:ui-monospace,Menlo,Consolas,monospace}
+  pre{background:#0f172a;color:#e2e8f0;border-radius:10px;padding:14px 16px;overflow:auto;font-size:12.5px;line-height:1.65}
+  pre code{background:none;color:inherit;padding:0}
+  ul.tight li{margin:5px 0}
+  .footer{padding:36px 0 60px;color:var(--ink-3);font-size:12.5px}
+  @media print{.topnav{display:none}body{background:#fff}main section{border-top:none;padding:14px 0}figure,.card{break-inside:avoid}}
+</style>
+</head>
+<body>
+<div class="topnav"><div class="wrap"><b>退化分析可视化</b><nav>
+<a href="#tldr">TL;DR</a><a href="#fam">五家族</a><a href="#seg">三段模型</a><a href="#scale">强扩展效率</a>
+<a href="#m1">机理一·桶化</a><a href="#m2">机理二·4B gather</a><a href="#fj">fork-join</a>
+<a href="#row">64B 行放大</a><a href="#ok">不劣化对照</a><a href="#fix">缓解方向</a>
+<span style="margin-left:auto"></span>
+<a href="headroom.html">headroom</a><a href="results.html">results</a>
+<a href="kernels.html">kernels</a><a href="architecture.html">architecture</a>
+</nav></div></div>
+
+<header class="hero"><div class="wrap">
+<div class="kicker">INDEX_SVE · DOCS/DEGRADATION-ANALYSIS.MD 的插图版</div>
+<h1>性能退化分析：哪里慢、为什么慢、能不能修</h1>
+<p style="max-width:48em;opacity:.92">本文把 <a href="degradation-analysis.md" style="color:#a5f3fc;text-decoration:underline">docs/degradation-analysis.md</a> 的
+退化家族、线程扩展机理与固定成本分解画成图。历史矩阵（T11→T15）已大幅修复；
+<b>当前 &lt;1x 家族一律以 <a href="../benchmarks/RESULTS.md" style="color:#a5f3fc;text-decoration:underline">RESULTS.md</a> §2.9.1 为准</a></b>。</p>
+<div class="meta">机器：鲲鹏 920F，node 5（38 核）｜ 数据时点：§6.5 家族为 2026-10-31 实测，其余机制段与时点无关</div>
+</div></header>
+
+<main class="wrap">
+
+<section id="tldr"><h2><span class="secno">01</span>TL;DR（30 秒版）</h2>
+<div class="grid c4">
+<div class="card"><h4>无系统性退化</h4><p class="big num">12.5%</p><p class="sub">31 场景矩阵里 &lt;1.00x 共 31 格，全部落入 5 个既有家族 + 噪声级单格（RESULTS §2.9.1）。</p></div>
+<div class="card"><h4>生产劣化族</h4><p class="big num">1 族</p><p class="sub">A=1 + K∈[4096, 55296] + 线程 ≥6：最深 dom=1M K=55296 19t <b>0.66x</b>。</p></div>
+<div class="card"><h4>输的不是固定成本</h4><p class="big num">18% vs 36%</p><p class="sub">hpc 固定开销一直比 aten 低（15.7 vs 19.9µs）；<b>输的是斜率</b>——19t 每元素 hpc 0.98ns vs aten 0.60ns。</p></div>
+<div class="card"><h4>为什么 1t 快高线程慢</h4><p class="big num">26% vs 10%</p><p class="sub">hpc 每元素成本里有 26% 不随线程缩小（aten 只有 10%）——桶化串行段 + 4B gather 发射下限。</p></div>
+</div>
+</section>
+
+<section id="fam"><h2><span class="secno">02</span>五家族 + 噪声：当前 &lt;1x 全在这</h2>
+<p class="lede">R10 轮 31 格 &lt;1.00x 的归类（RESULTS §2.9.1）。修过历史问题后，
+残余全是"结构性的"或"噪声级的"。</p>
+<table class="tb">
+<tr><th>家族</th><th class="num">格数</th><th>范围</th><th>根因</th><th>状态</th></tr>
+<tr><td>空 mask（全 False N=1M）</td><td class="num">7</td><td>4–38t 0.42–0.66x</td><td>aten 并行早退恒 1.44ms vs 本算子 2.9–3.5ms</td><td><span class="badge b-todo">观察项，未修</span></td></tr>
+<tr><td>1B（int8/uint8）</td><td class="num">6</td><td>4–16t 0.91–0.99x</td><td>64B 行只用 1B：行放大 64x，任何实现都救不了</td><td><span class="badge b-no">结构性</span></td></tr>
+<tr><td>complex64</td><td class="num">5</td><td>1–16t 0.92–0.95x</td><td>无 SVE 内核，标量单遍慢 ~5%</td><td><span class="badge b-no">结构性</span></td></tr>
+<tr><td>非连续 mask</td><td class="num">6</td><td>0.79–0.98x</td><td>T8 只融合连续 mask，回退 nonzero 两遍</td><td><span class="badge b-todo">R2 待做</span></td></tr>
+<tr><td>S4 / 1D range2048</td><td class="num">4+2</td><td>高线程 0.86–0.98x</td><td>小工作量强扩展；邻格 1.6-2.5x，比值敏感</td><td><span class="badge b-info">已知边界</span></td></tr>
+<tr><td>噪声级单格</td><td class="num">4</td><td>均 ≥0.88x</td><td>共享箱噪声，不属任何家族</td><td><span class="badge b-info">不算家族</span></td></tr>
+</table>
+<div class="callout"><p><b>高线程段的"高倍数"别当收益</b>：32/36t 的 aten GB/s 反而下降
+（如 1D f64 K=10M：16t 6.25 → 32t 4.54），部分"高加速比"是 aten 自己退化贡献的
+（§6.2）；空 parallel region 单趟 3.2µs / 两趟 6.4µs（19t，BiSheng libomp 独立微基准）。</p></div>
+</section>
+
+<section id="seg"><h2><span class="secno">03</span>三段模型：为什么旧基准只看到"几倍"</h2>
+<figure>
+<svg viewBox="0 0 900 250" role="img" aria-label="三段模型">
+  <!-- x axis: 1t, 6-19t, 32-38t -->
+  <line x1="80" y1="200" x2="860" y2="200" stroke="#7b8794"/>
+  <!-- segment 1 -->
+  <rect x="80" y="60" width="200" height="140" rx="8" fill="#dcfce7"/>
+  <text x="180" y="86" text-anchor="middle" font-size="14" font-weight="700" fill="#15803d">1t 段</text>
+  <text x="180" y="110" text-anchor="middle" font-size="12" fill="#1f2933">每元素指令数主导</text>
+  <text x="180" y="130" text-anchor="middle" font-size="12" fill="#15803d" font-weight="700">hpc 最强：1.11–1.61x</text>
+  <text x="180" y="152" text-anchor="middle" font-size="11" fill="#52606d">SVE 补每核在飞条数</text>
+  <text x="180" y="170" text-anchor="middle" font-size="11" fill="#52606d">raw 路径省 linearize</text>
+  <!-- segment 2 -->
+  <rect x="330" y="60" width="300" height="140" rx="8" fill="#fee2e2"/>
+  <text x="480" y="86" text-anchor="middle" font-size="14" font-weight="700" fill="#b91c1c">6–19t（生产并集）★</text>
+  <text x="480" y="110" text-anchor="middle" font-size="12" fill="#1f2933">并行段扩展效率 / 每线程 MLP 主导</text>
+  <text x="480" y="130" text-anchor="middle" font-size="12" fill="#b91c1c" font-weight="700">hpc 最不占优：0.66–1.10x</text>
+  <text x="480" y="152" text-anchor="middle" font-size="11" fill="#52606d">26% 成本不随线程缩小（桶化串行段）</text>
+  <text x="480" y="170" text-anchor="middle" font-size="11" fill="#52606d">4B gather 停在 ~18ns 发射下限</text>
+  <!-- segment 3 -->
+  <rect x="680" y="60" width="180" height="140" rx="8" fill="#e0f2f1"/>
+  <text x="770" y="86" text-anchor="middle" font-size="14" font-weight="700" fill="#0e7490">32–38t 段</text>
+  <text x="770" y="110" text-anchor="middle" font-size="12" fill="#1f2933">DRAM 行带宽饱和</text>
+  <text x="770" y="130" text-anchor="middle" font-size="12" fill="#0e7490" font-weight="700">双方同速：1.0–3.9x</text>
+  <text x="770" y="152" text-anchor="middle" font-size="11" fill="#52606d">比值被 aten 退化抬高</text>
+  <text x="770" y="170" text-anchor="middle" font-size="11" fill="#52606d">（§6.2，别当收益）</text>
+  <!-- old bench arrow -->
+  <path d="M 100 220 L 840 220" stroke="#b45309" stroke-width="1.6" stroke-dasharray="6,4" marker-end="url(#arrd)"/>
+  <defs><marker id="arrd" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#b45309"/></marker></defs>
+  <text x="470" y="240" text-anchor="middle" font-size="11.5" fill="#b45309">旧 bench_index.py 只测 K=2M/10M（1t 与 32-38t 两个端点），6–19t 段从没被覆盖</text>
+</svg>
+<figcaption><b>图 1 · 三段模型</b>（§6.5.4）。旧基准的 K=2M/10M 把工作集推到 8–80MB，
+双方都进行流量受限区；生产的 K=512–55296（8KB–4MB）落在"每元素成本 / 固定开销"区，
+正好是 hpc 最不占优的一段。1t 与 608t 是两个端点：1t 是 hpc 最强点，608t 是共享箱噪声 + aten 退化点。</figcaption>
+</figure>
+</section>
+
+<section id="scale"><h2><span class="secno">04</span>强扩展效率（§6.1）</h2>
+<p class="lede">效率 = 加速比 ÷ 线程数，基准 = hpc 自身 1t。两个 1D 大 K 形态代表两种
+扩展行为：f64 行放大 8x，8t 后撞带宽；f32 行放大 16x 但请求更多，延迟掩盖更充分。</p>
+<figure>
+<svg viewBox="0 0 760 250" role="img" aria-label="强扩展效率">
+  <line x1="60" y1="200" x2="740" y2="200" stroke="#7b8794"/>
+  <line x1="60" y1="200" x2="60" y2="30" stroke="#7b8794"/>
+  <g font-size="10" fill="#7b8794">
+    <text x="52" y="204" text-anchor="end">0%</text><text x="52" y="148" text-anchor="end">40%</text>
+    <text x="52" y="92" text-anchor="end">80%</text><text x="52" y="36" text-anchor="end">120%</text>
+  </g>
+  <g stroke="#e2e8f0"><line x1="60" y1="144" x2="740" y2="144"/><line x1="60" y1="88" x2="740" y2="88"/><line x1="60" y1="32" x2="740" y2="32"/></g>
+  <!-- x: 1t 8t 16t 32t 36t -> 110,250,390,530,670 -->
+  <g font-size="11" fill="#52606d" text-anchor="middle">
+    <text x="110" y="216">1t</text><text x="250" y="216">8t</text><text x="390" y="216">16t</text><text x="530" y="216">32t</text><text x="670" y="216">36t</text>
+  </g>
+  <!-- 1D f64: 100,80,60,45,42 -> y = 200 - pct*1.4 -->
+  <polyline points="110,60 250,88 390,116 530,137 670,141" fill="none" stroke="#0e7490" stroke-width="2.5"/>
+  <g fill="#0e7490"><circle cx="110" cy="60" r="3.5"/><circle cx="250" cy="88" r="3.5"/><circle cx="390" cy="116" r="3.5"/><circle cx="530" cy="137" r="3.5"/><circle cx="670" cy="141" r="3.5"/></g>
+  <!-- 1D f32: 100,98,92,76,74 -->
+  <polyline points="110,60 250,62.8 390,71.2 530,93.6 670,96.4" fill="none" stroke="#0891b2" stroke-width="2"/>
+  <g fill="#0891b2"><circle cx="110" cy="60" r="3"/><circle cx="250" cy="62.8" r="3"/><circle cx="390" cy="71.2" r="3"/><circle cx="530" cy="93.6" r="3"/><circle cx="670" cy="96.4" r="3"/></g>
+  <text x="380" y="50" font-size="11.5" fill="#0e7490" font-weight="700">1D f64 K=10M（8t 80% → 36t 47%）</text>
+  <text x="520" y="80" font-size="11.5" fill="#0891b2" font-weight="700">1D f32 K=10M（8t 98% → 36t 82%）</text>
+  <text x="400" y="240" text-anchor="middle" font-size="11" fill="#7b8794">线程数 ｜ GB/s 相对各自 1t 的百分比（1D f64 1t=0.54，f32 1t=0.24）</text>
+</svg>
+<figcaption><b>图 2 · 强扩展效率</b>（§6.1）。f64 每线程 1.25M 个 8B 随机读、行放大 8x，
+8t 起内存带宽成主约束；f32 行放大 16x 但源更大、请求更多，延迟掩盖更充分，36t 仍 82%。</figcaption>
+</figure>
+<div class="callout warn"><p><b>x[:,i] 的反直觉</b>：单线程已 2.0x，但 8t 后效率 67%→24%；
+aten 同样饱和，所以相对比值反而在高线程回到 1.9x——<b>比值好看 ≠ 绝对变快</b>。</p></div>
+</section>
+
+<section id="m1"><h2><span class="secno">05</span>机理一：桶化路径有 26% 的成本不随线程缩小</h2>
+<p class="lede">用 k_sweep 组（A=1、dom=2048、K=512–24576）逐线程拟合
+<code>T(K) = 固定开销 + 斜率·K</code>（§6.5.2）：</p>
+<table class="tb">
+<tr><th></th><th class="num">1t</th><th class="num">6t</th><th class="num">12t</th><th class="num">19t</th></tr>
+<tr><td>aten 固定开销 µs</td><td class="num">13.2</td><td class="num">19.1</td><td class="num">19.9</td><td class="num">19.9</td></tr>
+<tr><td>aten 斜率 ns/元素</td><td class="num">4.12</td><td class="num">0.70</td><td class="num">0.56</td><td class="num">0.60</td></tr>
+<tr><td>hpc 固定开销 µs</td><td class="num">10.0</td><td class="num">14.9</td><td class="num">15.5</td><td class="num">15.7</td></tr>
+<tr><td>hpc 斜率 ns/元素</td><td class="num">3.29</td><td class="num">1.03</td><td class="num">0.86</td><td class="num">0.98</td></tr>
+</table>
+<figure>
+<svg viewBox="0 0 760 230" role="img" aria-label="斜率分解：不随线程缩小的比例">
+  <text x="20" y="30" font-size="12.5" fill="#1f2933" font-weight="700">设 斜率(t) = a + b/t：a = 不随线程缩小的部分（串行段 ÷ 每线程元素数）</text>
+  <!-- aten bar: a=0.41 (10%), b part = 0.19 -->
+  <text x="20" y="76" font-size="12" fill="#52606d">aten</text>
+  <rect x="80" y="60" width="41" height="24" fill="#b91c1c"/>
+  <rect x="121" y="60" width="369" height="24" fill="#94a3b8"/>
+  <text x="105" y="76" text-anchor="middle" font-size="11" fill="#fff" font-weight="700">a≈0.41</text>
+  <text x="310" y="76" text-anchor="middle" font-size="11" fill="#1f2933">b≈3.7（随线程摊薄）</text>
+  <text x="500" y="76" font-size="12" fill="#b91c1c" font-weight="700">不缩部分占 10%</text>
+  <!-- hpc bar: a=0.85 (26%), b = 2.44 -->
+  <text x="20" y="126" font-size="12" fill="#52606d">hpc</text>
+  <rect x="80" y="110" width="85" height="24" fill="#b91c1c"/>
+  <rect x="165" y="110" width="325" height="24" fill="#0e7490"/>
+  <text x="122" y="126" text-anchor="middle" font-size="11" fill="#fff" font-weight="700">a≈0.85</text>
+  <text x="330" y="126" text-anchor="middle" font-size="11" fill="#fff">b≈2.44</text>
+  <text x="500" y="126" font-size="12" fill="#b91c1c" font-weight="700">不缩部分占 26%</text>
+  <!-- wall clock -->
+  <text x="20" y="182" font-size="12.5" fill="#1f2933" font-weight="700">每元素墙钟 1t→19t：aten 4.12→0.60 ns（6.9x，36% 效率）</text>
+  <text x="20" y="204" font-size="12.5" fill="#b91c1c" font-weight="700">　　　　　　　 hpc 3.29→0.98 ns（3.4x，18% 效率）← "1t 快、高线程慢"的来源</text>
+</svg>
+<figcaption><b>图 3 · 斜率分解</b>（§6.5.2）。hpc 固定开销一直比 aten 低（15.7 vs 19.9µs），
+<b>输的是斜率</b>。串行段在哪里：两趟 parallel_for 夹串行归约 + 串行建表 + 全线程 barrier。
+2026-11-03 起已拆两块（源 ≤2048 免第一趟、跨度 ≤64KB 免建表，见 results.html §09），
+剩下的串行段只在 size&gt;2048 或大跨度形态里存在。</figcaption>
+</figure>
+<h3>值域扫描直接量到建表成本</h3>
+<figure>
+<svg viewBox="0 0 760 220" role="img" aria-label="dom 扫描：建表成本">
+  <line x1="70" y1="180" x2="740" y2="180" stroke="#7b8794"/>
+  <g font-size="10.5" fill="#7b8794" text-anchor="end">
+    <text x="62" y="184">0</text><text x="62" y="134">40µs</text><text x="62" y="84">80</text><text x="62" y="34">120+</text>
+  </g>
+  <g font-size="11" fill="#52606d" text-anchor="middle">
+    <text x="130" y="196">8</text><text x="240" y="196">64</text><text x="350" y="196">512</text>
+    <text x="460" y="196">2048</text><text x="570" y="196">4096（回退单遍）</text><text x="680" y="196">1M（回退单遍）</text>
+  </g>
+  <!-- hpc 1t: 36.0 36.0 36.5 36.7 44.3 157 -->
+  <polyline points="130,36 240,36 350,33.8 460,33.4 570,27.8 680,180" fill="none" stroke="#0e7490" stroke-width="2.5"/>
+  <g fill="#0e7490"><circle cx="130" cy="36" r="3.5"/><circle cx="240" cy="36" r="3.5"/><circle cx="350" cy="33.8" r="3.5"/><circle cx="460" cy="33.4" r="3.5"/><circle cx="570" cy="27.8" r="3.5"/><circle cx="680" cy="180" r="3.5"/></g>
+  <!-- hpc 19t: 32.6 33.7 35.4 37.0 37.3 37.6 -->
+  <polyline points="130,47 240,45.8 350,44.4 460,43 570,42.7 680,42.4" fill="none" stroke="#0891b2" stroke-width="2"/>
+  <g fill="#0891b2"><circle cx="130" cy="47" r="3"/><circle cx="240" cy="45.8" r="3"/><circle cx="350" cy="44.4" r="3"/><circle cx="460" cy="43" r="3"/><circle cx="570" cy="42.7" r="3"/><circle cx="680" cy="42.4" r="3"/></g>
+  <!-- aten 19t ~29.4 flat -->
+  <line x1="130" y1="67" x2="680" y2="62" stroke="#94a3b8" stroke-width="1.8" stroke-dasharray="5,4"/>
+  <text x="500" y="20" font-size="11.5" fill="#0e7490" font-weight="700">hpc 1t：36.0 → 36.7（dom 8→2048 只差 +0.7µs）</text>
+  <text x="505" y="120" font-size="11.5" fill="#0891b2" font-weight="700">hpc 19t：32.6 → 37.0（+4.4µs——同一段串行建表，</text>
+  <text x="505" y="138" font-size="11.5" fill="#0891b2" font-weight="700">高线程更贵：周围没有并行工作能重叠它的 cache miss）</text>
+  <text x="500" y="168" font-size="11" fill="#94a3b8">aten 19t ≈29.4–29.7µs 平（虚线）</text>
+  <text x="400" y="216" text-anchor="middle" font-size="11" fill="#7b8794">dom（K=8192 固定，HPC_DOM_SWEEP=8192；柱 y 轴非线性压缩，157µs 点截断在 120+）</text>
+</svg>
+<figcaption><b>图 4 · dom 扫描：建表是常数，但高线程更贵</b>（§6.5.2）。更要紧的是<b>桶化的收益
+在高线程消失</b>：1t 时桶化比单遍快 17%（36.7 vs 44.3µs），19t 时两者都是 ~37µs。</figcaption>
+</figure>
+</section>
+
+<section id="m2"><h2><span class="secno">06</span>机理二：4B SVE gather 停在每线程发射下限</h2>
+<p class="lede">dom=1M 回退单遍 SVE 4B gather（f32+i64 下标、源 4MB&gt;512KB 门槛）。
+19t 时 aten 加速 45.4x 远超线程数——4MB 源摊进 19×768KB L2 聚合容量，每线程每元素
+降到 13.1ns；hpc 只有 22.7x，停在 <b>19.9ns/元素</b>（§6.5.3）。</p>
+<div class="grid c2">
+<div class="card"><h4>19.9ns 从哪来</h4><p class="sub">§5.9.1 的 SVE 4B gather 微码/发射下限 ~18–23ns/元素。
+一条 gather 指令内部 8 条 miss 是串行的 → "一条 gather 在飞" 等价一条依赖链：
+137ns ÷ 8 lane ≈ <b class="num">17ns/元素</b>，与 19.9 吻合。</p></div>
+<div class="card"><h4>2026-11-02 复核修正（口径）</h4><p class="sub">"19.9ns 是发射下限"只在 <b>MLP=1</b> 下成立。多条独立 gather 交错时
+SVE 8B 只要 4.73–5.18ns/元素，比标量 8 路展开还快。结论改成：SVE gather 一批只给 8 条 lane，
+收益上限 8–16 条在飞；真正的杠杆是<b>把地址计算批量化到取数之前</b>（headroom H2b）。
+两条曲线量的是不同循环结构，引用必须带前提。</p></div>
+</div>
+<figure>
+<svg viewBox="0 0 760 200" role="img" aria-label="4B gather 每元素成本对比">
+  <line x1="60" y1="160" x2="740" y2="160" stroke="#7b8794"/>
+  <g font-size="10" fill="#7b8794" text-anchor="end"><text x="52" y="164">0</text><text x="52" y="94">10</text><text x="52" y="24">20 ns</text></g>
+  <!-- 小源: scalar 7.1 vs sve 18 -->
+  <rect x="140" y="111" width="70" height="49" fill="#94a3b8"/>
+  <rect x="220" y="47" width="70" height="113" fill="#b91c1c" opacity="0.85"/>
+  <text x="175" y="105" text-anchor="middle" font-size="11.5" fill="#52606d" font-weight="700">标量 7.1</text>
+  <text x="255" y="41" text-anchor="middle" font-size="11.5" fill="#b91c1c" font-weight="700">SVE ~18</text>
+  <text x="215" y="178" text-anchor="middle" font-size="11.5" fill="#52606d">小源（L1 命中）</text>
+  <!-- 大源: scalar 19 vs sve 10 -->
+  <rect x="440" y="48" width="70" height="112" fill="#94a3b8"/>
+  <rect x="520" y="110" width="70" height="50" fill="#0e7490"/>
+  <text x="475" y="42" text-anchor="middle" font-size="11.5" fill="#52606d" font-weight="700">标量 ~19</text>
+  <text x="555" y="104" text-anchor="middle" font-size="11.5" fill="#0e7490" font-weight="700">SVE ~10</text>
+  <text x="515" y="178" text-anchor="middle" font-size="11.5" fill="#52606d">大源（L3/DRAM 驻留）</text>
+  <text x="400" y="196" text-anchor="middle" font-size="11.5" fill="#7b8794">同一对内核、同一随机模式（§5.9.1 / kernels.html §4.3）：交叉点 ≈ L2（768KB）</text>
+</svg>
+<figcaption><b>图 5 · 小源标量快、大源 SVE 快</b>。这就是 T15-C 入口"线程&gt;1 且 源&gt;512KB"
+门控的硬件依据；1 线程与小源永远走标量单遍。</figcaption>
+</figure>
+<div class="callout warn"><p><b>这不是带宽墙</b>：行流量只到 168GB/s 的六成，也不是"节点被占满"——
+是<b>每线程在飞请求数</b>的差异。标量乱序窗口同时压 ~10 条 miss，SVE gather 一条指令
+挂的请求数固定，线程再多只是线性叠加（§6.5.3）。</p></div>
+</section>
+
+<section id="fj"><h2><span class="secno">07</span>fork-join 固定成本：每次调用都要付的起步价</h2>
+<div class="grid c3">
+<div class="card"><h4>空 parallel region（BiSheng libomp）</h4><p class="sub num">19t 单趟 3.2µs<br>两趟 6.4µs</p><p class="sub">这是 hpc 15.7µs 固定开销里可解释的一部分；剩下是 dispatcher / 输出分配 / normalize 入口。</p></div>
+<div class="card"><h4>输出分配 first-touch</h4><p class="sub num">8MB = 2048 次缺页</p><p class="sub">K=0 空调用 5.8µs（入口全链路，RESULTS §2.12.1），其中输出分配约 4.6µs。小 K 时这笔账比循环本身大。</p></div>
+<div class="card"><h4>K=13824 的实例</h4><p class="sub">SGI 格 19t 两侧都在 32–37µs，每线程折算 44.8/50.6ns <b>高于</b> 1t——由入口+并行固定开销决定，不是每元素成本（§6.5.3）。</p></div>
+</div>
+</section>
+
+<section id="row"><h2><span class="secno">08</span>64B 行放大：1B / 4B 大 K 的硬上限</h2>
+<p class="lede">内存按 64B line 计费。随机取 1B，整条 64B 都被搬运——行放大 64x。
+这不是实现问题，是随机访问的定义（§5.9.3 / headroom §2.2）。</p>
+<figure>
+<svg viewBox="0 0 880 190" role="img" aria-label="行放大 vs 元素宽度">
+  <!-- line segments -->
+  <g transform="translate(30,30)">
+    <text x="0" y="12" font-size="12" fill="#52606d" font-weight="700">1B ×64 → 放大 64x</text>
+    <rect x="0" y="22" width="640" height="20" fill="#e2e8f0" stroke="#94a3b8"/>
+    <rect x="300" y="22" width="10" height="20" fill="#b91c1c"/>
+    <text x="660" y="37" font-size="11" fill="#b91c1c">有用 1/64</text>
+  </g>
+  <g transform="translate(30,80)">
+    <text x="0" y="12" font-size="12" fill="#52606d" font-weight="700">4B ×16 → 放大 16x</text>
+    <rect x="0" y="22" width="640" height="20" fill="#e2e8f0" stroke="#94a3b8"/>
+    <rect x="300" y="22" width="40" height="20" fill="#b45309"/>
+    <text x="660" y="37" font-size="11" fill="#b45309">有用 1/16</text>
+  </g>
+  <g transform="translate(30,130)">
+    <text x="0" y="12" font-size="12" fill="#52606d" font-weight="700">8B ×8 → 放大 8x</text>
+    <rect x="0" y="22" width="640" height="20" fill="#e2e8f0" stroke="#94a3b8"/>
+    <rect x="300" y="22" width="80" height="20" fill="#0e7490"/>
+    <text x="660" y="37" font-size="11" fill="#0e7490">有用 1/8</text>
+  </g>
+  <text x="450" y="182" text-anchor="middle" font-size="11.5" fill="#7b8794">每条 line 64B；红/橙块 = 真正用到的字节。随机访问每次拖一整条 line，与宽度无关 ~8ns/次（RESULTS §2.23.2）</text>
+</svg>
+<figcaption><b>图 6 · 行放大</b>。所以 1B 族（0.91–0.99x）与 4B 大 K 族是结构性的：
+行流量才是下限，提高"实现质量"没有抓手。可行方向只有减少 line 访问数
+（桶化查表、行 gather、预取）。</figcaption>
+</figure>
+</section>
+
+<section id="ok"><h2><span class="secno">09</span>不劣化的对照：劣化不是全局的</h2>
+<p class="lede">同一张生产矩阵（§6.5.5），rowcopy 与 K≤2048 桶化全档 ≥1.24x——
+所以"生产劣化"精确地就是 <b>A=1 + K∈[4096, 55296] + 线程≥6</b> 这一族。</p>
+<table class="tb">
+<tr><th>形态</th><th class="num">1t</th><th class="num">6t</th><th class="num">12t</th><th class="num">19t</th></tr>
+<tr><td>bucket K=512/528/2048/2112（A=1）</td><td class="num">1.26–1.61</td><td class="num">1.24–1.61</td><td class="num">1.26–1.61</td><td class="num">1.26–1.62</td></tr>
+<tr><td>rowcopy A=3，K=512/2048</td><td class="num">2.03</td><td class="num">1.27–2.03</td><td class="num">1.28–2.04</td><td class="num">1.32–2.03</td></tr>
+<tr><td>rowcopy A=64，K=8192/55296/256000</td><td class="num">2.43–2.94</td><td class="num">2.23–3.44</td><td class="num">2.20–4.15</td><td class="num">2.28–3.26</td></tr>
+</table>
+<div class="callout good"><p><b>rowcopy 为什么没反转</b>：A=64 每元素搬 256B，行流量占主导，
+整块 SVE 拷贝把串行段摊薄；A=3 的 6t 6.98x 是 aten 短行 1t 病理（它自己 1t 慢），
+按惯例不作收益宣传。</p></div>
+</section>
+
+<section id="fix"><h2><span class="secno">10</span>缓解方向（§6.5.6，均未实现）</h2>
+<div class="grid c2">
+<div class="card"><h4>① 去掉桶化串行段</h4><p class="sub">第一趟用原子 min/max 或每线程局部桶，"扫描+建表"合成一趟；已知 dom 时直接按 dom 建表。<b>部分已兑现</b>：免 pass 1（2026-11-03 上午）与免串行建表（跨度 ≤64KB，补丁 3b）已落地。</p></div>
+<div class="card"><h4>② 按每线程元素数限线程</h4><p class="sub">A=1 且 K/线程数 &lt; 2048 时减少有效线程。当前 <code>adaptive_grain</code> 只控 chunk 大小，<b>不减线程数</b>。</p></div>
+<div class="card"><h4>③ 提高 4B gather 的 MLP</h4><p class="sub">把 PREFETCH_DIST 软件预取扩展到 4B 向量路径，或每线程交错多流 gather（headroom H2b 的地址批量化是同一族）。</p></div>
+<div class="card"><h4>④ 基准侧纪律</h4><p class="sub">本节的形态矩阵纳入常规验收；任何"单算子 N 倍"的结论必须附 A=1+K∈[4096,55296]+6–19t 一族的数字，否则就是端点错觉（§6.5.4）。</p></div>
+</div>
+</section>
+
+<div class="footer"><p>本文是 docs/degradation-analysis.md 的可视化导读，生成于 2026-11-06。
+历史矩阵（§4/§5 的 T11→T15 时点数据）与 perf 证据（§7）未在本文展开；
+当前 &lt;1x 家族以 benchmarks/RESULTS.md §2.9.1 为准，根因机理与时点无关。</p></div>
+</main>
+</body>
+</html>

@@ -1,0 +1,397 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SVE 内核可视化导读 · index_sve</title>
+<style>
+  :root{
+    --bg:#f6f8fa; --panel:#ffffff; --ink:#1f2933; --ink-2:#52606d; --ink-3:#7b8794;
+    --accent:#0e7490; --accent-soft:#e0f2f1; --good:#15803d; --warn:#b45309; --bad:#b91c1c;
+    --line:#d9e2ec; --chip:#eef2f7;
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--ink);
+       font:15px/1.75 -apple-system,BlinkMacSystemFont,"PingFang SC","Hiragino Sans GB","Microsoft YaHei","Segoe UI",Roboto,sans-serif;}
+  a{color:var(--accent);text-decoration:none}
+  a:hover{text-decoration:underline}
+  .topnav{position:sticky;top:0;z-index:50;background:rgba(255,255,255,.95);backdrop-filter:blur(6px);
+          border-bottom:1px solid var(--line)}
+  .topnav .wrap{max-width:1120px;margin:0 auto;padding:10px 20px;display:flex;gap:14px;align-items:center;flex-wrap:wrap}
+  .topnav b{font-size:14px;color:var(--ink)}
+  .topnav nav{display:flex;gap:2px;flex-wrap:wrap}
+  .topnav nav a{font-size:13px;color:var(--ink-2);padding:4px 9px;border-radius:6px}
+  .topnav nav a:hover{background:var(--chip);text-decoration:none;color:var(--ink)}
+  .wrap{max-width:1120px;margin:0 auto;padding:0 20px}
+  main section{padding:44px 0 8px;border-top:1px solid var(--line)}
+  main section:first-of-type{border-top:none}
+  h1{font-size:30px;line-height:1.35;margin:0 0 10px}
+  h2{font-size:22px;margin:0 0 6px}
+  h2 .secno{color:var(--accent);font-weight:700;margin-right:8px}
+  h3{font-size:17px;margin:26px 0 8px}
+  p{margin:8px 0}
+  .lede{color:var(--ink-2);max-width:46em}
+  .num{font-variant-numeric:tabular-nums}
+  .hero{background:linear-gradient(160deg,#083344,#0e7490 62%,#0891b2);color:#fff;padding:56px 0 44px}
+  .hero .kicker{opacity:.85;font-size:13px;letter-spacing:.12em}
+  .hero h1{color:#fff}
+  .hero .formula{margin-top:26px;background:rgba(255,255,255,.10);border:1px solid rgba(255,255,255,.28);
+                 border-radius:14px;padding:18px 22px;max-width:760px}
+  .hero .formula .f{font-size:22px;font-weight:700;letter-spacing:.02em}
+  .hero .formula .d{font-size:13px;opacity:.85;margin-top:6px}
+  .hero .meta{margin-top:18px;font-size:12.5px;opacity:.8}
+  .grid{display:grid;gap:14px;margin:18px 0}
+  .grid.c2{grid-template-columns:repeat(auto-fit,minmax(320px,1fr))}
+  .grid.c3{grid-template-columns:repeat(auto-fit,minmax(240px,1fr))}
+  .grid.c4{grid-template-columns:repeat(auto-fit,minmax(210px,1fr))}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:16px 18px}
+  .card h4{margin:0 0 6px;font-size:15px}
+  .card .big{font-size:26px;font-weight:700;color:var(--accent)}
+  .card .sub{font-size:13px;color:var(--ink-2)}
+  .callout{border-left:4px solid var(--accent);background:var(--accent-soft);
+           border-radius:0 10px 10px 0;padding:12px 16px;margin:16px 0}
+  .callout.warn{border-color:var(--warn);background:#fef3c7}
+  .callout.bad{border-color:var(--bad);background:#fee2e2}
+  .callout.good{border-color:var(--good);background:#dcfce7}
+  .callout p{margin:4px 0}
+  table.tb{width:100%;border-collapse:collapse;margin:14px 0;font-size:13.5px;background:var(--panel)}
+  .tb th,.tb td{border:1px solid var(--line);padding:7px 10px;text-align:left;vertical-align:top}
+  .tb th{background:#f1f5f9;font-weight:600}
+  .tb td.num,.tb th.num{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
+  .badge{display:inline-block;font-size:12px;font-weight:600;padding:1px 9px;border-radius:999px;white-space:nowrap}
+  .b-done{background:#dcfce7;color:var(--good)}
+  .b-part{background:#fef3c7;color:var(--warn)}
+  .b-todo{background:#e0e7ff;color:#3730a3}
+  .b-no{background:#fee2e2;color:var(--bad)}
+  .b-info{background:var(--chip);color:var(--ink-2)}
+  figure{margin:22px 0;background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:18px;overflow-x:auto}
+  figcaption{font-size:13px;color:var(--ink-2);margin-top:10px}
+  figcaption b{color:var(--ink)}
+  svg{max-width:100%;height:auto;display:block}
+  .src{font-size:12px;color:var(--ink-3)}
+  code{background:#eef2f7;border-radius:4px;padding:1px 5px;font-size:12.5px;font-family:ui-monospace,Menlo,Consolas,monospace}
+  pre{background:#0f172a;color:#e2e8f0;border-radius:10px;padding:14px 16px;overflow:auto;font-size:12.5px;line-height:1.65}
+  pre code{background:none;color:inherit;padding:0}
+  ul.tight li{margin:5px 0}
+  .footer{padding:36px 0 60px;color:var(--ink-3);font-size:12.5px}
+  @media print{.topnav{display:none}body{background:#fff}main section{border-top:none;padding:14px 0}figure,.card{break-inside:avoid}}
+</style>
+</head>
+<body>
+<div class="topnav"><div class="wrap"><b>内核可视化</b><nav>
+<a href="#abc">三量定路由</a><a href="#flow">决策流程图</a><a href="#cheat">速查表</a>
+<a href="#pure">PureGather</a><a href="#rowcopy">RowCopy</a><a href="#other">其余内核</a>
+<a href="#sve">SVE 形状</a><a href="#pf">预取与 NT</a><a href="#check">防回归清单</a>
+<span style="margin-left:auto"></span>
+<a href="headroom.html">headroom</a><a href="results.html">results</a>
+<a href="architecture.html">architecture</a><a href="degradation.html">degradation</a>
+</nav></div></div>
+
+<header class="hero"><div class="wrap">
+<div class="kicker">INDEX_SVE · DOCS/KERNELS.MD 的插图版</div>
+<h1>SVE512 内核详解：谁被选上、为什么快、边界在哪</h1>
+<p style="max-width:48em;opacity:.92">本文把 <a href="kernels.md" style="color:#a5f3fc;text-decoration:underline">docs/kernels.md</a> 的内核选择逻辑画成流程图，
+把每个内核族的性能特性画成卡片。性能数字是历史轮次实测（多为 T11/T13/T15），
+<b>当前值一律以 <a href="../benchmarks/RESULTS.md" style="color:#a5f3fc;text-decoration:underline">RESULTS.md</a> §2.9 为准</a></b>。</p>
+<div class="meta">机器：鲲鹏 920F（SVE 512-bit，VL=64B）｜ 所有 SVE 内核以 <code>-msve-vector-bits=512</code> 编译、运行时 <code>sve_512_ok()</code> 门控</div>
+</div></header>
+
+<main class="wrap">
+
+<section id="abc"><h2><span class="secno">01</span>一句话：三个量决定路由</h2>
+<div class="hero" style="padding:0;background:none">
+<div class="formula" style="max-width:100%">
+<div class="f">A 大走 RowCopy ｜ A==1 走 PureGather ｜ K 小走 gather_direct / small_single</div>
+<div class="d" style="opacity:1;color:var(--ink-2)">
+<b>A</b> = 每次访问连续元素数（dims_after 后缀乘积）·
+<b>K</b> = 索引元素数（broadcast 形状积）·
+<b>B</b> = 广播出的前导行数（dims_before 前缀乘积）
+</div>
+</div>
+</div>
+<h3>名词速览</h3>
+<div class="grid c4">
+<div class="card"><h4>SVE / VL</h4><p class="sub">ARM 可伸缩向量扩展；VL = 向量长度（本机 512-bit = 64B），<code>svcntb()==64</code>。</p></div>
+<div class="card"><h4>gather</h4><p class="sub">按地址向量取元素（随机）；<code>svld1_gather_*</code> 一条指令最多 8-16 个元素。</p></div>
+<div class="card"><h4>rowcopy</h4><p class="sub">用 <code>ld1/st1</code> 搬连续一段；把 64B 行放大摊薄到多个有用字节。</p></div>
+<div class="card"><h4>prefetch</h4><p class="sub">预取：提前把 cache line 拉进缓存掩盖延迟（H1 是本仓唯一兑现的大杠杆）。</p></div>
+<div class="card"><h4>NT</h4><p class="sub">non-temporal：绕过缓存直接写内存；实测无收益（RESULTS §2.17.2），默认关。</p></div>
+<div class="card"><h4>bucket（桶化）</h4><p class="sub">值域 ≤2048 时先建"值→行"查表，把随机 gather 变成顺序查表。</p></div>
+<div class="card"><h4>linearize</h4><p class="sub">多维下标换一维偏移；两遍模型的第一遍，raw 路径专门跳过它。</p></div>
+<div class="card"><h4>raw 路径</h4><p class="sub">直接消费原始下标张量、不经过 linearize 的短路内核统称。</p></div>
+</div>
+</section>
+
+<section id="flow"><h2><span class="secno">02</span>内核选择决策流程图</h2>
+<p class="lede">从 <code>index_into</code> 的视角：每个分支对应 kernels.md 速查表的一行。
+快路径（mask / small_single / small_multi）在 normalize 之前就短路，见
+<a href="architecture.html">architecture.html</a>。</p>
+<figure>
+<svg viewBox="0 0 980 760" role="img" aria-label="内核选择决策流程图">
+  <defs>
+    <marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#7b8794"/>
+    </marker>
+  </defs>
+  <!-- start -->
+  <rect x="390" y="10" width="200" height="34" rx="8" fill="#0e7490"/>
+  <text x="490" y="32" text-anchor="middle" font-size="13" fill="#fff" font-weight="700">index_into(spec, out)</text>
+  <!-- decision: K -->
+  <rect x="390" y="64" width="200" height="34" rx="8" fill="#fff" stroke="#0e7490" stroke-width="1.6"/>
+  <text x="490" y="85" text-anchor="middle" font-size="12.5" fill="#1f2933">K &lt; 1024 ？</text>
+  <line x1="490" y1="44" x2="490" y2="64" stroke="#7b8794" stroke-width="1.4" marker-end="url(#arr)"/>
+  <!-- gather_direct -->
+  <rect x="90" y="70" width="230" height="46" rx="8" fill="#e0f2f1" stroke="#0e7490"/>
+  <text x="205" y="89" text-anchor="middle" font-size="12.5" fill="#0e7490" font-weight="700">gather_direct（§5）</text>
+  <text x="205" y="106" text-anchor="middle" font-size="11" fill="#52606d">紧凑预校验循环，省 linearize 分配</text>
+  <path d="M390 81 L320 81 L320 93 L320 93" stroke="#7b8794" fill="none"/>
+  <path d="M390 81 L322 81" stroke="#7b8794" stroke-width="1.4" marker-end="url(#arr)"/>
+  <text x="352" y="75" text-anchor="middle" font-size="11" fill="#15803d" font-weight="700">是</text>
+  <line x1="490" y1="98" x2="490" y2="118" stroke="#7b8794" stroke-width="1.4" marker-end="url(#arr)"/>
+  <text x="502" y="112" font-size="11" fill="#b45309" font-weight="700">否</text>
+  <!-- decision: A==1 -->
+  <rect x="390" y="118" width="200" height="34" rx="8" fill="#fff" stroke="#0e7490" stroke-width="1.6"/>
+  <text x="490" y="139" text-anchor="middle" font-size="12.5" fill="#1f2933">A == 1 ？（单元素 gather）</text>
+  <!-- A==1 yes: left branch to value-domain -->
+  <rect x="90" y="150" width="240" height="34" rx="8" fill="#fff" stroke="#b45309" stroke-width="1.6"/>
+  <text x="210" y="171" text-anchor="middle" font-size="12.5" fill="#1f2933">值域 ≤ 2048 ？</text>
+  <path d="M390 135 L210 135 L210 150" stroke="#7b8794" stroke-width="1.4" fill="none" marker-end="url(#arr)"/>
+  <text x="288" y="129" text-anchor="middle" font-size="11" fill="#15803d" font-weight="700">是</text>
+  <!-- bucket -->
+  <rect x="60" y="212" width="300" height="60" rx="8" fill="#e0f2f1" stroke="#0e7490"/>
+  <text x="210" y="233" text-anchor="middle" font-size="12.5" fill="#0e7490" font-weight="700">bucket_gather_pure(_raw)（查表代随机）</text>
+  <text x="210" y="250" text-anchor="middle" font-size="11" fill="#52606d">跨度 ≤64KB → 连表都不建，直查源（补丁 3b）</text>
+  <text x="210" y="265" text-anchor="middle" font-size="11" fill="#52606d">f32/i32+i64 下标 · 源&gt;512KB · 多线程 → 单遍 SVE（§2.1）</text>
+  <line x1="210" y1="184" x2="210" y2="212" stroke="#7b8794" stroke-width="1.4" marker-end="url(#arr)"/>
+  <text x="222" y="200" font-size="11" fill="#15803d" font-weight="700">是</text>
+  <!-- A==1 no-domain: element width -->
+  <rect x="60" y="300" width="300" height="88" rx="8" fill="#e0f2f1" stroke="#0e7490"/>
+  <text x="210" y="320" text-anchor="middle" font-size="12.5" fill="#0e7490" font-weight="700">值域 &gt; 2048：按元素宽度分派</text>
+  <text x="210" y="338" text-anchor="middle" font-size="11" fill="#52606d">8B → SVE u64index gather（§1）</text>
+  <text x="210" y="354" text-anchor="middle" font-size="11" fill="#52606d">4B → SVE u32index（idx32）／i64idx 大源直连（§2.1）</text>
+  <text x="210" y="370" text-anchor="middle" font-size="11" fill="#52606d">1B/2B/complex → 标量单遍（无 SVE 内核）</text>
+  <path d="M210 184 L210 250 L40 250 L40 344 L60 344" stroke="#7b8794" stroke-width="1.4" fill="none" marker-end="url(#arr)"/>
+  <text x="252" y="244" text-anchor="middle" font-size="11" fill="#b45309" font-weight="700">否（大值域）</text>
+  <!-- A>=4 path: right -->
+  <line x1="590" y1="135" x2="720" y2="135" stroke="#7b8794" stroke-width="1.4" marker-end="url(#arr)"/>
+  <text x="655" y="128" text-anchor="middle" font-size="11" fill="#b45309" font-weight="700">否（A&gt;1）</text>
+  <rect x="610" y="150" width="330" height="34" rx="8" fill="#fff" stroke="#0e7490" stroke-width="1.6"/>
+  <text x="775" y="171" text-anchor="middle" font-size="12.5" fill="#1f2933">after 维连续 且 A ≥ 4 且 f32/f64 ？</text>
+  <!-- rowcopy raw -->
+  <rect x="610" y="212" width="330" height="60" rx="8" fill="#e0f2f1" stroke="#0e7490"/>
+  <text x="775" y="233" text-anchor="middle" font-size="12.5" fill="#0e7490" font-weight="700">gather_rowcopy_raw（§3/§3.1，跳过 linearize）</text>
+  <text x="775" y="250" text-anchor="middle" font-size="11" fill="#52606d">单索引；门槛 A≥4096 或 A&lt;16 或 (A≤64 且 B·K≤65536)</text>
+  <text x="775" y="265" text-anchor="middle" font-size="11" fill="#52606d">多索引 ≥16t → gather_rowcopy_fused（§3.3）</text>
+  <line x1="775" y1="184" x2="775" y2="212" stroke="#7b8794" stroke-width="1.4" marker-end="url(#arr)"/>
+  <text x="787" y="200" font-size="11" fill="#15803d" font-weight="700">是</text>
+  <!-- strided rows -->
+  <rect x="610" y="300" width="330" height="46" rx="8" fill="#e0f2f1" stroke="#0e7490"/>
+  <text x="775" y="319" text-anchor="middle" font-size="12.5" fill="#0e7490" font-weight="700">gather_strided_rows_raw（§3.2）</text>
+  <text x="775" y="336" text-anchor="middle" font-size="11" fill="#52606d">after 非连续但存在 ≥4 连续 run → 按 run 块拷贝</text>
+  <path d="M775 272 L775 286" stroke="#7b8794" stroke-width="1.4" marker-end="url(#arr)"/>
+  <!-- A 2..4 -->
+  <line x1="775" y1="346" x2="775" y2="366" stroke="#7b8794" stroke-width="1.4" marker-end="url(#arr)"/>
+  <text x="787" y="360" font-size="11" fill="#b45309" font-weight="700">否</text>
+  <rect x="610" y="366" width="330" height="46" rx="8" fill="#fef3c7" stroke="#b45309"/>
+  <text x="775" y="385" text-anchor="middle" font-size="12.5" fill="#b45309" font-weight="700">gather_fused ／ 标量（§4）</text>
+  <text x="775" y="402" text-anchor="middle" font-size="11" fill="#52606d">A∈[2,4) 块太短；run=1 纯转置；非浮点 dtype</text>
+  <!-- linearize fallback -->
+  <line x1="490" y1="152" x2="490" y2="470" stroke="#7b8794" stroke-width="1.4" marker-end="url(#arr)"/>
+  <rect x="360" y="470" width="260" height="48" rx="8" fill="#fff" stroke="#52606d" stroke-width="1.4" stroke-dasharray="5 4"/>
+  <text x="490" y="491" text-anchor="middle" font-size="12.5" fill="#1f2933" font-weight="600">linearize + gather_index</text>
+  <text x="490" y="508" text-anchor="middle" font-size="11" fill="#52606d">两遍模型兜底：先物化一维下标，再 SVE/桶化/标量</text>
+  <!-- annotation -->
+  <rect x="60" y="560" width="860" height="60" rx="10" fill="#eef2f7"/>
+  <text x="80" y="584" font-size="12.5" fill="#1f2933" font-weight="700">读图要点</text>
+  <text x="80" y="604" font-size="12" fill="#52606d">优化史的优先级：先试不物化 idx 的短路路径（gather_direct / raw rowcopy / raw 桶化），需要 idx 时才 linearize；</text>
+  <text x="80" y="620" font-size="12" fill="#52606d">T5 让 1 线程走单遍避开两遍模型；T11 把 1 线程 A≥4 连续块改回 raw rowcopy（SVE 整块拷贝）。</text>
+</svg>
+<figcaption><b>图 1 · 内核选择决策树</b>（依据 kernels.md「内核选择速查」与 architecture.md §1 路由伪代码绘制）。
+绿框 = SVE 内核，黄框 = 标量/兜底，虚线 = 两遍模型。实际入口顺序还要先看三个快路径（mask / small_single / small_multi）。</figcaption>
+</figure>
+</section>
+
+<section id="cheat"><h2><span class="secno">03</span>速查表（与 kernels.md 一致）</h2>
+<table class="tb">
+<tr><th>条件</th><th>走哪个</th><th>为什么</th></tr>
+<tr><td>多索引同 shape/连续、n≤65536</td><td><code>small_multi_index</code>（T13）</td><td>省掉 normalize + 广播解码</td></tr>
+<tr><td>K&lt;1024 且单整数下标/简单 1D</td><td><code>gather_direct</code></td><td>省掉 linearize 的分配与一遍遍历</td></tr>
+<tr><td>A≥4 且 after 维连续、单索引</td><td><code>gather_rowcopy_raw</code></td><td>连续块摊薄 64B 行放大</td></tr>
+<tr><td>A≥4 且 after 维连续、多索引 ≥16t</td><td><code>gather_rowcopy_fused</code></td><td>跳过 linearize，高线程避免串行写/读</td></tr>
+<tr><td>after 维非连续、存在 ≥4 连续 run</td><td><code>strided_rows_raw</code></td><td>按 run 块拷贝，减少逐元素 load/store</td></tr>
+<tr><td>A&lt;16 单索引</td><td>raw rowcopy（多线程也跳过 linearize）</td><td>小行宽 linearize 占比高</td></tr>
+<tr><td>2≤A&lt;4</td><td><code>gather_fused</code> / 标量</td><td>块太短，SVE 收益被开销吃掉</td></tr>
+<tr><td>A==1、8B 元素</td><td>SVE <code>svld1_gather_u64index</code></td><td>8 个元素一条指令，带宽受限</td></tr>
+<tr><td>A==1、4B 元素</td><td>SVE <code>svld1_gather_u32index</code></td><td>4B 只用 1/16 行，受行放大限制；T15-C 起多线程 f32/i32+i64 下标且源&gt;512KB 走 <code>pure_gather_sve_4b_i64idx</code></td></tr>
+<tr><td>值域 ≤2048</td><td><code>bucket_gather_pure(_raw)</code></td><td>查表替代随机地址</td></tr>
+<tr><td>2B/1B/complex/非连续 after</td><td>标量单遍（T11 起）</td><td>无 SVE 内核，避免两遍</td></tr>
+<tr><td>bool mask</td><td><code>gather_mask</code> 单遍压实</td><td>跳过 <code>nonzero()</code> 物化</td></tr>
+</table>
+</section>
+
+<section id="pure"><h2><span class="secno">04</span>PureGather 族：A==1 的随机 gather</h2>
+<h3>4.1　8B 元素（f64/i64）——主要收益来源</h3>
+<div class="grid c2">
+<div class="card"><h4>核心指令</h4><p class="sub"><code>svld1_gather_u64index_f64(pg, base, off)</code>：u64 元素偏移自动缩放，<code>svcntd()==8</code>（每向量 8 个 8B）。主循环双发：先 <code>svprfd_gather</code> 预取前 16 个向量位置，再 gather 当前向量。</p></div>
+<div class="card"><h4>带宽实测（T11 定点，1D f64 K=2M）</h4><p class="sub num">hpc 1/2/4/8/16/32t = 0.61 / 1.08 / 2.09 / 3.91 / 6.87 / 6.80 GB/s，对 aten 1.03–1.26x；K=10M 时 32/36t 9.1–9.2 GB/s（aten 4.5–4.8）。</p></div>
+</div>
+<h3>4.2　4B 元素（f32/i32）——行放大 16x 的硬墙</h3>
+<figure>
+<svg viewBox="0 0 760 200" role="img" aria-label="4B gather SVE 与标量对比">
+  <line x1="60" y1="160" x2="740" y2="160" stroke="#7b8794"/>
+  <line x1="60" y1="160" x2="60" y2="20" stroke="#7b8794"/>
+  <text x="40" y="166" text-anchor="end" font-size="11" fill="#7b8794">0</text>
+  <text x="40" y="106" text-anchor="end" font-size="11" fill="#7b8794">4</text>
+  <text x="40" y="46" text-anchor="end" font-size="11" fill="#7b8794">8 ms</text>
+  <!-- 8MB pair -->
+  <rect x="120" y="82" width="90" height="78" fill="#0e7490" rx="3"/>
+  <rect x="220" y="81" width="90" height="79" fill="#94a3b8" rx="3"/>
+  <text x="165" y="76" text-anchor="middle" font-size="11" fill="#0e7490" font-weight="700">1.85</text>
+  <text x="265" y="75" text-anchor="middle" font-size="11" fill="#52606d">1.86</text>
+  <text x="215" y="178" text-anchor="middle" font-size="11.5" fill="#52606d">src 8MB · 8t</text>
+  <!-- 256MB pair -->
+  <rect x="430" y="24" width="90" height="136" fill="#0e7490" rx="3"/>
+  <rect x="530" y="24" width="90" height="136" fill="#94a3b8" rx="3"/>
+  <text x="475" y="19" text-anchor="middle" font-size="11" fill="#0e7490" font-weight="700">7.46</text>
+  <text x="575" y="18" text-anchor="middle" font-size="11" fill="#52606d">7.45</text>
+  <text x="525" y="178" text-anchor="middle" font-size="11.5" fill="#52606d">src 256MB · 38t</text>
+  <rect x="120" y="16" width="14" height="14" fill="#0e7490"/><text x="140" y="27" font-size="11.5" fill="#52606d">SVE 4B gather</text>
+  <rect x="260" y="16" width="14" height="14" fill="#94a3b8"/><text x="280" y="27" font-size="11.5" fill="#52606d">标量循环（同一随机模式）</text>
+</svg>
+<figcaption><b>图 2 · 多线程口径下 SVE 4B gather 与标量完全持平</b>（T11 复核，同内核同随机序列 A/B）。
+瓶颈是 <b>64B 行放大 + DRAM 延迟</b>，不是指令 MLP——换标量、改指令都无效。
+单线程口径 SVE 补"每核在飞条数"能快 1.84–1.89x，8t 1.58x，38t 归零到 1.06x（RESULTS §2.23.4）。</figcaption>
+</figure>
+<div class="callout"><p><b>为什么 8B 路径不受影响</b>：同样条数的 line 携带 2x 有用字节
+（8B 行放大 8x vs 4B 16x）。4B 大 K 大值域的可行方向是<b>减少行流量</b>
+（小值域桶化、预取、行 gather），而不是换指令。</p></div>
+<h3>4.3　T15-C：大源直连 <code>pure_gather_sve_4b_i64idx</code></h3>
+<p class="lede">ACLE 没有"32 位数据的 64 位下标 gather"，T15-C 用 <code>uzp1</code> 抽 i64 低 32 位
+收窄成 u32 元素偏移，补上 L3/DRAM 驻留源的入口：标量乱序窗口摊不掉大源延迟
+（~19ns/元素），SVE 每迭代 8 路在飞只要 ~10ns。</p>
+<div class="grid c3">
+<div class="card"><h4>门控条件</h4><p class="sub">1D 单索引 A==1 · 原始 i64 下标 · dtype∈{f32,i32} · stride0==1 · size&lt;2³² · SVE512 · <b>线程数&gt;1</b> · <b>源&gt;512KB</b>（L2 实测 768KB，取保守界）</p></div>
+<div class="card"><h4>实测收益</h4><p class="big num">2.22x</p><p class="sub">1D f32 K=10M idx64，8t（hpc 绝对时间 −40%）；8–36t 1.44–2.22x</p></div>
+<div class="card"><h4>为什么不全走</h4><p class="sub">小源与 1 线程不走：小源标量 L1 命中 ~7.1ns/元素 vs SVE 微码/发射下限 ~18ns；1 线程仍走标量单遍。交叉点 ≈ L2。</p></div>
+</div>
+</section>
+
+<section id="rowcopy"><h2><span class="secno">05</span>RowCopy 族：A&gt;1 连续块（最强收益）</h2>
+<p class="lede">条件：<code>A&gt;1 &amp;&amp; after_contiguous &amp;&amp; A≥4 &amp;&amp; dtype∈{f32,f64}</code>。元素
+<code>out[p·A+c] = src[row_off[r]+idx[k]+c]</code> 变成一段连续 A 拷贝——只读一次 idx，
+A 个元素连续向量化。这是 S1 spconv / P1 图消息 ~4x（1t）/ ~1.9x（38t）的来源。</p>
+<figure>
+<svg viewBox="0 0 900 240" role="img" aria-label="行拷贝示意">
+  <!-- source rows -->
+  <text x="10" y="34" font-size="12" fill="#52606d" font-weight="700">源 src</text>
+  <rect x="70" y="16" width="560" height="26" fill="#e0f2f1" stroke="#0e7490" rx="3"/>
+  <rect x="250" y="16" width="120" height="26" fill="#0e7490" opacity="0.85" rx="3"/>
+  <text x="310" y="34" text-anchor="middle" font-size="11" fill="#fff" font-weight="700">行 idx[k]（A 个连续元素）</text>
+  <rect x="430" y="16" width="90" height="26" fill="#0e7490" opacity="0.55" rx="3"/>
+  <text x="475" y="34" text-anchor="middle" font-size="11" fill="#fff">行 idx[k+1]</text>
+  <!-- arrows -->
+  <path d="M310 44 L310 76" stroke="#0e7490" stroke-width="1.6" marker-end="url(#arr2)"/>
+  <path d="M475 44 L475 76" stroke="#0e7490" stroke-width="1.6" marker-end="url(#arr2)"/>
+  <defs><marker id="arr2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#0e7490"/></marker></defs>
+  <!-- dest -->
+  <text x="10" y="106" font-size="12" fill="#52606d" font-weight="700">输出 out</text>
+  <rect x="70" y="84" width="440" height="26" fill="#fff" stroke="#0e7490" rx="3"/>
+  <rect x="70" y="84" width="110" height="26" fill="#0e7490" opacity="0.85" rx="3"/>
+  <rect x="180" y="84" width="110" height="26" fill="#0e7490" opacity="0.55" rx="3"/>
+  <text x="125" y="102" text-anchor="middle" font-size="11" fill="#fff" font-weight="700">out 行 k</text>
+  <text x="235" y="102" text-anchor="middle" font-size="11" fill="#fff">out 行 k+1</text>
+  <text x="525" y="102" font-size="11.5" fill="#52606d">← 一次 idx 读，整块 ld1/st1</text>
+  <!-- h1 prefetch -->
+  <rect x="70" y="140" width="760" height="80" rx="10" fill="#eef2f7"/>
+  <text x="88" y="164" font-size="13" fill="#1f2933" font-weight="700">H1 软件预取（T17）：从下标数组提前读第 k+D 行、对其首地址发 prfm pldl1keep，再拷第 k 行</text>
+  <text x="88" y="186" font-size="12" fill="#52606d">D 只按行字节分档：≤64B → D=16 ｜ 65–512B → D=8 ｜ &gt;512B → 关掉（A=256 的 1KB 行已占满在飞窗口）</text>
+  <text x="88" y="206" font-size="12" fill="#52606d">实测 A=3/16/32/64 每行成本降 1.2–2.5x；对 aten 比值从 1.6–2.6x 抬到 2.1–6.0x（RESULTS §2.18，机理见 headroom §4.1/§5.1）</text>
+</svg>
+<figcaption><b>图 3 · 行拷贝的数据流与预取档位</b>。≤64B 小行/短 run 走 <code>memcpy</code>
+（谓词构造开销大于一次 memcpy）；4×VL 多寄存器展开维持内存级并行。</figcaption>
+</figure>
+<h3>三个变体</h3>
+<div class="grid c3">
+<div class="card"><h4>§3.1 M1 raw rowcopy（T2）</h4><p class="sub"><b>跳过 linearize</b>，直接遍历原始下标（i32/i64），内联边界检查 + 负索引归一。门槛：A≥4096 或 A&lt;16 或 (A≤64 且 B·K≤65536)。省一次 broadcast 解码 + K×N 写入，单索引大块收益显著：<b>M1 权重块 1 线程 2–13x</b>。B==1 单独分支去 p/K、p%K，A=8/15 多线程再 +1.2–1.4x。</p></div>
+<div class="card"><h4>§3.2 strided-rows raw（T12）</h4><p class="sub">after 非连续但 <code>col_off</code> 存在 ≥4 连续 run：<code>make_col_runs</code> 合并成 {dst_col, src_off, len}，每行一次基址 + 每 run 一次块拷贝。例：尾维 [64,200,16] permute(1,0,2) → A=1024 从 1024 次标量拷贝变 64 次 64B 拷贝，<b>1t 2.23x / 8t 1.71x</b>。run=1 纯转置不启用。</p></div>
+<div class="card"><h4>§3.3 多索引 fused（T12）</h4><p class="sub">多索引 &amp;&amp; after_contiguous &amp;&amp; A≥4 &amp;&amp; f32/f64 &amp;&amp; <b>≥16t</b>：跳过 linearize，直接按多索引解码行地址；高线程避免两遍模型的串行写/读。n&gt;65536 或广播/非连续形态回退。</p></div>
+</div>
+<div class="callout good"><p><b>门槛放宽史</b>：T1 从 A≥16 放宽到 <b>A≥4</b>（微基准 A-sweep 显示 A=4–16 短行 1t 即 1.1–17x）；
+T12 补 A&lt;16 多线程 raw；T15 放行 A 17..64 小 K（B·K≤65536）。</p></div>
+</section>
+
+<section id="other"><h2><span class="secno">06</span>其余内核：快路径与兜底</h2>
+<div class="grid c2">
+<div class="card"><h4>§5 gather_direct（K&lt;1024）</h4><p class="sub">A==1 单索引全长连续 → 预校验 + 紧凑标量循环；省 linearize 的分配与一遍遍历。RESULTS §2.14.2：丢掉这个入口要多花 <b>8.28x</b>（8t）。</p></div>
+<div class="card"><h4>§4 dispatch_scalar（兜底）</h4><p class="sub">2B/1B/complex/非连续小块的统一单遍标量回退（T11 起）。宁可一遍慢，不要两遍快——避免线性化把固定成本翻倍。</p></div>
+<div class="card"><h4>§9 gather_mask（T8）</h4><p class="sub">单 bool mask 连续：单遍压实，跳过 <code>nonzero()</code> 物化。P3 mask C=16 1t <b>1.77x</b>（RESULTS §0）。非连续 mask 回退 nonzero（0.79–0.98x，R2 待做）。</p></div>
+<div class="card"><h4>§10 small_single / T13 small_multi</h4><p class="sub">单整数下标 K≤4096 连续（6.90µs）或多索引同 shape n≤65536：normalize 之前直接预校验偏移 + memcpy，根本不进路由链（RESULTS §2.13.1）。</p></div>
+</div>
+</section>
+
+<section id="sve"><h2><span class="secno">07</span>SVE 的形状事实（RESULTS §2.23）</h2>
+<p class="lede">用真发指令 + 逐 lane 校验回答"一条 gather 到底取几个元素"——这决定了
+1B/2B 值不值得写 SVE 内核（结论：不值得）。</p>
+<figure>
+<svg viewBox="0 0 880 250" role="img" aria-label="SVE gather 元素数与带宽">
+  <!-- lanes diagram -->
+  <text x="20" y="30" font-size="13" fill="#1f2933" font-weight="700">一条 gather 指令取的元素（VL=512-bit）</text>
+  <!-- 4B case -->
+  <g transform="translate(20,46)">
+    <rect x="0" y="0" width="46" height="40" fill="#0e7490" rx="3"/><rect x="52" y="0" width="46" height="40" fill="#0e7490" rx="3" opacity="0.85"/>
+    <rect x="104" y="0" width="46" height="40" fill="#0e7490" rx="3" opacity="0.7"/><rect x="156" y="0" width="46" height="40" fill="#0e7490" rx="3" opacity="0.55"/>
+    <text x="230" y="17" font-size="12" fill="#0e7490" font-weight="700">1B/2B/4B：16 元素</text>
+    <text x="230" y="34" font-size="11" fill="#52606d">碰 16 条 cache line（搬进 1024B）</text>
+    <text x="420" y="17" font-size="12" fill="#52606d">子字 gather 只能用 32 位下标</text>
+    <text x="420" y="34" font-size="11" fill="#52606d">"64 lane" 只存在于字节视角</text>
+  </g>
+  <!-- 8B case -->
+  <g transform="translate(20,110)">
+    <rect x="0" y="0" width="92" height="40" fill="#155e75" rx="3"/><rect x="104" y="0" width="92" height="40" fill="#155e75" rx="3" opacity="0.75"/>
+    <text x="230" y="17" font-size="12" fill="#155e75" font-weight="700">8B：8 元素</text>
+    <text x="230" y="34" font-size="11" fill="#52606d">碰 8 条 line（搬进 512B）</text>
+  </g>
+  <!-- cost table -->
+  <text x="20" y="196" font-size="13" fill="#1f2933" font-weight="700">每次访问的成本与有用带宽（256MB 源）</text>
+  <g font-size="11.5" fill="#52606d">
+    <text x="20" y="216">1B　7.68ns/次 · 0.130 GB/s</text>
+    <text x="200" y="216">2B　8.09ns/次 · 0.247 GB/s</text>
+    <text x="400" y="216">4B　8.68ns/次 · 0.462 GB/s</text>
+    <text x="620" y="216">8B　5.67ns/次 · 1.411 GB/s</text>
+  </g>
+  <text x="20" y="238" font-size="12" fill="#b45309" font-weight="700">每次访问 ~8ns 与元素宽度几乎无关 → 有用带宽正比于宽度 → 1B/2B 干脆不写 SVE 内核</text>
+</svg>
+<figcaption><b>图 4 · 一条 gather 的 lane 数与代价</b>（RESULTS §2.23.1/2.23.2，真发指令逐 lane 校验）。
+行流量决定下限：4B 随机 gather 每次访问拖整条 64B line，有用字节只有 1/16。</figcaption>
+</figure>
+</section>
+
+<section id="pf"><h2><span class="secno">08</span>预取与 NT 决策（Task 8 结论）</h2>
+<div class="grid c2">
+<div class="card"><h4>预取：唯一的大杠杆</h4><p class="sub">H1 行拷贝预取兑现（对 aten 1.6–2.6x → 2.1–6.0x）；H6 桶化记账批量化<b>实测无效</b>已收口（headroom §1.6）。4B 向量路径的 <code>PREFETCH_DIST</code> 预取仍是未兑现方向（degradation §6.5.6-3）。</p></div>
+<div class="card"><h4>NT：实测无收益</h4><p class="sub">非临时存储 vs 普通 store 差 ≤1.5%（噪声内；RESULTS §2.17.2：36t 141.1 vs 139.7 GB/s）。写侧省下的 RFO 流量不构成瓶颈。<code>HPC_INDEX_NT</code> 默认关。</p></div>
+</div>
+<h3>线程并行</h3>
+<p class="lede"><code>at::parallel_for</code> 分块，<code>adaptive_grain(K)</code> 控制 chunk 大小。
+注意 <code>adaptive_grain</code> 只控粒度<b>不减线程数</b>——"A=1 且 K/线程&lt;2048 时减少有效线程"
+仍在缓解方向清单里（degradation §6.5.6-2）。</p>
+</section>
+
+<section id="check"><h2><span class="secno">09</span>修改内核时的门槛清单（防回归）</h2>
+<ul class="tight">
+<li>新内核先问：<b>是否跳过 linearize？</b> raw 短路是收益主体，两遍模型只作兜底。</li>
+<li>新门槛先跑 <b>A-sweep / K-sweep / 线程扫描</b> 三件套，别只看单点（T1 放宽到 A≥4 就是这么来的）。</li>
+<li>4B 大 K 形态：禁止用"换指令"思路优化——瓶颈是行流量；先问能否减少 line 访问数（桶化/行 gather）。</li>
+<li>小行宽（≤64B）优先 <code>memcpy</code>，别上 masked SVE（谓词构造开销更大）。</li>
+<li>任何"单算子 N 倍"结论必须附 <b>A=1 + K∈[4096,55296] + 6–19t</b> 一族的数字（degradation §6.5.4 端点错觉）。</li>
+<li>改路由要同步三处：op.cpp 分支、kernels.md 速查表、architecture.md 伪代码。</li>
+</ul>
+</section>
+
+<div class="footer"><p>本文是 docs/kernels.md 的可视化导读，生成于 2026-11-05。
+数字为历史轮次实测（多为 T11/T13/T15），当前值以 benchmarks/RESULTS.md §2.9 为准；
+「这个内核值多少」的裁决见 path-matrix.md（数据在 RESULTS §2.14）。</p></div>
+</main>
+</body>
+</html>

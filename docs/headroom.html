@@ -1,0 +1,775 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>还有多大空间？—— headroom 可视化导读 · index_sve</title>
+<style>
+  :root{
+    --bg:#f6f8fa; --panel:#ffffff; --ink:#1f2933; --ink-2:#52606d; --ink-3:#7b8794;
+    --accent:#0e7490; --accent-soft:#e0f2f1; --good:#15803d; --warn:#b45309; --bad:#b91c1c;
+    --line:#d9e2ec; --chip:#eef2f7;
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--ink);
+       font:15px/1.75 -apple-system,BlinkMacSystemFont,"PingFang SC","Hiragino Sans GB","Microsoft YaHei","Segoe UI",Roboto,sans-serif;}
+  a{color:var(--accent);text-decoration:none}
+  a:hover{text-decoration:underline}
+
+  /* ===== 顶部导航 ===== */
+  .topnav{position:sticky;top:0;z-index:50;background:rgba(255,255,255,.95);backdrop-filter:blur(6px);
+          border-bottom:1px solid var(--line)}
+  .topnav .wrap{max-width:1120px;margin:0 auto;padding:10px 20px;display:flex;gap:14px;align-items:center;flex-wrap:wrap}
+  .topnav b{font-size:14px;color:var(--ink)}
+  .topnav nav{display:flex;gap:2px;flex-wrap:wrap}
+  .topnav nav a{font-size:13px;color:var(--ink-2);padding:4px 9px;border-radius:6px}
+  .topnav nav a:hover{background:var(--chip);text-decoration:none;color:var(--ink)}
+
+  .wrap{max-width:1120px;margin:0 auto;padding:0 20px}
+  main section{padding:44px 0 8px;border-top:1px solid var(--line)}
+  main section:first-of-type{border-top:none}
+
+  h1{font-size:30px;line-height:1.35;margin:0 0 10px}
+  h2{font-size:22px;margin:0 0 6px}
+  h2 .secno{color:var(--accent);font-weight:700;margin-right:8px}
+  h3{font-size:17px;margin:26px 0 8px}
+  p{margin:8px 0}
+  .lede{color:var(--ink-2);max-width:46em}
+  .num{font-variant-numeric:tabular-nums}
+
+  /* ===== Hero ===== */
+  .hero{background:linear-gradient(160deg,#083344,#0e7490 62%,#0891b2);color:#fff;padding:56px 0 44px}
+  .hero .kicker{opacity:.85;font-size:13px;letter-spacing:.12em}
+  .hero h1{color:#fff}
+  .hero .formula{margin-top:26px;background:rgba(255,255,255,.10);border:1px solid rgba(255,255,255,.28);
+                 border-radius:14px;padding:18px 22px;max-width:760px}
+  .hero .formula .f{font-size:22px;font-weight:700;letter-spacing:.02em}
+  .hero .formula .d{font-size:13px;opacity:.85;margin-top:6px}
+  .hero .meta{margin-top:18px;font-size:12.5px;opacity:.8}
+
+  /* ===== 卡片与网格 ===== */
+  .grid{display:grid;gap:14px;margin:18px 0}
+  .grid.c2{grid-template-columns:repeat(auto-fit,minmax(320px,1fr))}
+  .grid.c3{grid-template-columns:repeat(auto-fit,minmax(240px,1fr))}
+  .grid.c4{grid-template-columns:repeat(auto-fit,minmax(210px,1fr))}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:16px 18px}
+  .card h4{margin:0 0 6px;font-size:15px}
+  .card .big{font-size:26px;font-weight:700;color:var(--accent)}
+  .card .sub{font-size:13px;color:var(--ink-2)}
+  .step{position:relative;padding-left:44px}
+  .step .n{position:absolute;left:0;top:2px;width:30px;height:30px;border-radius:50%;
+           background:var(--accent);color:#fff;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:15px}
+  .step + .step{margin-top:14px}
+
+  .callout{border-left:4px solid var(--accent);background:var(--accent-soft);
+           border-radius:0 10px 10px 0;padding:12px 16px;margin:16px 0}
+  .callout.warn{border-color:var(--warn);background:#fef3c7}
+  .callout.bad{border-color:var(--bad);background:#fee2e2}
+  .callout.good{border-color:var(--good);background:#dcfce7}
+  .callout p{margin:4px 0}
+
+  table.tb{width:100%;border-collapse:collapse;margin:14px 0;font-size:13.5px;background:var(--panel)}
+  .tb th,.tb td{border:1px solid var(--line);padding:7px 10px;text-align:left;vertical-align:top}
+  .tb th{background:#f1f5f9;font-weight:600}
+  .tb td.num,.tb th.num{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
+
+  .badge{display:inline-block;font-size:12px;font-weight:600;padding:1px 9px;border-radius:999px;white-space:nowrap}
+  .b-done{background:#dcfce7;color:var(--good)}
+  .b-part{background:#fef3c7;color:var(--warn)}
+  .b-todo{background:#e0e7ff;color:#3730a3}
+  .b-no{background:#fee2e2;color:var(--bad)}
+  .b-info{background:var(--chip);color:var(--ink-2)}
+
+  figure{margin:22px 0;background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:18px}
+  figcaption{font-size:13px;color:var(--ink-2);margin-top:10px}
+  figcaption b{color:var(--ink)}
+  svg{max-width:100%;height:auto;display:block}
+  .src{font-size:12px;color:var(--ink-3)}
+  code{background:#eef2f7;border-radius:4px;padding:1px 5px;font-size:12.5px;
+       font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+  pre{background:#0f172a;color:#e2e8f0;border-radius:10px;padding:14px 16px;overflow:auto;font-size:12.5px}
+  pre code{background:none;color:inherit;padding:0}
+  ul.tight li,ol.tight li{margin:5px 0}
+  .footer{padding:36px 0 60px;color:var(--ink-3);font-size:12.5px}
+
+  @media print{
+    .topnav{display:none}
+    body{background:#fff}
+    main section{border-top:none;padding:14px 0}
+    figure,.card{break-inside:avoid}
+  }
+</style>
+</head>
+<body>
+
+<div class="topnav">
+  <div class="wrap">
+    <b>headroom 可视化导读</b>
+    <nav>
+      <a href="#ladder">全图</a>
+      <a href="#primer">硬件原理</a>
+      <a href="#window">在飞窗口</a>
+      <a href="#lower">两种下界</a>
+      <a href="#aten">aten 为什么慢</a>
+      <a href="#now">本仓现状</a>
+      <a href="#walls">三面墙</a>
+      <a href="#e2e">端到端</a>
+      <a href="#cuts">本轮两刀</a>
+      <a href="#debts">欠账清单</a>
+      <a href="#method">怎么测的</a>
+      <span style="margin-left:auto"></span>
+      <a href="results.html">results</a>
+      <a href="kernels.html">kernels</a>
+      <a href="architecture.html">architecture</a>
+      <a href="degradation.html">degradation</a>
+    </nav>
+  </div>
+</div>
+
+<header class="hero">
+  <div class="wrap">
+    <div class="kicker">INDEX_SVE · 性能空间分析的可视化版</div>
+    <h1>还有多大空间？<br>—— `aten::index` 慢在哪、我们已经拿到多少</h1>
+    <p style="max-width:44em;opacity:.92">
+      本文是 <a href="headroom.md" style="color:#a5f3fc;text-decoration:underline">docs/headroom.md</a>
+      的插图版导读：所有数字与结论均出自该文档及其引用的
+      <code style="background:rgba(255,255,255,.15)">benchmarks/RESULTS.md</code>，
+      两者冲突时以 RESULTS 为准。
+    </p>
+    <div class="formula">
+      <div class="f">一次访存的成本 = 延迟 ÷ 在飞条数</div>
+      <div class="d">延迟由硬件决定（本机 DRAM ≈ 137ns），代码能改的只有“在飞条数”：
+      一次只等一条，就要付满 137ns；一次等 16 条，摊到每条 ≈ 8.6ns。全文都是这一个公式。</div>
+    </div>
+    <div class="meta">数据轮次：R10（2026-10-29）及 2026-11 月补丁轮 ｜ 机器：鲲鹏 920F，node 5（38 核）</div>
+  </div>
+</header>
+
+<main class="wrap">
+
+<!-- ================= 1. 全图 ================= -->
+<section id="ladder">
+  <h2><span class="secno">01</span>一页看懂：四级阶梯</h2>
+  <p class="lede">把全文压成四级台阶——每级只回答一个问题。</p>
+
+  <div class="grid c4">
+    <div class="card step"><div class="n">1</div>
+      <h4>硬件能给多少？</h4>
+      <p>每核可同时挂 <b>16–20</b> 条 cache line 在飞；一条随机访问的下界
+      <b class="num">8.6–8.9 ns</b>。</p>
+      <p class="sub">= 137ns ÷ 16。这是物理天花板。</p>
+    </div>
+    <div class="card step"><div class="n">2</div>
+      <h4>aten 站在哪？</h4>
+      <p>实测只有 <b class="num">0.85–1.05</b> 条在飞，每行 132–155ns——
+      几乎就站在下界上，<b>没吃到并行等待的红利</b>。</p>
+    </div>
+    <div class="card step"><div class="n">3</div>
+      <h4>本仓拿到多少？</h4>
+      <p>A=16 行拷贝 1t 已到 <b class="num">5.7</b> 条在飞（24ns/行，aten 的 <b class="num">6.3x</b>），
+      但离 8.6–11.4ns 还有 <b class="num">2.1x</b>。</p>
+    </div>
+    <div class="card step"><div class="n">4</div>
+      <h4>剩下的在哪？</h4>
+      <p>不在“搬数据”，在<b>每核在飞条数</b>与固定成本。三格各撞一面墙：
+      在飞条数、固定成本、覆盖率。</p>
+    </div>
+  </div>
+
+  <div class="callout warn">
+    <p><b>本轮最重要的修正</b>：三个生产模型（SGI / PPT / Sonata）最贵的一格都是
+    <b>值域 ≤2048 的桶化 gather</b>，不是“大值域 1D gather”。两族访问的内存层不同，
+    量空间的尺子也不同——拿错尺子会把空间虚大 8–9 倍。</p>
+  </div>
+</section>
+
+<!-- ================= 2. 硬件原理 ================= -->
+<section id="primer">
+  <h2><span class="secno">02</span>硬件原理：一次访存到底花多久</h2>
+  <p class="lede">数据不在 CPU 里，在内存条上。距离不同，成本差 20–70 倍。
+  记牢这张延迟阶梯，后面所有数字都有出处。</p>
+
+  <figure>
+    <svg viewBox="0 0 760 300" role="img" aria-label="缓存延迟阶梯图">
+      <title>延迟阶梯：L1、L2、DRAM</title>
+      <!-- 轴 -->
+      <line x1="70" y1="260" x2="730" y2="260" stroke="#94a3b8"/>
+      <!-- L1: log2(2.0)=1 -> 24 -->
+      <rect x="110" y="236" width="120" height="24" fill="#0e7490"/>
+      <!-- L2: log2(8)=3 -> 72 -->
+      <rect x="310" y="188" width="120" height="72" fill="#0891b2"/>
+      <!-- DRAM: log2(137)=7.1 -> 170 -->
+      <rect x="510" y="90" width="120" height="170" fill="#155e75"/>
+      <text x="170" y="280" text-anchor="middle" font-size="14" fill="#1f2933" font-weight="600">L1（32KB）</text>
+      <text x="170" y="222" text-anchor="middle" font-size="16" fill="#0e7490" font-weight="700">2.0 ns</text>
+      <text x="170" y="206" text-anchor="middle" font-size="11" fill="#52606d">从桌上拿一张纸</text>
+      <text x="370" y="280" text-anchor="middle" font-size="14" fill="#1f2933" font-weight="600">L2（768KB）</text>
+      <text x="370" y="174" text-anchor="middle" font-size="16" fill="#0891b2" font-weight="700">7.4–8.6 ns</text>
+      <text x="370" y="158" text-anchor="middle" font-size="11" fill="#52606d">走到隔壁房间拿</text>
+      <text x="570" y="280" text-anchor="middle" font-size="14" fill="#1f2933" font-weight="600">本地 DRAM（64GB）</text>
+      <text x="570" y="76" text-anchor="middle" font-size="16" fill="#155e75" font-weight="700">128–148 ns</text>
+      <text x="570" y="60" text-anchor="middle" font-size="11" fill="#52606d">下楼去仓库取</text>
+      <text x="730" y="60" font-size="11" fill="#7b8794">柱高 ∝ log₂(延迟)，否则 L1 看不见</text>
+    </svg>
+    <figcaption><b>图 1 · 延迟阶梯</b>（§1.0 / §1.1）。一次必须等待的访存，
+    在 L1 是 2ns，在 DRAM 是 ~137ns。CPU 一个周期 ≈ 0.5ns。</figcaption>
+  </figure>
+
+  <div class="grid c3">
+    <div class="card">
+      <h4>① 搬运的最小单位是 64B</h4>
+      <p class="sub">哪怕只读 4 字节，整条 64B 的 <b>cache line</b> 也会被搬过来。
+      随机取 4B，有用字节只有 1/16——这是“行放大”，4B gather 一族的天花板来源。</p>
+    </div>
+    <div class="card">
+      <h4>② 访问有两种形状</h4>
+      <p class="sub"><b>依赖链</b>：下一条地址要靠上一条读回的数据（如
+      <code>dst[k] = table[idx[k]]</code>）——一次只能等一个；
+      <b>独立访问</b>：地址提前算好，可以一次发十几个——成本摊薄成“延迟 ÷ 在飞条数”。
+      优化本质上都是把第一种改成第二种。</p>
+    </div>
+    <div class="card">
+      <h4>③ 写比读贵</h4>
+      <p class="sub">只改 line 的一部分时，CPU 得先把整条读进来（RFO）。
+      A=16 恰好一整条 line，整行写不产生额外读——这是行拷贝族快的硬件前提。</p>
+    </div>
+  </div>
+</section>
+
+<!-- ================= 3. 在飞窗口 ================= -->
+<section id="window">
+  <h2><span class="secno">03</span>在飞窗口：一颗核到底能同时等几件事</h2>
+  <p class="lede">用 <code>memprobe mlp S</code> 造 S 条互相独立的指针追逐链：
+  链内是依赖的（最多 1 条在飞），S 条并行就把“在飞条数”精确设定成 S。不是估，是直接设定。</p>
+
+  <figure>
+    <svg viewBox="0 0 760 330" role="img" aria-label="在飞条数与每次访问成本曲线">
+      <title>S 从 1 到 32 时每次访问的成本</title>
+      <!-- 坐标系：ns 0..140 映射到 y=300..30 -->
+      <line x1="60" y1="300" x2="720" y2="300" stroke="#94a3b8"/>
+      <line x1="60" y1="300" x2="60" y2="30" stroke="#94a3b8"/>
+      <!-- y 刻度 -->
+      <g font-size="10" fill="#7b8794">
+        <text x="50" y="304" text-anchor="end">0</text>
+        <text x="50" y="247" text-anchor="end">35</text>
+        <text x="50" y="190" text-anchor="end">70</text>
+        <text x="50" y="133" text-anchor="end">105</text>
+        <text x="50" y="76" text-anchor="end">140</text>
+      </g>
+      <g stroke="#e2e8f0">
+        <line x1="60" y1="243" x2="720" y2="243"/>
+        <line x1="60" y1="186" x2="720" y2="186"/>
+        <line x1="60" y1="129" x2="720" y2="129"/>
+        <line x1="60" y1="72" x2="720" y2="72"/>
+      </g>
+      <!-- x 刻度：6 档均匀 -->
+      <g font-size="11" fill="#52606d" text-anchor="middle">
+        <text x="100" y="318">S=1</text><text x="208" y="318">2</text><text x="316" y="318">4</text>
+        <text x="424" y="318">8</text><text x="532" y="318">16</text><text x="640" y="318">32</text>
+      </g>
+      <text x="390" y="332" text-anchor="middle" font-size="11" fill="#7b8794">同时在飞的访问数 S</text>
+
+      <!-- 137/S 理论线（虚线，S=1..16） -->
+      <polyline points="100,114 208,207 316,254 424,277 532,289"
+                fill="none" stroke="#b45309" stroke-width="1.6" stroke-dasharray="5,4"/>
+      <text x="180" y="150" font-size="11" fill="#b45309">理论：137 ÷ S</text>
+
+      <!-- 256MB 实测折线 -->
+      <polyline points="100,114.7 208,205.1 316,251.4 424,275 532,286.3 640,288"
+                fill="none" stroke="#0e7490" stroke-width="2.5"/>
+      <g fill="#0e7490">
+        <circle cx="100" cy="114.7" r="3.5"/><circle cx="208" cy="205.1" r="3.5"/><circle cx="316" cy="251.4" r="3.5"/>
+        <circle cx="424" cy="275" r="3.5"/><circle cx="532" cy="286.3" r="3.5"/><circle cx="640" cy="288" r="3.5"/>
+      </g>
+      <!-- 16MB -->
+      <polyline points="100,146.1 208,222.6 316,260 424,279.2 532,287.2 640,288.6"
+                fill="none" stroke="#0891b2" stroke-width="2" stroke-dasharray="2,0" opacity="0.75"/>
+      <g fill="#0891b2" opacity="0.8">
+        <circle cx="100" cy="146.1" r="3"/><circle cx="208" cy="222.6" r="3"/><circle cx="316" cy="260" r="3"/>
+        <circle cx="424" cy="279.2" r="3"/><circle cx="532" cy="287.2" r="3"/><circle cx="640" cy="288.6" r="3"/>
+      </g>
+      <text x="648" y="262" font-size="11" fill="#0e7490">256MB 源</text>
+      <text x="648" y="278" font-size="11" fill="#0891b2">16MB 源</text>
+
+      <!-- 饱和区 -->
+      <rect x="505" y="281" width="150" height="19" fill="#0e7490" opacity="0.12"/>
+      <text x="580" y="275" text-anchor="middle" font-size="11" fill="#0e7490" font-weight="600">下界 8.6–8.9 ns/line</text>
+      <!-- 窗口标注 -->
+      <path d="M 532 40 L 532 70" stroke="#b91c1c" stroke-width="1.4"/>
+      <path d="M 640 40 L 640 70" stroke="#b91c1c" stroke-width="1.4"/>
+      <text x="586" y="34" text-anchor="middle" font-size="12" fill="#b91c1c" font-weight="700">硬件窗口：每核 16–20 条</text>
+    </svg>
+    <figcaption><b>图 2 · 本文的核心曲线</b>（§1.2，RESULTS §2.16.3）。S=1→16 成本几乎精确按
+    137/S 下降；16 之后只快 13–15% 就平了——平的地方是每核的 MSHR 表项用完，
+    由电路决定，代码改不了。实测值：256MB 源 136.6 / 70.1 / 35.9 / 18.5 / 10.2 / <b>8.9</b> ns/次。</figcaption>
+  </figure>
+
+  <div class="callout">
+    <p><b>为什么停在 16–20</b>：每颗核里有一张 MSHR 表，记录“哪些 line 已发出、还没回来”。
+    表项用完，新的 miss 只能排队。能改的只有两件事：<b>把窗口填满</b>（预取、批量化）
+    或<b>少发几条 line</b>（提高 line 内利用率）。</p>
+  </div>
+
+  <div class="grid c3">
+    <div class="card">
+      <h4>误解 ① “延迟高 = 带宽低”</h4>
+      <p class="sub">延迟是一次往返（137ns），带宽是稳态吞吐（随机 7.2GB/s/核、
+      单 node 读 168GB/s）。两者只通过“在飞条数”联系，不能互相换算。</p>
+    </div>
+    <div class="card">
+      <h4>误解 ② “加线程就能追上”</h4>
+      <p class="sub">加线程只是把<b>等待本身</b>并行化：aten 1 线程一行 322 拍、
+      8 线程仍 318 拍。每核的在飞条数没变多，要缩短每行的等待只能提高<b>每核</b>的在飞条数。</p>
+    </div>
+    <div class="card">
+      <h4>误解 ③ “指令越宽 / 预取越远越好”</h4>
+      <p class="sub">指令下界比实际实现低 1–2 个数量级；预取超过 MSHR 容量会把自己挤掉
+      （A=64 8t 的 D=16 崩到 115ns）。H6 实验证明这条循环根本不是发射受限。</p>
+    </div>
+  </div>
+</section>
+
+<!-- ================= 4. 两种下界 ================= -->
+<section id="lower">
+  <h2><span class="secno">04</span>两种下界：同一段 gather，尺子差 8–9 倍</h2>
+  <p class="lede"><code>dst[k] = src[idx[k]]</code> 的成本完全取决于源数组有多大——
+  能不能装进缓存。这把“桶化”和“大值域 1D”分成两个族，各用一把尺子。</p>
+
+  <figure>
+    <svg viewBox="0 0 760 260" role="img" aria-label="两种下界对比">
+      <title>DRAM 下界 5.65 ns/元素 vs L1 下界 0.66-0.71 ns/元素</title>
+      <rect x="90"  y="45"  width="200" height="170" fill="#155e75"/>
+      <rect x="470" y="194" width="200" height="21"  fill="#0e7490"/>
+      <text x="190" y="232" text-anchor="middle" font-size="14" font-weight="600">大值域 1D gather（源在 DRAM）</text>
+      <text x="190" y="33"  text-anchor="middle" font-size="20" font-weight="700" fill="#155e75">5.65 ns/元素</text>
+      <text x="190" y="52"  text-anchor="middle" font-size="11" fill="#52606d">尺子 = 延迟 ÷ 在飞条数（§1.2）</text>
+      <text x="570" y="232" text-anchor="middle" font-size="14" font-weight="600">桶化 gather（8KB 表常驻 L1）</text>
+      <text x="570" y="182" text-anchor="middle" font-size="20" font-weight="700" fill="#0e7490">0.66–0.71 ns/元素</text>
+      <text x="570" y="166" text-anchor="middle" font-size="11" fill="#52606d">尺子 = L1 查表吞吐地板（§2.20）</text>
+      <text x="380" y="130" text-anchor="middle" font-size="13" fill="#b45309" font-weight="700">两把尺子差 8–9 倍</text>
+      <path d="M 300 128 C 360 100, 420 100, 460 122" fill="none" stroke="#b45309" stroke-width="1.5" stroke-dasharray="4,3"/>
+      <text x="380" y="252" text-anchor="middle" font-size="10.5" fill="#7b8794">柱高 ∝ 对数值。桶化根本没有 DRAM 延迟可藏——拿 DRAM 尺子量它，“离下界多少倍”同步虚大。</text>
+    </svg>
+    <figcaption><b>图 3 · 两个族、两把尺子</b>（§1.4 / §2.20）。左：源散在几十万元素上，
+    每次访问出缓存等 DRAM；右：源收进 8KB 常驻表，每次查表 = 一次 L1 命中（单链 2.0ns，
+    16 链叠进流水摊薄到 0.66–0.71ns）。</figcaption>
+  </figure>
+
+  <div class="callout warn">
+    <p><b>口径提醒（全文最重要的一条）</b>：对裸探针下界的倍数（41x / 23x / 6.5x）
+    回答的是“离物理还有多远”，<b>不是可得空间</b>。把实测固定成本加回去得到
+    “实测地板”，三格只剩 <b>1.9x / 2.4x / 1.8x</b>。本文所有“还剩多少”都用后者。</p>
+  </div>
+</section>
+
+<!-- ================= 5. aten 为什么慢 ================= -->
+<section id="aten">
+  <h2><span class="secno">05</span>aten 为什么慢：窗口几乎没填</h2>
+  <p class="lede">PyTorch 的 <code>aten::index</code> 用一套“通用性优先”的机器做这件
+  本质上很简单的事。实测它的行循环是依赖链形状——<b>同时只有约一条在飞</b>。</p>
+
+  <figure>
+    <svg viewBox="0 0 760 250" role="img" aria-label="在飞条数对比：aten 与本算子">
+      <title>每核在飞窗口的填充情况</title>
+      <!-- 20 格窗口 -->
+      <g font-size="11" fill="#52606d">
+        <text x="80" y="60">aten::index（0.85–1.05 条在飞）</text>
+        <text x="80" y="140">本算子 A=16 行拷贝（5.7 条在飞）</text>
+        <text x="80" y="220">每核硬件窗口（16–20 条）</text>
+      </g>
+      <!-- aten: 20 格只亮 1 -->
+      <g>
+        <!-- row 1 -->
+        <rect x="330" y="42" width="18" height="18" fill="#b91c1c"/>
+        <g fill="#e2e8f0">
+          <rect x="352" y="42" width="18" height="18"/><rect x="374" y="42" width="18" height="18"/><rect x="396" y="42" width="18" height="18"/><rect x="418" y="42" width="18" height="18"/>
+          <rect x="440" y="42" width="18" height="18"/><rect x="462" y="42" width="18" height="18"/><rect x="484" y="42" width="18" height="18"/><rect x="506" y="42" width="18" height="18"/>
+          <rect x="528" y="42" width="18" height="18"/><rect x="550" y="42" width="18" height="18"/><rect x="572" y="42" width="18" height="18"/><rect x="594" y="42" width="18" height="18"/>
+          <rect x="616" y="42" width="18" height="18"/><rect x="638" y="42" width="18" height="18"/><rect x="660" y="42" width="18" height="18"/><rect x="682" y="42" width="18" height="18"/>
+          <rect x="704" y="42" width="18" height="18"/><rect x="726" y="42" width="18" height="18"/><rect x="748" y="42" width="18" height="18"/><rect x="770" y="42" width="18" height="18"/>
+        </g>
+      </g>
+      <!-- 本算子: 亮 6 -->
+      <g>
+        <g fill="#0e7490">
+          <rect x="330" y="122" width="18" height="18"/><rect x="352" y="122" width="18" height="18"/><rect x="374" y="122" width="18" height="18"/>
+          <rect x="396" y="122" width="18" height="18"/><rect x="418" y="122" width="18" height="18"/><rect x="440" y="122" width="18" height="18"/>
+        </g>
+        <g fill="#e2e8f0">
+          <rect x="462" y="122" width="18" height="18"/><rect x="484" y="122" width="18" height="18"/><rect x="506" y="122" width="18" height="18"/><rect x="528" y="122" width="18" height="18"/>
+          <rect x="550" y="122" width="18" height="18"/><rect x="572" y="122" width="18" height="18"/><rect x="594" y="122" width="18" height="18"/><rect x="616" y="122" width="18" height="18"/>
+          <rect x="638" y="122" width="18" height="18"/><rect x="660" y="122" width="18" height="18"/><rect x="682" y="122" width="18" height="18"/><rect x="704" y="122" width="18" height="18"/>
+          <rect x="726" y="122" width="18" height="18"/><rect x="748" y="122" width="18" height="18"/><rect x="770" y="122" width="18" height="18"/>
+        </g>
+      </g>
+      <!-- 全窗口 -->
+      <g fill="#155e75" opacity="0.28">
+        <rect x="330" y="202" width="18" height="18"/><rect x="352" y="202" width="18" height="18"/><rect x="374" y="202" width="18" height="18"/><rect x="396" y="202" width="18" height="18"/><rect x="418" y="202" width="18" height="18"/>
+        <rect x="440" y="202" width="18" height="18"/><rect x="462" y="202" width="18" height="18"/><rect x="484" y="202" width="18" height="18"/><rect x="506" y="202" width="18" height="18"/><rect x="528" y="202" width="18" height="18"/>
+        <rect x="550" y="202" width="18" height="18"/><rect x="572" y="202" width="18" height="18"/><rect x="594" y="202" width="18" height="18"/><rect x="616" y="202" width="18" height="18"/><rect x="638" y="202" width="18" height="18"/>
+        <rect x="660" y="202" width="18" height="18"/><rect x="682" y="202" width="18" height="18"/><rect x="704" y="202" width="18" height="18"/><rect x="726" y="202" width="18" height="18"/><rect x="748" y="202" width="18" height="18"/>
+        <rect x="770" y="202" width="18" height="18"/>
+      </g>
+      <g stroke="#155e75" stroke-width="1" opacity="0.6">
+        <rect x="330" y="202" width="18" height="18" fill="none"/><rect x="352" y="202" width="18" height="18" fill="none"/><rect x="374" y="202" width="18" height="18" fill="none"/><rect x="396" y="202" width="18" height="18" fill="none"/><rect x="418" y="202" width="18" height="18" fill="none"/>
+        <rect x="440" y="202" width="18" height="18" fill="none"/><rect x="462" y="202" width="18" height="18" fill="none"/><rect x="484" y="202" width="18" height="18" fill="none"/><rect x="506" y="202" width="18" height="18" fill="none"/><rect x="528" y="202" width="18" height="18" fill="none"/>
+        <rect x="550" y="202" width="18" height="18" fill="none"/><rect x="572" y="202" width="18" height="18" fill="none"/><rect x="594" y="202" width="18" height="18" fill="none"/><rect x="616" y="202" width="18" height="18" fill="none"/><rect x="638" y="202" width="18" height="18" fill="none"/>
+        <rect x="660" y="202" width="18" height="18" fill="none"/><rect x="682" y="202" width="18" height="18" fill="none"/><rect x="704" y="202" width="18" height="18" fill="none"/><rect x="726" y="202" width="18" height="18" fill="none"/><rect x="748" y="202" width="18" height="18" fill="none"/>
+        <rect x="770" y="202" width="18" height="18" fill="none"/>
+      </g>
+      <text x="80" y="24" font-size="11" fill="#7b8794">一个格子 = 一条在飞的 cache line（共 20 格示意 MSHR 窗口）</text>
+    </svg>
+    <figcaption><b>图 4 · 同一条公式，三种填充率</b>（§3.2 / §4.1，perf 实测 §2.19.4）。
+    aten 的行循环只有 ~1 条在飞，于是每行 132–155ns ≈ 满延迟；本算子靠软件预取（H1）把
+    A=16 行拷贝推到 5.7 条（24ns/行），但离 16–20 条的窗口还有 2.1x。</figcaption>
+  </figure>
+
+  <div class="callout">
+    <p><b>aten 自己的理论倍数</b>（§3.3）：如果它能把窗口填满，随机行最多可快
+    <b class="num">15–18x</b>、A=64 快 <b class="num">6.6x</b>、A=256 快 <b class="num">2.7x</b>、
+    1D 大值域 gather 快 <b class="num">5.2x</b>。它拿不到的原因不是带宽也不是指令，
+    就是“一次只等一条”。</p>
+  </div>
+</section>
+
+<!-- ================= 6. 本仓现状 ================= -->
+<section id="now">
+  <h2><span class="secno">06</span>本仓现在在哪：四个行宽档 + 两条元素族</h2>
+  <p class="lede">同样取一行，本算子比 aten 快多少、离天花板多远，按行宽分档看最清楚
+  （1 线程，行拷贝族，§4.5）。</p>
+
+  <figure>
+    <svg viewBox="0 0 760 300" role="img" aria-label="行拷贝族 aten 与本算子耗时对比">
+      <title>aten 与 本算子 每行耗时（ns/行）</title>
+      <!-- 4 组，每组两行；x 起点 150，最大 531 -> 500px 缩放 0.94 -->
+      <g font-size="12" fill="#1f2933" font-weight="600">
+        <text x="10" y="62">A=3 短行</text>
+        <text x="10" y="122">A=16 整行</text>
+        <text x="10" y="182">A=64 宽行</text>
+        <text x="10" y="242">A=256 超大行</text>
+      </g>
+      <!-- A=3 -->
+      <rect x="150" y="40" width="126" height="14" fill="#94a3b8"/>
+      <rect x="150" y="57" width="25"  height="14" fill="#0e7490"/>
+      <text x="282" y="52" font-size="11" fill="#52606d">aten 134</text>
+      <text x="181" y="69" font-size="11" fill="#0e7490" font-weight="600">26.9</text>
+      <text x="600" y="66" font-size="12" fill="#0e7490" font-weight="700">4.99x（上限 6.4x）</text>
+      <!-- A=16 -->
+      <rect x="150" y="100" width="143" height="14" fill="#94a3b8"/>
+      <rect x="150" y="117" width="23"  height="14" fill="#0e7490"/>
+      <text x="299" y="112" font-size="11" fill="#52606d">aten 152</text>
+      <text x="179" y="129" font-size="11" fill="#0e7490" font-weight="600">24.0</text>
+      <text x="600" y="126" font-size="12" fill="#0e7490" font-weight="700">6.33x（上限 13.3x）</text>
+      <!-- A=64 -->
+      <rect x="150" y="160" width="237" height="14" fill="#94a3b8"/>
+      <rect x="150" y="177" width="42"  height="14" fill="#0e7490"/>
+      <text x="393" y="172" font-size="11" fill="#52606d">aten 252</text>
+      <text x="198" y="189" font-size="11" fill="#0e7490" font-weight="600">44.3</text>
+      <text x="600" y="186" font-size="12" fill="#0e7490" font-weight="700">5.68x（上限 6.6x）</text>
+      <!-- A=256 -->
+      <rect x="150" y="220" width="500" height="14" fill="#94a3b8"/>
+      <rect x="150" y="237" width="213" height="14" fill="#0e7490"/>
+      <text x="656" y="232" font-size="11" fill="#52606d">aten 531</text>
+      <text x="369" y="249" font-size="11" fill="#0e7490" font-weight="600">225.7</text>
+      <text x="600" y="246" font-size="12" fill="#0e7490" font-weight="700">2.41x（上限 2.7x）</text>
+      <g font-size="11" fill="#7b8794">
+        <rect x="150" y="272" width="12" height="12" fill="#94a3b8"/><text x="166" y="282">aten</text>
+        <rect x="210" y="272" width="12" height="12" fill="#0e7490"/><text x="226" y="282">本算子（ns/行）</text>
+      </g>
+    </svg>
+    <figcaption><b>图 5 · 行拷贝族：现状 vs 可达上限</b>（§4.5，1t）。
+    括号 = 同形态 aten 耗时 ÷ 探针下界。行越宽，行内 line 越多、在飞窗口越容易被填满，
+    所以倍数反而收窄——A=256 只剩 2.7x 的上限。</figcaption>
+  </figure>
+
+  <h3>“已兑现”到上限的百分之几</h3>
+  <figure>
+    <svg viewBox="0 0 760 210" role="img" aria-label="各族已兑现比例">
+      <title>已兑现 = 现状比值 ÷ 可达上限</title>
+      <!-- 6 根横条，x 150，宽 500 = 100%，50% 虚线 -->
+      <line x1="400" y1="18" x2="400" y2="180" stroke="#b91c1c" stroke-width="1" stroke-dasharray="5,4"/>
+      <text x="404" y="16" font-size="10.5" fill="#b91c1c">50%</text>
+      <!-- A=3 77% -->
+      <text x="10" y="37" font-size="12">A=3 短行</text>
+      <rect x="150" y="24" width="385" height="16" fill="#0e7490"/><text x="541" y="37" font-size="11.5" font-weight="700" fill="#0e7490">77%</text>
+      <!-- A=16 48% -->
+      <text x="10" y="72" font-size="12">A=16 整行</text>
+      <rect x="150" y="59" width="240" height="16" fill="#b45309"/><text x="396" y="72" font-size="11.5" font-weight="700" fill="#b45309">48%</text>
+      <!-- A=64 87% -->
+      <text x="10" y="107" font-size="12">A=64 宽行</text>
+      <rect x="150" y="94" width="435" height="16" fill="#0e7490"/><text x="591" y="107" font-size="11.5" font-weight="700" fill="#0e7490">87%</text>
+      <!-- A=256 88% -->
+      <text x="10" y="142" font-size="12">A=256 超大行</text>
+      <rect x="150" y="129" width="440" height="16" fill="#0e7490"/><text x="596" y="142" font-size="11.5" font-weight="700" fill="#0e7490">88%</text>
+      <!-- 1D 大值域 25% -->
+      <text x="10" y="177" font-size="12">1D 大值域 gather</text>
+      <rect x="150" y="164" width="125" height="16" fill="#b45309"/><text x="281" y="177" font-size="11.5" font-weight="700" fill="#b45309">25%</text>
+    </svg>
+    <figcaption><b>图 6 · 已兑现率</b>（§4.5，分母是裸探针上限，即“离最理想的循环还差多远”）。
+    橙色三格 &lt;50%，但它们不是同一种“没吃完”——分别撞在在飞条数墙、固定成本墙与覆盖率墙上
+    （下一节）。</figcaption>
+  </figure>
+
+  <div class="callout good">
+    <p><b>三格各撞一面墙，必须分行说</b>（§4.6）：A=16 还有 1.8x 但<b>没有便宜的下手处</b>
+    （H6 已证伪“砍指令”）；桶化只剩结构改动（H4/H7）与内核外的入口；1D 大值域有 3.9x 空间
+    但生产形态零覆盖。三句混成一句，会读出“还有 40 倍空间”或“这实现不行”两种相反的误读。</p>
+  </div>
+</section>
+
+<!-- ================= 7. 三面墙 ================= -->
+<section id="walls">
+  <h2><span class="secno">07</span>三个天花板、三面墙</h2>
+  <p class="lede">“无法进一步提升”必须分三句话说：每一面墙是什么、能不能推、怎么推，都不一样
+  （§6.5.9）。</p>
+
+  <div class="grid c3">
+    <div class="card" style="border-top:4px solid #b91c1c">
+      <h4>墙 ① 指令墙</h4>
+      <p class="sub">每条元素至少“读下标 → 检查 → 归一 → 写回”≈6 条指令，÷ IPC 2.6 ≈
+      <b class="num">2.3–2.9 ns/元素</b>，与内存无关。</p>
+      <p class="sub"><b>基本不能推</b>：单核向量化确实能快 1.84x（4B + 32 位下标，
+      §1.5.4），但热点全是多线程跑的，38t 下 SVE 与标量持平（0.87–1.17x）——
+      省下的指令不落在瓶颈上。</p>
+    </div>
+    <div class="card" style="border-top:4px solid #b45309">
+      <h4>墙 ② 固定成本墙</h4>
+      <p class="sub">每次调用都要付：入口 <b class="num">5.8µs</b>（内核外）+ 一次
+      fork-join ≈ <b class="num">3µs</b>。小 K 时被摊到每元素上是几十 ns。</p>
+      <p class="sub"><b>能推一部分</b>（H4 单趟结构、H7 复用输出）；入口那 5.8µs 不在本仓代码里。</p>
+    </div>
+    <div class="card" style="border-top:4px solid #0e7490">
+      <h4>墙 ③ 覆盖率墙</h4>
+      <p class="sub">三个热点格子只占各模型 <b class="num">23–40%</b> 的调用，
+      长尾那 60–77% 目前约 <b class="num">0.9x</b>（比 aten 略慢）。</p>
+      <p class="sub"><b>不在内核里</b>：热点全到地板，全程也只有 1.2–1.3x。要逐族修长尾。</p>
+    </div>
+  </div>
+
+  <h3>三把尺子：同一个格子，三种答案</h3>
+  <table class="tb">
+    <tr><th>尺子</th><th>Sonata K256000/6t 的答案</th><th>回答了什么</th><th>什么时候会用错</th></tr>
+    <tr><td><b>裸探针下界</b>（0.7 ns/元素）</td><td class="num"><b>6.5x</b></td>
+        <td>“如果整数运算也不要钱、固定成本也不要钱”</td><td>拿它当目标 → 承诺 6x，交付 1.6x</td></tr>
+    <tr><td><b>实测地板</b>（2.5 ns/元素）</td><td class="num"><b>1.8x</b></td>
+        <td>“同样的结构与固定成本下，把串行查表在飞化”</td><td>拿它当全部 → 漏掉“改结构可以降地板”</td></tr>
+    <tr><td><b>端到端加权</b></td><td class="num"><b>+0.23x</b>（1.28→1.51）</td>
+        <td>“用户能感知到多少”</td><td>拿它当悲观 → 忽略它只覆盖 39% 的时间</td></tr>
+  </table>
+
+  <figure>
+    <svg viewBox="0 0 760 235" role="img" aria-label="桶化三格：现状与实测地板">
+      <title>桶化三格：现状 vs 实测地板（µs）</title>
+      <!-- 比例：193.4 -> 500px，即 2.586 px/µs -->
+      <!-- SGI -->
+      <text x="10" y="42" font-size="12" font-weight="600">SGI bucket K13824/12t</text>
+      <rect x="230" y="28" width="85"  height="16" fill="#0e7490"/>
+      <rect x="230" y="47" width="44.5" height="16" fill="#94a3b8"/>
+      <text x="321" y="41" font-size="11" fill="#0e7490" font-weight="700">地板 17.2</text>
+      <text x="280" y="60" font-size="11" fill="#52606d">现状 32.9</text>
+      <!-- PPT -->
+      <text x="10" y="112" font-size="12" font-weight="600">PPT bucket K55296/19t</text>
+      <rect x="230" y="98" width="51"  height="16" fill="#0e7490"/>
+      <rect x="230" y="117" width="121" height="16" fill="#94a3b8"/>
+      <text x="287" y="111" font-size="11" fill="#0e7490" font-weight="700">地板 19.8</text>
+      <text x="357" y="130" font-size="11" fill="#52606d">现状 46.9</text>
+      <!-- Sonata -->
+      <text x="10" y="182" font-size="12" font-weight="600">Sonata bucket K256000/6t</text>
+      <rect x="230" y="168" width="276" height="16" fill="#0e7490"/>
+      <rect x="230" y="187" width="500" height="16" fill="#94a3b8"/>
+      <text x="512" y="181" font-size="11" fill="#0e7490" font-weight="700">地板 107</text>
+      <text x="736" y="200" text-anchor="end" font-size="11" fill="#52606d">现状 193.4</text>
+      <!-- 标注 -->
+      <text x="600" y="42" font-size="11.5" fill="#b45309">差距 = 固定成本（入口 5.8µs + fork-join ≈3µs）+ 循环本身</text>
+      <g font-size="11" fill="#7b8794">
+        <rect x="230" y="216" width="12" height="12" fill="#94a3b8"/><text x="246" y="226">现状（两刀落地前的旧轮次）</text>
+        <rect x="430" y="216" width="12" height="12" fill="#0e7490"/><text x="446" y="226">实测地板（含固定成本）</text>
+      </g>
+    </svg>
+    <figcaption><b>图 7 · 三格的差距主要不在循环</b>（§6.5.1）。可兑现 1.9x / 2.4x / 1.8x，
+    折到示例 trace 是“每 100ms 调用省 17.7 / 19.1 / 17.4ms”——各模型只修自己那一格，
+    端到端都能拿约 1/6 的时间。</figcaption>
+  </figure>
+</section>
+
+<!-- ================= 8. 端到端 ================= -->
+<section id="e2e">
+  <h2><span class="secno">08</span>端到端：理论上限能换多少</h2>
+  <p class="lede">单形态倍数 ≠ 用户感知。热点只占 23–40% 的调用，全程口径还要再打一次折。</p>
+
+  <figure>
+    <svg viewBox="0 0 760 290" role="img" aria-label="端到端加权比值阶梯">
+      <title>三模型：现在 → 本轮已兑现 → 到地板 → 理想线</title>
+      <!-- y: 1.0 -> 260, 2.0 -> 40，比例 220px/x -->
+      <!-- 每组 4 条，组内 x 偏移 -->
+      <!-- SGI -->
+      <g font-size="12" font-weight="600" fill="#1f2933">
+        <text x="90" y="28">SGI</text><text x="270" y="28">PPT</text><text x="450" y="28">Sonata</text>
+      </g>
+      <!-- y(x) = 260 - (x-1)*220 -->
+      <!-- SGI: 1.30->194, 1.43->165.4, 1.58->132.4, 1.9->62 -->
+      <g>
+        <rect x="60"  y="194" width="30" height="66" fill="#94a3b8"/>
+        <rect x="95"  y="165.4" width="30" height="94.6" fill="#0e7490"/>
+        <rect x="130" y="132.4" width="30" height="127.6" fill="#0891b2"/>
+        <rect x="165" y="62" width="30" height="198" fill="#155e75" opacity="0.85"/>
+        <g font-size="10.5" text-anchor="middle" fill="#52606d">
+          <text x="75" y="272">1.30</text><text x="110" y="272">1.43</text>
+          <text x="145" y="272">1.58</text><text x="180" y="272">~1.9</text>
+        </g>
+      </g>
+      <!-- PPT: 1.28->198.4, 1.39->174.2, 1.59->130.2, 1.8->84 -->
+      <g>
+        <rect x="240" y="198.4" width="30" height="61.6" fill="#94a3b8"/>
+        <rect x="275" y="174.2" width="30" height="85.8" fill="#0e7490"/>
+        <rect x="310" y="130.2" width="30" height="129.8" fill="#0891b2"/>
+        <rect x="345" y="84" width="30" height="176" fill="#155e75" opacity="0.85"/>
+        <g font-size="10.5" text-anchor="middle" fill="#52606d">
+          <text x="255" y="272">1.28</text><text x="290" y="272">1.39</text>
+          <text x="325" y="272">1.59</text><text x="360" y="272">~1.8</text>
+        </g>
+      </g>
+      <!-- Sonata: 1.28->198.4, 1.46->158.8, 1.51->147.8, 1.6->128 -->
+      <g>
+        <rect x="420" y="198.4" width="30" height="61.6" fill="#94a3b8"/>
+        <rect x="455" y="158.8" width="30" height="101.2" fill="#0e7490"/>
+        <rect x="490" y="147.8" width="30" height="112.2" fill="#0891b2"/>
+        <rect x="525" y="128" width="30" height="132" fill="#155e75" opacity="0.85"/>
+        <g font-size="10.5" text-anchor="middle" fill="#52606d">
+          <text x="435" y="272">1.28</text><text x="470" y="272">1.46</text>
+          <text x="505" y="272">1.51</text><text x="540" y="272">~1.6</text>
+        </g>
+      </g>
+      <!-- 全程标注 -->
+      <g font-size="12" fill="#1f2933">
+        <text x="610" y="120" font-weight="700">全程口径（100% 调用）</text>
+        <text x="610" y="142" fill="#52606d">热点加权只覆盖</text>
+        <text x="610" y="160" fill="#52606d">23–40% 的调用</text>
+        <text x="610" y="196" font-size="14" font-weight="700" fill="#b45309">现在 1.05–1.10x</text>
+        <text x="610" y="220" font-size="14" font-weight="700" fill="#0e7490">到地板 ≈1.25x</text>
+      </g>
+      <g font-size="10.5" fill="#7b8794">
+        <rect x="60" y="284" width="10" height="10" fill="#94a3b8"/><text x="74" y="293">现在</text>
+        <rect x="110" y="284" width="10" height="10" fill="#0e7490"/><text x="124" y="293">本轮（H2b 落地）</text>
+        <rect x="230" y="284" width="10" height="10" fill="#0891b2"/><text x="244" y="293">三格到地板</text>
+        <rect x="330" y="284" width="10" height="10" fill="#155e75" opacity="0.85"/><text x="344" y="293">+H3 理想线</text>
+      </g>
+    </svg>
+    <figcaption><b>图 8 · 从单形态到端到端</b>（§6.3）。热点三格全修到地板 + H3 成立，
+    加权也只有 1.6–1.9x；把长尾算进来，全程 ≈1.25x。“再优化 1.5 倍”与“用户感知再快 1.5 倍”
+    中间隔着覆盖率。</figcaption>
+  </figure>
+
+  <div class="callout">
+    <p><b>为什么稳妥线是 1.6–1.9x 而不是 2.5x+</b>：上一版用的地板（SGI 6–8µs）比
+    “空 parallel region 两趟 6.4µs + 入口 5.8µs”还小，Sonata 的 5x 要求整数账归零。
+    按实测地板重算，差的 0.5x 只能来自“连固定成本都换掉”（H7）。</p>
+  </div>
+</section>
+
+<!-- ================= 9. 本轮两刀 ================= -->
+<section id="cuts">
+  <h2><span class="secno">09</span>本轮已经兑现的两刀（A/B 实测）</h2>
+  <p class="lede">都是改结构、不是改循环：第一刀免掉整趟值域扫描（源 ≤2048），
+  第二刀跨度 ≤64KB 时连表都不建、直接查源（补丁 3b 加 <code>K/size ≤ 32</code> 门）。</p>
+
+  <table class="tb">
+    <tr><th>模型</th><th class="num">现状（两刀前）</th><th class="num">免 pass 1（上午轮）</th><th class="num">免表直查（补丁 3b）</th></tr>
+    <tr><td>SGI</td><td class="num">32.9µs</td><td class="num">22.25µs</td><td class="num"><b>18.56µs</b>（A/B 1.28–1.30x）</td></tr>
+    <tr><td>PPT</td><td class="num">46.9µs</td><td class="num">30.80µs</td><td class="num"><b>25.51µs</b>（A/B 1.27–1.28x）</td></tr>
+    <tr><td>Sonata</td><td class="num">193.4µs</td><td class="num">121.39µs</td><td class="num"><b>119.10–120.59µs</b>（0.99–1.02x 回持平）</td></tr>
+  </table>
+  <p class="src">单形态 A/B 数值链跨两轮快态窗口，只作量级参考（§6.5.1 / §6.5.8）。
+  “免 pass 1”内核 A/B：SGI 1.31x / PPT 1.33x / Sonata 1.45x。</p>
+
+  <div class="callout good">
+    <p><b>两刀的归因修正</b>：隔离探针证伪了原假设“批量化”——批量化只值
+    <b class="num">1.02–1.15x</b>；真兑现的是整趟删掉 pass 1（1.46–1.85x）。
+    Sonata 的回退（直查循环的 <code>v*stride0</code> 乘法账）由 <code>stride0==1</code> 特化证实、
+    由 <code>K/size ≤ 32</code> 门绕开。</p>
+  </div>
+</section>
+
+<!-- ================= 10. 欠账清单 ================= -->
+<section id="debts">
+  <h2><span class="secno">10</span>欠账清单 H1–H8：下一步砍哪</h2>
+  <p class="lede">按端到端 Δ（加权）排序，不是按单形态倍数——所以固定成本（H4/H7）
+  排在最贵的单格（H2b 剩余）前面。</p>
+
+  <table class="tb">
+    <tr><th>编号</th><th>内容</th><th>状态</th><th>预期 / 结论</th></tr>
+    <tr><td><b>H1</b></td><td>行拷贝软件预取（按行字节分档 D）</td><td><span class="badge b-done">已实做</span></td>
+        <td class="num">1t 2.26–2.91x；剩 1.15–2.1x 不在预取本身 → H6</td></tr>
+    <tr><td><b>H2a</b></td><td>大值域 1D 批量化（DRAM 下界）</td><td><span class="badge b-info">无用户</span></td>
+        <td class="num">3.9x 空间真实，但 15 个生产形态 0 覆盖，端到端杠杆 ≈0</td></tr>
+    <tr><td><b>H2b</b></td><td>桶化“算完一批再取”</td><td><span class="badge b-done">已兑现并改写归因</span></td>
+        <td>真兑现的是免 pass 1 + 免串行建表；批量化只值 1.02–1.15x（证伪）</td></tr>
+    <tr><td><b>H3</b></td><td>两遍模型的输出段（A≥128 高线程掉到 0.80–0.89x）</td><td><span class="badge b-todo">未验证假设</span></td>
+        <td class="num">预期 1.5–2.5x（宽行高线程，待证；H6 已证伪同款“指令墙”判断）</td></tr>
+    <tr><td><b>H4</b></td><td>去掉桶化的串行段</td><td><span class="badge b-part">大部分已做</span></td>
+        <td>源 ≤2048 免值域归约、跨度 ≤64KB 免建表已落地；剩 fork-join 合并（需单趟结构）</td></tr>
+    <tr><td><b>H5</b></td><td>减少遍数与 fork-join（K&lt;1024 短路悬崖）</td><td><span class="badge b-todo">待做</span></td>
+        <td>不是提速是堵漏；堵住后小 K 的 1.5–3x 才拿得到</td></tr>
+    <tr><td><b>H6</b></td><td>预取记账批量化（砍 26 条/行）</td><td><span class="badge b-no">负结果</span></td>
+        <td>指令 −13%→+13%、周期不动：不是发射受限；A=16 剩 1.8–2.1x 的<b>下一刀未知</b></td></tr>
+    <tr><td><b>H7</b></td><td>每调用固定成本（入口 + 两遍 fork-join）</td><td><span class="badge b-todo">第一杠杆</span></td>
+        <td class="num">预期 1.5–3x（小 K 场景）；入口 5.8µs 的一半不在本仓</td></tr>
+    <tr><td><b>H8</b></td><td>路由悬崖（从 R1 提级）</td><td><span class="badge b-todo">待做</span></td>
+        <td>见 headroom.md §7 / status.md §7</td></tr>
+  </table>
+
+  <div class="callout warn">
+    <p><b>优先级结论</b>：下一刀砍<b>固定成本</b>（H4/H7，SGI/PPT 共同的地板，实测
+    15.5/15.7µs）。行拷贝“砍指令”的路已试并证伪；A=16 剩余的 1.8–2.1x 目前没有已知下手处；
+    Sonata 的回退已修（补丁 3b）。</p>
+  </div>
+</section>
+
+<!-- ================= 11. 怎么测的 ================= -->
+<section id="method">
+  <h2><span class="secno">11</span>这些数是怎么测的</h2>
+  <p class="lede">所有硬件数字来自探针（与本仓代码无关的独立 C 程序），
+  所有实现数字来自两进程交替 A/B。核心原则：<b>下界用最好值，体验用中位数，两者不能混。</b></p>
+
+  <div class="grid c2">
+    <div class="card">
+      <h4>交叉验证：带宽延迟积</h4>
+      <p class="sub">7.2GB/s × 137ns ≈ 986B ≈ 15.4 条 line —— 与曲线给的 16–20 条对得上。
+      饱和吞吐与延迟是两个独立测量，互相印证说明曲线不是探针伪影。</p>
+    </div>
+    <div class="card">
+      <h4>三个常见坑（本文已避开）</h4>
+      <ul class="tight sub">
+        <li>比值波动 20%+：aten 与本算子必须<b>同轮交替</b>跑，比值只用同一轮的两个数。</li>
+        <li>共享箱噪声：以 node 5 定点矩阵为准，608 线程档只作参考。</li>
+        <li>推算值都标了“±50%”读法；与实测冲突时以 RESULTS 为准。</li>
+      </ul>
+    </div>
+  </div>
+
+  <h3>复核清单（§9.7，照做一遍每个数字都能复现）</h3>
+  <pre><code># 1. 缓存层级与 node 划分（别假设有 L3）
+lscpu -C &amp;&amp; numactl -H
+# 2. 主频与单点延迟（对照 137ns）
+memprobe freq 2e8 &amp;&amp; perf stat -e cpu_cycles ./memprobe latency 256 3000000
+# 3. 在飞窗口曲线（本文核心曲线）
+for S in 1 2 4 8 16 32; do ./memprobe mlp 256 $S 1e8; done
+# 4. 带宽顶（单 node 读 168GB/s 硬顶）
+for t in 1 8 16 38; do ./memprobe bandwidth 2048 $t rd; done
+# 5. L1 查表下界（桶化的尺子）
+./memprobe idxgather ...
+# 6. SVE 指令级上限
+./sveprobe ...</code></pre>
+  <p class="src">完整命令与各探针的形状说明见 headroom.md §9 与 RESULTS §2.16–§2.20。</p>
+</section>
+
+<div class="footer">
+  <p>本文是 <a href="headroom.md">docs/headroom.md</a> 的可视化导读，生成于 2026-11-05。
+  所有数值与结论的权威出处为 headroom.md 及其引用的 <code>benchmarks/RESULTS.md</code>；
+  两者冲突时以 RESULTS 为准。推算/区间值按 ±50% 读。</p>
+</div>
+
+</main>
+</body>
+</html>

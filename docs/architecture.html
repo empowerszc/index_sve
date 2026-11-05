@@ -1,0 +1,366 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>架构可视化导读 · index_sve</title>
+<style>
+  :root{
+    --bg:#f6f8fa; --panel:#ffffff; --ink:#1f2933; --ink-2:#52606d; --ink-3:#7b8794;
+    --accent:#0e7490; --accent-soft:#e0f2f1; --good:#15803d; --warn:#b45309; --bad:#b91c1c;
+    --line:#d9e2ec; --chip:#eef2f7;
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--ink);
+       font:15px/1.75 -apple-system,BlinkMacSystemFont,"PingFang SC","Hiragino Sans GB","Microsoft YaHei","Segoe UI",Roboto,sans-serif;}
+  a{color:var(--accent);text-decoration:none}
+  a:hover{text-decoration:underline}
+  .topnav{position:sticky;top:0;z-index:50;background:rgba(255,255,255,.95);backdrop-filter:blur(6px);
+          border-bottom:1px solid var(--line)}
+  .topnav .wrap{max-width:1120px;margin:0 auto;padding:10px 20px;display:flex;gap:14px;align-items:center;flex-wrap:wrap}
+  .topnav b{font-size:14px;color:var(--ink)}
+  .topnav nav{display:flex;gap:2px;flex-wrap:wrap}
+  .topnav nav a{font-size:13px;color:var(--ink-2);padding:4px 9px;border-radius:6px}
+  .topnav nav a:hover{background:var(--chip);text-decoration:none;color:var(--ink)}
+  .wrap{max-width:1120px;margin:0 auto;padding:0 20px}
+  main section{padding:44px 0 8px;border-top:1px solid var(--line)}
+  main section:first-of-type{border-top:none}
+  h1{font-size:30px;line-height:1.35;margin:0 0 10px}
+  h2{font-size:22px;margin:0 0 6px}
+  h2 .secno{color:var(--accent);font-weight:700;margin-right:8px}
+  h3{font-size:17px;margin:26px 0 8px}
+  p{margin:8px 0}
+  .lede{color:var(--ink-2);max-width:46em}
+  .num{font-variant-numeric:tabular-nums}
+  .hero{background:linear-gradient(160deg,#083344,#0e7490 62%,#0891b2);color:#fff;padding:56px 0 44px}
+  .hero .kicker{opacity:.85;font-size:13px;letter-spacing:.12em}
+  .hero h1{color:#fff}
+  .hero .meta{margin-top:18px;font-size:12.5px;opacity:.8}
+  .grid{display:grid;gap:14px;margin:18px 0}
+  .grid.c2{grid-template-columns:repeat(auto-fit,minmax(320px,1fr))}
+  .grid.c3{grid-template-columns:repeat(auto-fit,minmax(240px,1fr))}
+  .grid.c4{grid-template-columns:repeat(auto-fit,minmax(210px,1fr))}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:16px 18px}
+  .card h4{margin:0 0 6px;font-size:15px}
+  .card .big{font-size:26px;font-weight:700;color:var(--accent)}
+  .card .sub{font-size:13px;color:var(--ink-2)}
+  .callout{border-left:4px solid var(--accent);background:var(--accent-soft);
+           border-radius:0 10px 10px 0;padding:12px 16px;margin:16px 0}
+  .callout.warn{border-color:var(--warn);background:#fef3c7}
+  .callout.bad{border-color:var(--bad);background:#fee2e2}
+  .callout.good{border-color:var(--good);background:#dcfce7}
+  .callout p{margin:4px 0}
+  table.tb{width:100%;border-collapse:collapse;margin:14px 0;font-size:13.5px;background:var(--panel)}
+  .tb th,.tb td{border:1px solid var(--line);padding:7px 10px;text-align:left;vertical-align:top}
+  .tb th{background:#f1f5f9;font-weight:600}
+  .tb td.num,.tb th.num{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
+  .badge{display:inline-block;font-size:12px;font-weight:600;padding:1px 9px;border-radius:999px;white-space:nowrap}
+  .b-fast{background:#dcfce7;color:var(--good)}
+  .b-mid{background:#e0f2f1;color:var(--accent)}
+  .b-slow{background:#fef3c7;color:var(--warn)}
+  .b-fallback{background:#e0e7ff;color:#3730a3}
+  .b-info{background:var(--chip);color:var(--ink-2)}
+  figure{margin:22px 0;background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:18px;overflow-x:auto}
+  figcaption{font-size:13px;color:var(--ink-2);margin-top:10px}
+  figcaption b{color:var(--ink)}
+  svg{max-width:100%;height:auto;display:block}
+  .src{font-size:12px;color:var(--ink-3)}
+  code{background:#eef2f7;border-radius:4px;padding:1px 5px;font-size:12.5px;font-family:ui-monospace,Menlo,Consolas,monospace}
+  pre{background:#0f172a;color:#e2e8f0;border-radius:10px;padding:14px 16px;overflow:auto;font-size:12.5px;line-height:1.65}
+  pre code{background:none;color:inherit;padding:0}
+  ul.tight li{margin:5px 0}
+  .footer{padding:36px 0 60px;color:var(--ink-3);font-size:12.5px}
+  @media print{.topnav{display:none}body{background:#fff}main section{border-top:none;padding:14px 0}figure,.card{break-inside:avoid}}
+</style>
+</head>
+<body>
+<div class="topnav"><div class="wrap"><b>架构可视化</b><nav>
+<a href="#pipeline">端到端流水线</a><a href="#fastpath">三道快路径</a><a href="#tree">路由决策树</a>
+<a href="#spec">IndexSpec</a><a href="#normalize">normalize 五步</a><a href="#diff">有意差异</a>
+<span style="margin-left:auto"></span>
+<a href="headroom.html">headroom</a><a href="results.html">results</a>
+<a href="kernels.html">kernels</a><a href="degradation.html">degradation</a>
+</nav></div></div>
+
+<header class="hero"><div class="wrap">
+<div class="kicker">INDEX_SVE · DOCS/ARCHITECTURE.MD 的插图版</div>
+<h1>一次 <code style="background:rgba(255,255,255,.15);color:#fff">x[idx]</code> 在这套算子里走了多远</h1>
+<p style="max-width:48em;opacity:.92">本文把 <a href="architecture.md" style="color:#a5f3fc;text-decoration:underline">docs/architecture.md</a> 的入口流水线、
+路由决策树与 <code>IndexSpec</code> 数据布局画成图。读懂这三张图，就理解了本仓"快路径短路 + raw 内核跳过 linearize"
+的整体设计；每个分支的性能数据在 <a href="results.html" style="color:#a5f3fc;text-decoration:underline">results.html</a> §07。</p>
+<div class="meta">代码位置：<code>index_sve/csrc/op.cpp</code>（入口/路由）· <code>normalize.cpp</code>（归一化）· <code>gather.cpp</code>（内核）</div>
+</div></header>
+
+<main class="wrap">
+
+<section id="pipeline"><h2><span class="secno">01</span>端到端流水线：从 Python 调用到内核</h2>
+<p class="lede">一次 <code>x[idx]</code> 在 C++ 侧按固定顺序走 8 步。前三步是"快路径"——
+在 normalize 之前就短路；只有走到第 6 步才进入通用的归一化 + 路由。</p>
+<figure>
+<svg viewBox="0 0 980 260" role="img" aria-label="index_impl 端到端流水线">
+  <defs>
+    <marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#7b8794"/>
+    </marker>
+  </defs>
+  <!-- Row 1: steps 1-4 -->
+  <g font-size="11.5" text-anchor="middle">
+    <rect x="10"  y="30" width="200" height="52" rx="8" fill="#fff" stroke="#7b8794"/>
+    <text x="110" y="52" fill="#1f2933" font-weight="700">① 入口检查</text>
+    <text x="110" y="70" fill="#52606d">非空 / 维数 ≤ self.dim</text>
+
+    <rect x="240" y="30" width="200" height="52" rx="8" fill="#fff" stroke="#7b8794"/>
+    <text x="330" y="52" fill="#1f2933" font-weight="700">② sync_omp_threads</text>
+    <text x="330" y="70" fill="#52606d">libomp team = at::get_num_threads（T11）</text>
+
+    <rect x="470" y="30" width="230" height="52" rx="8" fill="#dcfce7" stroke="#15803d"/>
+    <text x="585" y="48" fill="#15803d" font-weight="700">③ mask_fast_path（T8）</text>
+    <text x="585" y="64" fill="#52606d">单 mask 连续 → gather_mask 单遍压实</text>
+    <text x="585" y="79" fill="#15803d" font-size="10.5">命中即返回 ✓</text>
+
+    <rect x="730" y="30" width="240" height="52" rx="8" fill="#dcfce7" stroke="#15803d"/>
+    <text x="850" y="48" fill="#15803d" font-weight="700">④ small_single_index（T9）</text>
+    <text x="850" y="64" fill="#52606d">单整数下标 且 K≤4096 → 绕过 normalize</text>
+    <text x="850" y="79" fill="#15803d" font-size="10.5">命中即返回 ✓</text>
+  </g>
+  <g stroke="#7b8794" stroke-width="1.4" fill="none">
+    <line x1="210" y1="56" x2="238" y2="56" marker-end="url(#ar)"/>
+    <line x1="440" y1="56" x2="468" y2="56" marker-end="url(#ar)"/>
+    <line x1="700" y1="56" x2="728" y2="56" marker-end="url(#ar)"/>
+  </g>
+  <!-- Row 2: steps 5-8 -->
+  <g font-size="11.5" text-anchor="middle">
+    <rect x="240" y="130" width="230" height="52" rx="8" fill="#dcfce7" stroke="#15803d"/>
+    <text x="355" y="148" fill="#15803d" font-weight="700">⑤ small_multi_index（T13）</text>
+    <text x="355" y="164" fill="#52606d">多索引同 shape/连续 且 n≤65536</text>
+    <text x="355" y="179" fill="#15803d" font-size="10.5">预校验偏移 + 逐行 memcpy，返回 ✓</text>
+
+    <rect x="500" y="130" width="200" height="52" rx="8" fill="#fff" stroke="#0e7490" stroke-width="1.6"/>
+    <text x="600" y="152" fill="#0e7490" font-weight="700">⑥ normalize_index</text>
+    <text x="600" y="170" fill="#52606d">→ IndexSpec（§4 详图）</text>
+
+    <rect x="730" y="130" width="240" height="52" rx="8" fill="#fff" stroke="#0e7490" stroke-width="1.6"/>
+    <text x="850" y="152" fill="#0e7490" font-weight="700">⑦ at::empty 分配输出</text>
+    <text x="850" y="170" fill="#52606d">spec.out_shape · first-touch 在这付账</text>
+
+    <rect x="500" y="210" width="470" height="40" rx="8" fill="#e0f2f1" stroke="#0e7490" stroke-width="1.6"/>
+    <text x="735" y="227" fill="#0e7490" font-weight="700">⑧ index_into(spec, out) — 路由树（下一节）</text>
+    <text x="735" y="243" fill="#52606d" font-size="11">先试不物化 idx 的短路（direct / raw rowcopy / raw 桶化），不行再 linearize</text>
+  </g>
+  <g stroke="#7b8794" stroke-width="1.4" fill="none">
+    <path d="M 850 82 L 850 105 L 355 105 L 355 128" marker-end="url(#ar)"/>
+    <path d="M 470 156 L 498 156" marker-end="url(#ar)"/>
+    <path d="M 700 156 L 728 156" marker-end="url(#ar)"/>
+    <path d="M 850 182 L 850 200 L 735 200 L 735 208" marker-end="url(#ar)"/>
+  </g>
+  <text x="20" y="240" font-size="11" fill="#7b8794">绿框 = 快路径（不进路由链，RESULTS §2.13.1 实测连续短调用 6.90µs 由 small_single 吃掉）</text>
+</svg>
+<figcaption><b>图 1 · <code>index_impl</code> 的 8 步</b>（architecture.md §1 伪代码）。
+<code>index_out_impl</code> 不经过 ③④⑤（要支持任意 out 布局），校验后直接进 ⑧；
+非连续 <code>out</code> 先算到连续临时张量再 <code>copy_</code>。</figcaption>
+</figure>
+<div class="callout"><p><b>设计原则</b>：把"每次调用都要付的钱"（normalize、分配、路由判断）
+尽量用 cheap 的 shape 判据提前免掉。K≤4096 且下标连续的形态<b>根本走不到路由树</b>——
+这就是 §2.13"路由条数不抬高固定开销"的结构性原因。</p></div>
+</section>
+
+<section id="fastpath"><h2><span class="secno">02</span>三道快路径：各管一段"短调用"</h2>
+<div class="grid c3">
+<div class="card"><h4>③ mask_fast_path（T8）</h4><p class="sub">单 bool mask 且连续：<code>gather_mask</code> 单遍压实，
+跳过 <code>nonzero()</code> 物化。P3 mask C=16 1t <b>1.77x</b>。非连续 mask 不在此列（回退 nonzero，0.79–0.98x）。</p></div>
+<div class="card"><h4>④ small_single_index（T9）</h4><p class="sub">单整数下标、K≤4096、连续：预校验偏移 + 紧凑循环，绕过 normalize 的分配与遍历。
+实测 6.90µs；非连续下标要多花 2.85µs 走 normalize + 通用路由。</p></div>
+<div class="card"><h4>⑤ small_multi_index（T13）</h4><p class="sub">多索引同 shape/连续、n≤65536：预校验偏移后逐行 memcpy。省 normalize + 广播解码。
+RESULTS §2.13.1 语料普查里它吃了 26 个形态中的 15 个。</p></div>
+</div>
+</section>
+
+<section id="tree"><h2><span class="secno">03</span>路由决策树：<code>index_into</code> 内部</h2>
+<p class="lede">⑧ 里的完整分支。判据顺序就是优化史：先 cheap 短路，后通用两遍模型。
+每个分支的实测收益在 results.html §07（路径矩阵）。</p>
+<figure>
+<svg viewBox="0 0 980 700" role="img" aria-label="index_into 路由决策树">
+  <defs>
+    <marker id="ar2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#7b8794"/>
+    </marker>
+  </defs>
+  <!-- root -->
+  <rect x="390" y="10" width="200" height="34" rx="8" fill="#0e7490"/>
+  <text x="490" y="32" text-anchor="middle" font-size="13" fill="#fff" font-weight="700">index_into(spec, out)</text>
+
+  <!-- a: K<1024 -->
+  <rect x="390" y="62" width="200" height="32" rx="8" fill="#fff" stroke="#0e7490" stroke-width="1.5"/>
+  <text x="490" y="83" text-anchor="middle" font-size="12.5" fill="#1f2933">a. K &lt; 1024 ？</text>
+  <line x1="490" y1="44" x2="490" y2="62" stroke="#7b8794" stroke-width="1.4" marker-end="url(#ar2)"/>
+  <rect x="90" y="60" width="250" height="52" rx="8" fill="#e0f2f1" stroke="#0e7490"/>
+  <text x="215" y="80" text-anchor="middle" font-size="12.5" fill="#0e7490" font-weight="700">gather_direct</text>
+  <text x="215" y="97" text-anchor="middle" font-size="11" fill="#52606d">A==1 且全长连续 → 预校验紧凑循环（T11）</text>
+  <path d="M390 78 L340 78 L340 86" stroke="#7b8794" stroke-width="1.4" fill="none"/>
+  <line x1="390" y1="78" x2="342" y2="86" stroke="#7b8794" stroke-width="1.4" marker-end="url(#ar2)"/>
+  <text x="362" y="72" text-anchor="middle" font-size="11" fill="#15803d" font-weight="700">是</text>
+  <line x1="490" y1="94" x2="490" y2="114" stroke="#7b8794" stroke-width="1.4" marker-end="url(#ar2)"/>
+  <text x="502" y="108" font-size="11" fill="#b45309" font-weight="700">否</text>
+
+  <!-- b: M1 rowcopy -->
+  <rect x="330" y="114" width="320" height="32" rx="8" fill="#fff" stroke="#0e7490" stroke-width="1.5"/>
+  <text x="490" y="135" text-anchor="middle" font-size="12" fill="#1f2933">b. 单索引·连续 idx·after 连续·A&gt;1·(A≥4096 或 A&lt;16 或 A≤64 且 B·K≤65536)·f32/f64/i32/i64 ？</text>
+  <rect x="30" y="112" width="270" height="52" rx="8" fill="#e0f2f1" stroke="#0e7490"/>
+  <text x="165" y="130" text-anchor="middle" font-size="12.5" fill="#0e7490" font-weight="700">gather_rowcopy_raw（M1）</text>
+  <text x="165" y="146" text-anchor="middle" font-size="11" fill="#52606d">跳过 linearize（T2/T12/T15/T16）</text>
+  <text x="165" y="160" text-anchor="middle" font-size="11" fill="#52606d">只搬整行、不看值域 → 与 b2/b3 不同</text>
+  <path d="M330 130 L302 130" stroke="#7b8794" stroke-width="1.4" marker-end="url(#ar2)"/>
+  <text x="316" y="124" text-anchor="middle" font-size="11" fill="#15803d" font-weight="700">是</text>
+  <line x1="490" y1="146" x2="490" y2="166" stroke="#7b8794" stroke-width="1.4" marker-end="url(#ar2)"/>
+  <text x="502" y="160" font-size="11" fill="#b45309" font-weight="700">否</text>
+
+  <!-- b2/b3 side branches -->
+  <rect x="700" y="112" width="270" height="52" rx="8" fill="#e0f2f1" stroke="#0e7490"/>
+  <text x="835" y="130" text-anchor="middle" font-size="12.5" fill="#0e7490" font-weight="700">b2. gather_strided_rows_raw</text>
+  <text x="835" y="146" text-anchor="middle" font-size="11" fill="#52606d">!after 连续 但 col_off 有 ≥4 连续 run</text>
+  <text x="835" y="160" text-anchor="middle" font-size="11" fill="#52606d">run 块拷贝（T12）</text>
+  <path d="M650 130 L698 130" stroke="#7b8794" stroke-width="1.4" marker-end="url(#ar2)"/>
+  <rect x="700" y="180" width="270" height="52" rx="8" fill="#e0f2f1" stroke="#0e7490"/>
+  <text x="835" y="198" text-anchor="middle" font-size="12.5" fill="#0e7490" font-weight="700">b3. gather_rowcopy_fused</text>
+  <text x="835" y="214" text-anchor="middle" font-size="11" fill="#52606d">多索引·after 连续·A≥4·f32/f64·≥16t</text>
+  <text x="835" y="228" text-anchor="middle" font-size="11" fill="#52606d">跳过 linearize（T12）</text>
+
+  <!-- c: T4 raw bucket -->
+  <rect x="330" y="166" width="320" height="32" rx="8" fill="#fff" stroke="#0e7490" stroke-width="1.5"/>
+  <text x="490" y="187" text-anchor="middle" font-size="12" fill="#1f2933">c. 单索引·B==1·A==1·连续 idx ？</text>
+  <rect x="30" y="190" width="270" height="86" rx="8" fill="#e0f2f1" stroke="#0e7490"/>
+  <text x="165" y="208" text-anchor="middle" font-size="12.5" fill="#0e7490" font-weight="700">gather_bucket_pure_raw（T4）</text>
+  <text x="165" y="224" text-anchor="middle" font-size="11" fill="#52606d">小值域查表</text>
+  <text x="165" y="240" text-anchor="middle" font-size="11" fill="#0e7490">└ f32/i32+i64 且 源&gt;512KB 且 &gt;1t</text>
+  <text x="165" y="255" text-anchor="middle" font-size="11" fill="#52606d">　→ gather_single_1d_sve（T15-C 单遍）</text>
+  <text x="165" y="270" text-anchor="middle" font-size="11" fill="#52606d">└ 其余 → gather_single_1d 标量单遍</text>
+  <path d="M330 182 L220 182 L220 188" stroke="#7b8794" stroke-width="1.4" fill="none" marker-end="url(#ar2)"/>
+  <text x="300" y="176" text-anchor="middle" font-size="11" fill="#15803d" font-weight="700">是</text>
+  <line x1="490" y1="198" x2="490" y2="218" stroke="#7b8794" stroke-width="1.4" marker-end="url(#ar2)"/>
+  <text x="502" y="212" font-size="11" fill="#b45309" font-weight="700">否</text>
+
+  <!-- d: 1t -->
+  <rect x="330" y="218" width="320" height="32" rx="8" fill="#fff" stroke="#0e7490" stroke-width="1.5"/>
+  <text x="490" y="239" text-anchor="middle" font-size="12.5" fill="#1f2933">d. 1 线程 且 单索引 且 A&gt;1 ？</text>
+  <rect x="30" y="292" width="270" height="40" rx="8" fill="#fef3c7" stroke="#b45309"/>
+  <text x="165" y="309" text-anchor="middle" font-size="12.5" fill="#b45309" font-weight="700">A≥4 连续 → rowcopy_raw</text>
+  <text x="165" y="325" text-anchor="middle" font-size="11" fill="#52606d">否则 → gather_fused（T3）</text>
+  <path d="M330 234 L240 234 L240 290" stroke="#7b8794" stroke-width="1.4" fill="none" marker-end="url(#ar2)"/>
+  <text x="285" y="228" text-anchor="middle" font-size="11" fill="#15803d" font-weight="700">是</text>
+  <line x1="490" y1="250" x2="490" y2="270" stroke="#7b8794" stroke-width="1.4" marker-end="url(#ar2)"/>
+  <text x="502" y="264" font-size="11" fill="#b45309" font-weight="700">否</text>
+
+  <!-- e -->
+  <rect x="330" y="270" width="320" height="32" rx="8" fill="#fff" stroke="#0e7490" stroke-width="1.5"/>
+  <text x="490" y="291" text-anchor="middle" font-size="12" fill="#1f2933">e. A==1 或 (after 连续 且 A≥4 且 f32/f64) ？</text>
+  <rect x="700" y="300" width="270" height="46" rx="8" fill="#fff" stroke="#52606d" stroke-dasharray="5 4"/>
+  <text x="835" y="318" text-anchor="middle" font-size="12.5" fill="#1f2933" font-weight="700">linearize + gather_index</text>
+  <text x="835" y="334" text-anchor="middle" font-size="11" fill="#52606d">两遍模型：SVE gather / 桶化 / 标量</text>
+  <path d="M650 286 L760 286 L760 298" stroke="#7b8794" stroke-width="1.4" fill="none" marker-end="url(#ar2)"/>
+  <text x="680" y="280" text-anchor="middle" font-size="11" fill="#15803d" font-weight="700">是</text>
+  <line x1="490" y1="302" x2="490" y2="322" stroke="#7b8794" stroke-width="1.4" marker-end="url(#ar2)"/>
+  <text x="502" y="316" font-size="11" fill="#b45309" font-weight="700">否</text>
+
+  <!-- f -->
+  <rect x="330" y="322" width="320" height="32" rx="8" fill="#fff" stroke="#0e7490" stroke-width="1.5"/>
+  <text x="490" y="343" text-anchor="middle" font-size="12" fill="#1f2933">f. 其余（A&lt;4 或非连续小块，含 run=1 纯转置）</text>
+  <rect x="30" y="370" width="270" height="40" rx="8" fill="#fff" stroke="#52606d" stroke-dasharray="5 4"/>
+  <text x="165" y="387" text-anchor="middle" font-size="12.5" fill="#1f2933" font-weight="700">gather_fused（T3）</text>
+  <text x="165" y="403" text-anchor="middle" font-size="11" fill="#52606d">多索引解码 + 逐行拷贝的兜底</text>
+  <line x1="490" y1="354" x2="490" y2="390" stroke="#7b8794" stroke-width="1.4" marker-end="url(#ar2)"/>
+  <line x1="490" y1="390" x2="302" y2="390" stroke="#7b8794" stroke-width="1.4" marker-end="url(#ar2)"/>
+
+  <!-- legend -->
+  <rect x="30" y="450" width="920" height="60" rx="10" fill="#eef2f7"/>
+  <text x="48" y="472" font-size="12.5" fill="#1f2933" font-weight="700">读图要点</text>
+  <text x="48" y="492" font-size="12" fill="#52606d">绿框 = raw 短路（不物化 idx）；黄框 = 单线程专用；虚线 = 两遍模型兜底。</text>
+  <text x="48" y="508" font-size="12" fill="#52606d">保留旧路径的两个例外：run=1 纯转置（无连续 run，块拷贝退化为逐元素）与多索引 A==1（fused 解码更差）。</text>
+  <text x="48" y="600" font-size="11" fill="#7b8794">静态开关 g_nt：HPC_INDEX_NT 环境变量（非 "0" 即开），default off，进 gather_index / gather_rowcopy_raw 的 non_temporal 参数。</text>
+</svg>
+<figcaption><b>图 2 · 路由树全景</b>（architecture.md §1 伪代码逐行对应）。
+T0–T13 各轮优化引入的优先级：<b>先试不物化 idx 的短路</b>，需要 idx 时再 linearize。</figcaption>
+</figure>
+</section>
+
+<section id="spec"><h2><span class="secno">04</span><code>IndexSpec</code>：所有内核共享的数据布局</h2>
+<p class="lede">normalize 的输出。三个标量 <b>B / K / A</b> 是路由判据的本体；
+输出布局一条公式：<code>out[r·K+k, c] = src[row_off[r] + idx[k] + col_off[c]]</code>。</p>
+<figure>
+<svg viewBox="0 0 900 420" role="img" aria-label="IndexSpec 字段图">
+  <defs>
+    <marker id="ar3" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#7b8794"/>
+    </marker>
+  </defs>
+  <rect x="20" y="20" width="380" height="380" rx="10" fill="#0f172a"/>
+  <text x="40" y="46" font-size="13" fill="#7dd3fc" font-family="monospace">struct IndexSpec {</text>
+  <g font-size="11.5" fill="#e2e8f0" font-family="monospace">
+    <text x="52" y="74">transposed_self          // 视图，非拷贝</text>
+    <text x="52" y="98">indexed_dims / sizes / strides</text>
+    <text x="52" y="130" fill="#fbbf24" font-weight="700">int64_t B   // dims_before 前缀乘积</text>
+    <text x="52" y="154" fill="#fbbf24" font-weight="700">int64_t K   // 下标 broadcast 形状积</text>
+    <text x="52" y="178" fill="#fbbf24" font-weight="700">int64_t A   // dims_after 后缀乘积</text>
+    <text x="52" y="202">out_shape</text>
+    <text x="52" y="226">row_off[B]   // 行首偏移（transposed 坐标）</text>
+    <text x="52" y="250">col_off[A]   // A 维列偏移</text>
+    <text x="52" y="274">after_contiguous           // 行拷贝前提</text>
+    <text x="52" y="298">indices[]    // 归一化下标（int32 保持）</text>
+    <text x="52" y="322">broadcast_shape            // gather_direct 用（A7）</text>
+  </g>
+  <text x="40" y="380" font-size="13" fill="#7dd3fc" font-family="monospace">};</text>
+
+  <!-- annotation side -->
+  <rect x="440" y="20" width="440" height="380" rx="10" fill="#fff" stroke="#d9e2ec"/>
+  <text x="460" y="48" font-size="14" fill="#1f2933" font-weight="700">三个标量决定路由</text>
+  <g font-size="12.5" fill="#52606d">
+    <text x="460" y="76">B（前导行数）× K（索引数）× A（行宽）= 输出元素总数。</text>
+    <text x="460" y="100">内核选择只看 A / K / B + dtype + 连续性（kernels.html §01）。</text>
+  </g>
+  <text x="460" y="140" font-size="14" fill="#1f2933" font-weight="700">B / K / A 的形象记法</text>
+  <g font-size="12" fill="#52606d">
+    <rect x="460" y="152" width="400" height="52" rx="8" fill="#eef2f7"/>
+    <text x="474" y="174">out 形状 = [B, K, A] 的三维展开：先 B 行前缀，</text>
+    <text x="474" y="192">再 K 个下标命中，最后 A 个连续元素。</text>
+  </g>
+  <g font-size="12.5" fill="#52606d">
+    <text x="460" y="232">· row_off：K==0 的极端单独置 0；</text>
+    <text x="460" y="254">· after_contiguous = col_off[c]==c 全成立，</text>
+    <text x="484" y="274">行拷贝内核（copy_contig_sve）的前提；</text>
+    <text x="460" y="296">· indices 保持 int32：线性化与 4B SVE 分支直接消费，</text>
+    <text x="484" y="316">省一次 int32→int64 转换（镜像 ATen，见「有意差异」）。</text>
+  </g>
+  <rect x="460" y="336" width="400" height="50" rx="8" fill="#e0f2f1"/>
+  <text x="474" y="356" font-size="12" fill="#0e7490">normalize 镜像 ATen TensorAdvancedIndexingUtils，</text>
+  <text x="474" y="374" font-size="12" fill="#0e7490">语义对齐见 semantics.md（不写在这里）。</text>
+</svg>
+<figcaption><b>图 3 · <code>IndexSpec</code> 字段与角色</b>（architecture.md §2，normalize.h）。
+金色三字段是路由判据；其余是内核的工作数据。</figcaption>
+</figure>
+</section>
+
+<section id="normalize"><h2><span class="secno">05</span><code>normalize_index</code> 五步</h2>
+<div class="grid c2">
+<div class="card"><h4>① check_index_types</h4><p class="sub">dtype 白名单 {int64, int32, uint8, bool}；越界 dtype 报 "tensors used as indices must be long, int, byte or bool tensors"。</p></div>
+<div class="card"><h4>② mask 处理</h4><p class="sub">可融合的单 mask 已在入口短路（T8）；其余 bool/byte 下标先 <code>nonzero()</code> 再 <code>select(1,j)</code> 成 1 列，维护 srcIdx。维度不符报 shape 错误；byte mask 保留 ATen deprecation 警告。</p></div>
+<div class="card"><h4>③ transpose_to_front</h4><p class="sub">有连续子空间时被索引维搬到前面（<code>has_contiguous_subspace</code>），保证 dims_before / dims_after 各自连续；无法转置则 dims_before==0，整体按 K×A 二维展开。</p></div>
+<div class="card"><h4>④ dims_before / dims_after + size-0 检查</h4><p class="sub">镜像 AdvancedIndex 构造；size-0 被索引维报 "index is out of bounds for dimension with size 0"。</p></div>
+<div class="card"><h4>⑤ 保存 indices 与 broadcast_shape</h4><p class="sub">spec.indices 存归一化下标；broadcast_shape 记 N-D 下标 broadcast 逐维大小（gather_direct 用，A7）。</p></div>
+<div class="card"><h4>输出张量</h4><p class="sub"><code>at::empty(spec.out_shape, self.options())</code>；布局 <code>out[r·K+k, c] = src[row_off[r] + idx[k] + col_off[c]]</code>。</p></div>
+</div>
+</section>
+
+<section id="diff"><h2><span class="secno">06</span>有意差异：int32 下标保持不升 int64</h2>
+<div class="callout good"><p>ATen 在 <code>make_info</code> 把 int32 下标升成 int64；本算子<b>保持 int32</b>，
+线性化与 4B SVE 分支直接消费（等值，省一次转换）。<b>这是设计决策，不是语义偏差</b>。</p></div>
+<p class="lede">同类的"镜像但有意不同"还有：单 mask 入口短路（T8，ATen 是先 nonzero）、
+small_single / small_multi 绕过 normalize（T9/T13）、raw 内核跳过 linearize（T2/T4）。
+每一处都对应一个实测收益数字，见 results.html §06–§07。</p>
+</section>
+
+<div class="footer"><p>本文是 docs/architecture.md 的可视化导读，生成于 2026-11-06。
+路由树的性能数据（每条路值多少）在 benchmarks/RESULTS.md §2.14 与 results.html §07；
+内核实现细节见 kernels.html。</p></div>
+</main>
+</body>
+</html>
